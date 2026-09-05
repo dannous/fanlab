@@ -37,6 +37,13 @@ public final class Sample {
     /** Free text: failsafe reasons, resume events, mode changes. */
     public String note = "";
 
+    /**
+     * SoC die temperatures in degrees C -- pll, ddr, sar -- or NaN if unreadable.
+     * NaN rather than a sentinel so a missing reading is blank in the CSV instead of
+     * being mistaken for a real value.
+     */
+    public double[] socC = {Double.NaN, Double.NaN, Double.NaN};
+
     public String toCsv() {
         StringBuilder sb = new StringBuilder(140);
         sb.append(epochMs).append(',');
@@ -54,6 +61,9 @@ public final class Sample {
         sb.append(desired < 0 ? "" : Integer.toString(desired)).append(',');
         sb.append(wrote < 0 ? "" : Integer.toString(wrote)).append(',');
         sb.append(CsvLogger.q(note));
+        for (int i = 0; i < socC.length; i++) {
+            sb.append(',').append(Double.isNaN(socC[i]) ? "" : fmt1(socC[i]));
+        }
         return sb.toString();
     }
 

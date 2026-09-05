@@ -819,6 +819,45 @@ public final class FanLabTest {
             check(log3.brokenPaths().size() >= 1, "the broken destination is reported");
             log3.close();
 
+            // an app update that adds columns must not append wide rows under a narrow
+            // header -- the old file is rolled aside and a correctly-headed one started
+            File c = new File(base, "schema");
+            c.mkdirs();
+            List<File> one = new ArrayList<File>();
+            one.add(c);
+            CsvLogger oldSchema = new CsvLogger("t.csv", "epoch_ms,degC,fan_ctrl");
+            oldSchema.setDirs(one);
+            oldSchema.append("1,2,3");
+            oldSchema.close();
+
+            CsvLogger newSchema = new CsvLogger("t.csv");
+            newSchema.setDirs(one);
+            newSchema.append("1,2,3,4");
+            newSchema.close();
+            String cur = read(new File(c, "t.csv"));
+            check(cur.startsWith(CsvLogger.HEADER + "\n"),
+                    "a changed header rolls the file rather than appending under the old one");
+            eq(countLines(cur), 2, "the new file holds its header and the new row only");
+            File[] kept = c.listFiles();
+            eq(kept == null ? 0 : kept.length, 2, "the old data is renamed aside, not deleted");
+            for (int i = 0; kept != null && i < kept.length; i++) {
+                if (!kept[i].getName().equals("t.csv")) {
+                    check(read(kept[i]).startsWith("epoch_ms,degC,fan_ctrl\n"),
+                            "and it keeps the header it was actually written under");
+                }
+            }
+
+            // reopening on the same schema must still append, or every restart would roll
+            CsvLogger sameSchema = new CsvLogger("t.csv");
+            sameSchema.setDirs(one);
+            sameSchema.append("5,6,7,8");
+            sameSchema.close();
+            eq(countLines(read(new File(c, "t.csv"))), 3,
+                    "an unchanged header appends as before");
+
+            check(CsvLogger.HEADER.endsWith(",soc_pll_c,soc_ddr_c,soc_sar_c"),
+                    "the SoC zones are logged");
+
             check(CsvLogger.q("a,b").equals("\"a,b\""), "commas are quoted");
             check(CsvLogger.q("a\"b").equals("\"a\"\"b\""), "quotes are doubled");
             check(CsvLogger.q("plain").equals("plain"), "plain text is untouched");

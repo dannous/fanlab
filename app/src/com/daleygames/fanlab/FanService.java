@@ -163,9 +163,13 @@ public class FanService extends Service {
             Log.e(TAG, "onCreate foreground", t);
         }
         try {
-            String name = "fanlab-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
-                    .format(new Date()) + ".csv";
-            csv = new CsvLogger(name);
+            // One fixed name, deliberately. A timestamp per service start looks tidier,
+            // but CsvLogger prunes by file stem, so every start opened a fresh stem that
+            // the previous run's cap could not reach -- six capped files per boot, kept
+            // for ever. Appending to one name makes the cap mean what it says. Run
+            // boundaries stay visible in the data: the first row after a start carries a
+            // "resync@" note, and the epoch column shows the gap.
+            csv = new CsvLogger("fanlab.csv");
             rescanSinks();
         } catch (Throwable t) {
             Log.e(TAG, "onCreate csv", t);
@@ -362,7 +366,7 @@ public class FanService extends Service {
      *   <li>not driving -&gt; the ladder is handed back, within one tick.</li>
      * </ul>
      *
-     * <h3>What it cannot cover</h3>
+     * <h3>What it cannot cover — and this list was wrong once already</h3>
      * <ul>
      *   <li><b>A low-memory kill or a crash</b> is covered: START_STICKY plus a
      *       foreground notification means the platform restarts the service.</li>
@@ -370,7 +374,7 @@ public class FanService extends Service {
      *   <li><b>Force-stop, and "Disable" in Settings, are NOT covered.</b> They cancel
      *       the START_STICKY restart <i>and</i> put the package in the stopped state,
      *       which suppresses {@code BOOT_COMPLETED} as well — so neither the restart nor
-     *       the reboot path fires.</li>
+     *       the reboot path fires. An earlier version of this comment claimed otherwise.</li>
      *   <li><b>{@code pm clear} is NOT covered</b>, and is worse: it also erases
      *       {@code autostart}, so nothing left on the device knows the ladder should come
      *       back.</li>
@@ -519,6 +523,14 @@ public class FanService extends Service {
         s.degC = Thermistor.celsius(s.adc);
         s.propLedTemp = SysProps.get(SysProps.PROP_LED_TEMPERATURE);
         s.fanCtrl = FanIo.readDuty();
+        for (int i = 0; i < Sysfs.SOC_THERMAL.length && i < s.socC.length; i++) {
+            int milli = Sysfs.readInt(Sysfs.SOC_THERMAL[i], Integer.MIN_VALUE);
+            // Plausibility gate, same spirit as the thermistor's: a die below -40 C or
+            // above 150 C is a bad read, not a temperature, and must not reach the log
+            // looking like data.
+            s.socC[i] = (milli == Integer.MIN_VALUE || milli < -40000 || milli > 150000)
+                    ? Double.NaN : milli / 1000.0;
+        }
         s.rgblevel = Sysfs.readInt(Sysfs.RGBLEVEL, -1);
         s.ledStatus = Sysfs.readInt(Sysfs.LED_STATUS, -1);
         s.profile = CurveConfig.profileForLevel(s.rgblevel);

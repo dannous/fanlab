@@ -35,6 +35,20 @@ public final class Sysfs {
     public static final String RGBLEVEL = "/sys/class/dlpc343x/rgblevel";
     public static final String LED_STATUS = "/sys/class/dlpc343x/led_status";
 
+    /**
+     * The SoC die sensors, in millidegrees. Only {@code thermal_zone0} (pll) has cooling
+     * devices bound to it -- at 75 C -- so it is the one that can actually throttle; the
+     * other two are monitoring only. They are logged because the fan is driven solely by
+     * the LED thermistor and is blind to SoC load: switching UHD processing on moves these
+     * by about 11 C while moving the LED thermistor by half a degree, so without them the
+     * telemetry cannot show that happening at all.
+     */
+    public static final String[] SOC_THERMAL = {
+            "/sys/class/thermal/thermal_zone0/temp",   // pll  -- throttles at 75 C
+            "/sys/class/thermal/thermal_zone1/temp",   // ddr  -- monitor only
+            "/sys/class/thermal/thermal_zone2/temp",   // sar  -- monitor only
+    };
+
     /** Read-only diagnostics targets. Not all of these are guaranteed to exist. */
     public static final String[] DLPC_NODES = {
             "/sys/class/dlpc343x/rgblevel",

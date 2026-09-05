@@ -42,11 +42,12 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 546**, run on the host as part of every build.
+- **Test count: 552**, run on the host as part of every build.
 - **Fail-safe high.** Every error path writes 83 %, never a low value.
 - **Automatic handback.** The app owns the switch that disables the stock controller and
   re-arms it whenever it stops driving, so the projector cannot be left unmanaged.
-- **Optional CSV telemetry** to internal storage or a USB stick, size-capped.
+- **Optional CSV telemetry** to internal storage and any mounted USB stick at once,
+  size-capped and self-pruning. See [Telemetry](#telemetry).
 
 ## Measured results
 
@@ -81,6 +82,45 @@ To undo it: open FanLab and press **RESTORE STOCK FAN CONTROL**, or uninstall fr
 Settings — but read [docs/safety.md](docs/safety.md) first, because the order matters.
 
 There is also an adb route for development, in [docs/deploy.md](docs/deploy.md).
+
+## Telemetry
+
+Logging is on by default; the FanLab screen turns it off. One row per sample is written
+to **every** working destination at once — `/sdcard/FanLab/fanlab.csv` and the same path on any USB volume
+mounted at the time. Every line is flushed, so a stick can be pulled without losing the
+row before it.
+
+| | |
+|---|---|
+| Rate | one row per second while anything is happening; otherwise one every 10 s |
+| Size cap | 4 MB per file, then it rolls to `fanlab-<epoch>.csv` |
+| History | the newest 6 rolled files are kept, so 28 MB per destination at most |
+
+Routine rows are decimated but events never are: a write, a fail-safe, a mode change, a
+foreign write to `fan_ctrl` or a resync is always logged, at full rate, whatever the
+heartbeat interval is.
+
+### Columns
+
+```
+epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,
+profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c
+```
+
+`adc` is the raw 12-bit thermistor count and `degC` is that count through the
+Steinhart-Hart fit; `prop_led_temp` is what the stock firmware believes, for comparison.
+`desired` is what the controller asked for and `wrote` is what it actually wrote — they
+differ when a write is refused or suppressed, and that difference is the point of having
+both. Empty means "not read this tick", never zero.
+
+The three `soc_*` columns are the SoC die sensors. They are logged because **the fan
+cannot see them**: it is driven by the LED thermistor alone, so a load that heats the SoC
+and not the light engine — switching UHD processing on moves the SoC about 11 °C and the
+LED thermistor half a degree — is invisible to the controller. Only `soc_pll_c` has
+cooling devices bound to it, at 75 °C; the other two are monitoring.
+
+If a future version adds a column, the existing file is rolled aside rather than appended
+to, so no file ever contains rows of two different widths.
 
 ## How the curve works
 

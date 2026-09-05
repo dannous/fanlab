@@ -24,7 +24,7 @@ public final class CsvLogger {
 
     public static final String HEADER =
             "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
-                    + "profile,mode,desired,wrote,note";
+                    + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c";
 
     private static final class Target {
         final File file;
@@ -47,7 +47,8 @@ public final class CsvLogger {
     /**
      * How many rolled files to keep per directory, newest first. Six of them is about
      * sixty hours of continuous logging -- far more than any question we ask of it needs
-     * -- and it bounds the whole thing at roughly 24 MB per sink instead of at infinity.
+     * -- and it bounds each destination at 28 MB -- six rolled files plus
+     * the live one -- instead of at infinity.
      *
      * The old behaviour was: a new timestamped file per service start, never capped,
      * never pruned. Fine for an afternoon's measurement, wrong for something that ships
@@ -145,6 +146,16 @@ public final class CsvLogger {
                 // mkdirs can fail benignly if another thread won the race
                 parent.mkdirs();
             }
+            if (t.file.exists() && t.file.length() > 0 && !headerMatches(t.file)) {
+                // An app update that adds a column would otherwise append wide rows under
+                // a narrow header, and the mismatch is invisible until someone tries to
+                // parse the file months later. Roll instead: the old data keeps the header
+                // it was written under, and the new file starts with the current one.
+                roll(t);
+                if (t.broken) {
+                    return;
+                }
+            }
             boolean fresh = !t.file.exists() || t.file.length() == 0;
             t.writer = new OutputStreamWriter(new FileOutputStream(t.file, true), "UTF-8");
             if (fresh) {
@@ -158,6 +169,33 @@ public final class CsvLogger {
         } catch (Throwable e) {
             t.broken = true;
             closeQuietly(t);
+        }
+    }
+
+    /**
+     * Does the file on disk already carry the columns we are about to write?
+     *
+     * An unreadable first line counts as a mismatch. Rolling a file we cannot read is the
+     * conservative answer: it costs one rename, where guessing "close enough" costs the
+     * integrity of the log.
+     */
+    private boolean headerMatches(File f) {
+        java.io.BufferedReader r = null;
+        try {
+            r = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    new java.io.FileInputStream(f), "UTF-8"));
+            String first = r.readLine();
+            return header.equals(first);
+        } catch (Throwable e) {
+            return false;
+        } finally {
+            if (r != null) {
+                try {
+                    r.close();
+                } catch (Throwable ignored) {
+                    // nothing useful to do
+                }
+            }
         }
     }
 

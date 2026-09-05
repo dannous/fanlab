@@ -26,3 +26,6 @@ Thumbs.db
 .DS_Store
 __pycache__/
 *.pyc
+
+# Working notes for the next session; not part of the project
+HANDOVER.md
