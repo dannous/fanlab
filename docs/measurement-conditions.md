@@ -52,17 +52,29 @@ pll_thermal 64 C   ddr_thermal 68 C   sar_thermal 60 C
 trip 0: 60 C passive     trip 1: 75 C passive     trip 2: 85 C hot
 ```
 
-Three things keep this in proportion:
+Only one of the three zones controls anything, and it is not the hottest one:
+
+```
+pll_thermal   3 cooling devices bound, all to trip 1 = 75 C   <- the only one that acts
+ddr_thermal   0 bindings                                       <- monitor only
+sar_thermal   0 bindings                                       <- monitor only
+```
+
+The 60 °C trip labelled "passive" on every zone has **no cooling device bound to it**, and
+neither does `ddr_thermal` at any temperature. A trip point only acts if something is bound
+to it. Throttling therefore begins when `pll_thermal` reaches **75 °C**; with UHD on it sits
+at **64 °C**, all four cooling devices are at state 0, and the CPU is at its full
+1,908,000 kHz. Nothing is throttled.
+
+Three things keep the rest in proportion:
 
 1. **The stock controller is equally blind.** `adjust_fan_speed_v1` reads the same
-   `persist.sys.led.temperature` and nothing else. This is not a regression introduced by
-   the new curve — it is how the machine has always worked.
-2. **The SoC protects itself.** Those trip points drive passive throttling of CPU and GPU
-   frequency, independent of any fan control. 68 °C is between trip 0 and trip 1, which is
-   ordinary operating territory for a die, not a fault.
-3. **But a quieter fan does mean a warmer SoC.** Stock would be running 59–70 here instead
-   of 40, and that extra airflow cools the whole chassis. The trade bought with fan noise
-   is paid partly by the SoC, and no sensor in the control loop is watching that.
+   `persist.sys.led.temperature` and nothing else. Not a regression.
+2. **Throttling, if it happened, costs frames not hardware** — reduced CPU/GPU frequency,
+   with a separate "hot" trip at 85 °C above it.
+3. **But a quieter fan does mean a warmer SoC.** Stock would be running 59-70 here instead
+   of 40, so the 11 °C of margin to the throttle point is smaller than it would otherwise
+   be, and nothing in the control loop is watching it.
 
 **The measurement that would settle it** — untaken — is to hold the fan at, say, 40 and
 then 70 with UHD on and the same content, and see how far the SoC zones move. That gives

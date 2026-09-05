@@ -132,18 +132,37 @@ Or reinstall the app, press the takeover control, then press RESTORE.
 
 The fan is driven by the LED thermistor, and nothing in the loop reads the SoC. Switching
 UHD processing on raises the three SoC die sensors by about **11 °C** while moving the LED
-thermistor by **0.5 °C** — so the fan does not respond to it at all. With UHD on, those
-zones sit at or above their first passive trip point of 60 °C.
+thermistor by **0.5 °C**, so the fan does not respond to it at all.
 
-Three things keep that in proportion. The **stock controller is equally blind** — it reads
-the same single sensor, so this is not something the new curve introduced. The **SoC
-protects itself**, throttling CPU and GPU frequency at those trip points regardless of any
-fan. And the readings, around 68 °C against a "hot" trip of 85 °C, are ordinary for a die.
+**What that does and does not mean.** Only one of the three zones controls anything:
 
-But it is an honest limitation: **a quieter fan means a warmer SoC too**, and no sensor in
-the control loop is watching that. See
-[measurement-conditions.md](measurement-conditions.md) for the numbers and for the
-measurement that would settle how much the fan can actually do about it.
+```
+pll_thermal   3 cooling devices bound, all to trip 1 = 75 C   <- the only one that acts
+ddr_thermal   0 bindings                                       <- monitor only
+sar_thermal   0 bindings                                       <- monitor only
+```
+
+`ddr_thermal`, the hottest reading, has nothing bound to it — it is a thermometer with no
+wire attached. And the 60 °C trip labelled "passive" on every zone has no cooling device
+bound either. A trip point only does something if something is bound to it; the label alone
+means nothing.
+
+So throttling begins when **`pll_thermal` reaches 75 °C**, and observed with UHD on it sits
+at **64 °C**, with all four cooling devices at state 0 and the CPU at its full
+1,908,000 kHz. Nothing is being throttled.
+
+If it ever did throttle, the consequence is reduced CPU and GPU frequency — stutter or
+dropped frames — not damage. A separate "hot" trip sits at 85 °C above it.
+
+**The honest limitation.** A quieter fan leaves the SoC warmer than stock would, so that
+11 °C of margin is smaller than it was. Nothing in the fan's control loop is watching it,
+and the **stock controller is equally blind** — it reads the same single sensor, so this is
+not something the new curve introduced. The case worth watching is a warm room with UHD on
+and heavy content, which stacks every load at once.
+
+See [measurement-conditions.md](measurement-conditions.md) for the numbers, and for the
+measurement that would establish how much authority the fan actually has over SoC
+temperature — which has not been taken.
 
 ## Scope
 
