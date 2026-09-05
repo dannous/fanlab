@@ -5,8 +5,7 @@ and characterised duty 40 and above. The second used twelve-minute holds to meas
 quiet end directly, where the thermal response steepens sharply and a short hold cannot
 resolve it.
 
-Source data: `data/run2-presentation-normal.csv` and `data/run2-eco-supereco.csv`, ambient
-**24 °C**, twelve-minute holds. Tooling in `tools/`.
+Measured at ambient **24 °C** with twelve-minute holds. Tooling in `tools/`.
 
 ---
 

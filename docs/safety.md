@@ -27,8 +27,10 @@ The DMD (the imaging chip) has its own temperature rating. **It cannot be measur
 hardware.**
 
 - The display controller's `Read System Temperature` command responds, but returns a hard
-  zero. Its datasheet explains why: no on-chip sensor, and it needs an external comparator
-  this board does not fit.
+  zero.
+- The board *does* declare a second temperature device at i2c `0x1c` (`dlp_i2c_tmp`), but
+  no driver in the kernel binds it and the bus node is root-only, so no application can
+  read it. What it measures is unknown.
 - The DMD datasheet states the array temperature "cannot be measured directly and must be
   computed analytically" from a test point on the package — a test point nothing on this
   board reads.

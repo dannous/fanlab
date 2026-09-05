@@ -117,12 +117,14 @@ Summarised; the detail is in [docs/findings.md](docs/findings.md).
   datasheets constrains anything near it. Philips stated publicly in 2022 that the
   Presentation fan speed was raised because heat was distorting the optical engine and
   softening the image — a focus-stability concern, which is observable and reversible.
-- **There is no DMD temperature sensor, and there never was.** The controller's
-  `Read System Temperature` command responds but returns a hard zero, and the datasheet
-  explains why: the chip has no on-chip sensor and needs an external comparator this board
-  does not fit. Three independent sensor routes were checked and all are dead.
-- **The complete sensor set is the LED-board thermistor plus three SoC dies.** Nothing
-  else on this hardware reports temperature.
+- **No DMD temperature is readable from userspace.** The display controller's own
+  `Read System Temperature` register responds but returns a hard zero. Separately, the
+  board's device tree declares a temperature device at i2c `0x1c` named `dlp_i2c_tmp` —
+  with **no driver bound anywhere in the kernel**, and on a bus node that is root-only. So
+  the limit is a missing driver and a permission, not absent silicon. What that part is,
+  and whether it responds, is unknown.
+- **What the fan controller can read is the LED-board thermistor** (SAR ADC channel 2) and
+  three SoC die sensors. That is the whole set available to an app.
 - **Fan authority is strongly non-linear**: 0.06 °C per duty point at 80 %, rising to
   0.60 at 35 %. A curve designed against the average figure will be wrong at the quiet end.
 - **Philips shipped this same trade themselves** on the sibling PicoPix Max in 2020 —
@@ -192,7 +194,6 @@ variant on first run.
 |---|---|
 | `app/` | the application: source, manifests, resources, host tests, build script |
 | `tools/` | measurement and deployment tooling — see [docs/measuring.md](docs/measuring.md) |
-| `data/` | the raw measurement runs the curve is derived from |
 | `docs/` | curve derivation, findings, safety, deployment, measuring |
 | `release/` | the signed APK |
 | `final_curve.txt` | the deployed curve, in the app's own encoding |

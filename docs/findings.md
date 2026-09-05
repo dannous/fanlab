@@ -15,7 +15,42 @@ The tooling behind these results lives in `tools/`:
 
 ---
 
-## 1. The DMD temperature question is closed, and the answer is no
+## An undriven temperature device at i2c 0x1c
+
+The board's device tree declares a second temperature device beside the display
+controller, and nothing in the system reads it:
+
+```
+/sys/bus/i2c/devices/2-001b            the display controller (driver bound)
+/sys/bus/i2c/devices/2-001c
+  name     = dlp_i2c_tmp
+  modalias = i2c:dlp_i2c_tmp
+  driver   = (none)
+kernel symbols matching dlp_i2c_tmp    0
+/dev/i2c-2                             crw------- root root
+```
+
+**VERIFIED.** The declaration is real, no driver exists for it anywhere in the kernel, and
+the raw i2c bus is root-only — so neither an adb shell (uid 2000) nor a platform-signed
+system app (uid 1000) can open it. Note the contrast with the LED thermistor, whose sysfs
+node init deliberately chmods to 0777, exactly as it does for `fan_ctrl`.
+
+**What is not known:** which part sits at 0x1c, whether it responds, and what it measures.
+A device-tree node is a statement of intent by whoever laid out the board, not proof that a
+component was fitted or that it works. Calling this "the DMD temperature" would be an
+assumption, and assumptions of that shape are what this section exists to correct.
+
+**What it changes.** The display controller's own `Read System Temperature` register really
+does read zero (below), and that remains true. But the broader claim that this hardware has
+no DMD-side temperature sensor at all does not follow from it: the sensor inventory below
+was built by enumerating `/sys/class`, and **an i2c device with no bound driver never
+appears there.** The boundary is a missing driver and a root-only device node, not absent
+silicon.
+
+**How someone could pursue it:** an `init.rc` chmod on `/dev/i2c-2`, a small i2c driver, or
+root. None of those is needed for the fan curve, which reads only the LED thermistor.
+
+## 1. The display controller's own temperature register reads zero
 
 **VERIFIED. The read path works, and there is nothing behind it.**
 
@@ -42,7 +77,9 @@ So **D6h (Read System Temperature) is supported by the controller and reads a ha
 between two sweeps — a live, changing register next door proves the bus and the log path
 are both fine.
 
-> **Conclusion: the DLPC's system-temperature input is not populated on this board.**
+> **Conclusion: the DLPC's own system-temperature input is not populated.** This is a
+> statement about that register, not about the board as a whole -- see the i2c 0x1c device
+> above.
 > This is not a permissions problem, a parse problem, or a `READ_LOGS` problem. There is
 > no controller-side temperature to read, so `fanlab-system.apk`'s `READ_LOGS` permission
 > — whose stated justification in `AndroidManifest.system.xml` is exactly this — buys
