@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  fanlab-system: identical source, signed with the AOSP platform key and sharing the
+  system user id.
+
+  plat_seapp_contexts matches "user=system seinfo=platform" to the system_app domain, and
+  plat_mac_permissions.xml maps the platform signature (serial B3998086D056CFFA, which is
+  byte-identical to the certificate inside this device's own
+  /system/priv-app/TvSettings/TvSettings.apk) to seinfo=platform. That gets:
+
+    * system_prop            -> persist.sys.fanctrl.by.temperatue, persist.sys.adjfan.*
+    * system_radio_prop      -> sys.usb.config, i.e. the adb path
+    * sysfs write            -> the same fan access the plain build has
+
+  The sharedUserId is required for system_radio_prop: platform_app (platform-signed but
+  without the shared uid) does not get it.
+
+  The package name differs from the plain build on purpose, so both can be installed side
+  by side and the plain one can stay as the zero-commitment measuring instrument.
+
+  Installing this APK REQUIRES the platform signature. If the key is wrong the package
+  manager rejects the install outright (INSTALL_FAILED_SHARED_USER_INCOMPATIBLE) rather
+  than quietly downgrading the app's privileges.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.daleygames.fanlab.system"
+    android:sharedUserId="android.uid.system"
+    android:versionCode="1"
+    android:versionName="1.0-system">
+
+    <uses-sdk
+        android:minSdkVersion="28"
+        android:targetSdkVersion="28" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <!--
+      READ_LOGS: the only route to the DLPC's own temperature sensor, which matters more
+      than it looks. `/sys/class/dlpc343x/picoreg` is WRITE-ONLY on this firmware (its
+      class-attribute show handler is NULL, see research/02 §8), so a `r d6 2` command is
+      accepted but the response is never returned through sysfs — the driver prints it to
+      the KERNEL LOG as "read 0x%02x data:". Reading that back needs READ_LOGS.
+
+      Why it is worth having: the 75 °C shutdown reads the red-LED thermistor, but the
+      DMD's 70 °C long-term limit is an array temperature the datasheet says cannot be
+      measured directly, and nobody has established how the two relate. D6h is a
+      controller-side sensor and is our only shot at closing that gap. See TARGET.md §1.
+
+      protectionLevel is signature|privileged|development, so the platform signature alone
+      grants it — no privapp whitelist is involved, and the app installs to /data/app, so
+      this cannot trip the Android 9 privapp-permission boot loop. Deliberately NOT added
+      to the plain build: an untrusted_app would never be granted it, and asking for a
+      permission that is always refused just produces a misleading warning.
+    -->
+    <uses-permission android:name="android.permission.READ_LOGS" />
+
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:banner="@drawable/banner"
+        android:icon="@drawable/ic_launcher"
+        android:label="FanLab (system)"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name="com.daleygames.fanlab.MainActivity"
+            android:exported="true"
+            android:label="FanLab (system)"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.daleygames.fanlab.CurveActivity"
+            android:exported="false"
+            android:label="Fan curve" />
+        <activity
+            android:name="com.daleygames.fanlab.AutoActivity"
+            android:exported="false"
+            android:label="AUTO sweep" />
+        <activity
+            android:name="com.daleygames.fanlab.VerifyActivity"
+            android:exported="false"
+            android:label="VERIFY" />
+        <activity
+            android:name="com.daleygames.fanlab.DiagActivity"
+            android:exported="false"
+            android:label="Diagnostics" />
+        <activity
+            android:name="com.daleygames.fanlab.AdbActivity"
+            android:exported="false"
+            android:label="ADB over network" />
+
+        <service
+            android:name="com.daleygames.fanlab.FanService"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.daleygames.fanlab.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="com.daleygames.fanlab.ConfigReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.daleygames.fanlab.CONFIG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

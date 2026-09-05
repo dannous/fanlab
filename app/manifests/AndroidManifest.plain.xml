@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  fanlab-plain: an ordinary, debug-signed APK with no shared user id.
+
+  SELinux domain: untrusted_app. That domain is allowed
+    allow untrusted_app_28_0 sysfs_28_0 (file (getattr open read write))
+  which is what lets it read the thermistor and drive the fan. targetSdkVersion 28 is
+  load-bearing, not cosmetic: plat_seapp_contexts places an app in untrusted_app only
+  when minTargetSdkVersion is 28, and untrusted_app_27 / _25 are read-only on sysfs.
+
+  It cannot set any persist.sys.* property. Nothing in the app pretends otherwise.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.daleygames.fanlab"
+    android:versionCode="1"
+    android:versionName="1.0-plain">
+
+    <uses-sdk
+        android:minSdkVersion="28"
+        android:targetSdkVersion="28" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:banner="@drawable/banner"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name="com.daleygames.fanlab.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.daleygames.fanlab.CurveActivity"
+            android:exported="false"
+            android:label="Fan curve" />
+        <activity
+            android:name="com.daleygames.fanlab.AutoActivity"
+            android:exported="false"
+            android:label="AUTO sweep" />
+        <activity
+            android:name="com.daleygames.fanlab.VerifyActivity"
+            android:exported="false"
+            android:label="VERIFY" />
+        <activity
+            android:name="com.daleygames.fanlab.DiagActivity"
+            android:exported="false"
+            android:label="Diagnostics" />
+        <activity
+            android:name="com.daleygames.fanlab.AdbActivity"
+            android:exported="false"
+            android:label="ADB over network" />
+
+        <service
+            android:name="com.daleygames.fanlab.FanService"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.daleygames.fanlab.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="com.daleygames.fanlab.ConfigReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.daleygames.fanlab.CONFIG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

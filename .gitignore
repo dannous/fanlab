@@ -1,0 +1,28 @@
+# Signing keys are never committed. The system build needs the AOSP platform key;
+# supply your own copy as app/keys/platform.pk8 + platform.x509.pem.
+app/keys/
+*.pk8
+*.keystore
+*.jks
+
+# Build output
+app/build/
+app/out/
+*.apk
+!release/*.apk
+
+# Measurement scratch
+*.tmp
+watch_*.csv
+settle.csv
+
+# JVM crash dumps
+hs_err_pid*.log
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+__pycache__/
+*.pyc
