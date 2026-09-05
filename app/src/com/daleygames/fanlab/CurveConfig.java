@@ -48,6 +48,9 @@ public final class CurveConfig {
 
     public static final String[] PROFILE_NAMES = {"Eco / Super Eco", "Normal", "Presentation"};
 
+    /** Fields the optional guard block adds to the encoded line. */
+    public static final int GUARD_FIELDS = 5;
+
     /** Number of knee points. Fixed so the D-pad editor has a fixed shape. */
     public static final int POINTS = 6;
 
@@ -78,6 +81,46 @@ public final class CurveConfig {
 
     /** Hard ceiling applied after the curve, never above {@link FanIo#MAX_DUTY}. */
     public int maxDuty;
+
+    /**
+     * Is the SoC guard armed? On by default, because with the shipped numbers it cannot
+     * fire in any condition yet measured -- it is a backstop, not a second curve.
+     */
+    public boolean socGuardEnabled;
+
+    /**
+     * SoC die temperature at which the guard starts adding fan, degrees C, read from
+     * thermal_zone0.
+     */
+    public int socGuardStartC;
+
+    /**
+     * Extra duty points per degree above {@link #socGuardStartC}.
+     *
+     * The guard is <b>additive</b>, not an absolute floor, and that is the whole design.
+     * An absolute floor has to climb from the minimum duty back up to whatever the curve
+     * already wanted before it can achieve anything -- a third of its useful range spent
+     * catching up -- and it arrives at the knee as a step, which is exactly the
+     * discontinuity the stock controller parks on. Adding to the curve's own output
+     * instead means the guard contributes nothing at the knee, rises continuously from
+     * there, and spends every point it asks for.
+     */
+    public double socGuardGainPerC;
+
+    /**
+     * Ceiling on the guarded duty. Not the hardware maximum: from duty 40 the fan has
+     * about 7.5 C of total authority over the die and 5.4 C of that is bought by duty 60,
+     * so the last twenty-odd points buy 2 C. Past here it is paying a lot of noise for
+     * very little heat, and the SoC's own throttling is the better tool.
+     */
+    public int socGuardMaxDuty;
+
+    /**
+     * Deadband for the guard's input, degrees C. Wider than {@link #hysteresisC} because
+     * a die sensor is noisier and faster-moving than a thermistor bolted to the chassis;
+     * the same asymmetry applies -- up at once, down only past the band.
+     */
+    public double socGuardHystC;
 
     public CurveConfig() {
         setDefaults();
@@ -145,6 +188,41 @@ public final class CurveConfig {
         // load the machine can produce, with no fan-stall shutdown.
         minDuty = 30;
         maxDuty = 83;
+
+        // --- the SoC guard ---
+        //
+        // The fan is driven by the LED thermistor and cannot see the SoC at all. Switching
+        // UHD processing on moves the SoC die about 11 C while moving the LED thermistor
+        // half a degree, so a load that heats the video pipeline and not the light engine
+        // is invisible to the curve. thermal_zone0 (pll) is the only zone with cooling
+        // devices bound to it, at 75 C; that is where CPU and GPU frequency get throttled.
+        //
+        // Where these numbers come from, measured rather than argued. A 48-minute sweep
+        // with UHD on -- six holds, duty 40 held first and last so load drift would show
+        // as a failure to close, and it closed to within 0.5 C -- gives the die's plant
+        // directly:
+        //
+        //     duty   30     40     50     62     83
+        //     pll    69.0   64.2   61.6   57.8   54.4   C at 24 C ambient
+        //
+        // So from duty 40 the fan can take 6.4 C off the die by duty 62 and 9.8 C by full
+        // speed. The last 21 points buy 3.4 C of that, which is why the ceiling is 62 and
+        // not 83: 62 is already "way too loud" and the authority has largely run out.
+        //
+        // 2.0 duty points per degree. Against the measured authority of 0.26-0.32 C per
+        // duty point through this range that is a loop gain of 0.52-0.64 -- under one, and
+        // confirmed steady in simulation against the measured plant at 24 C and 30 C
+        // ambient across every SoC load, inert to saturated, with zero duty changes.
+        //
+        // 70 C as the knee. The die sits at 64.2 C at the operating point, 10.8 C under
+        // the 75 C trip, and does not reach 70 until roughly a 30-33 C room -- where it
+        // then adds about one duty point. It must stay a backstop; a guard that fires in
+        // ordinary use is just a second curve, and a noisy one.
+        socGuardEnabled = true;
+        socGuardStartC = 70;
+        socGuardGainPerC = 2.0;
+        socGuardMaxDuty = 62;
+        socGuardHystC = 1.5;
     }
 
     /** Map an rgblevel reading onto a profile index, mirroring the stock packed-switch. */
@@ -224,6 +302,60 @@ public final class CurveConfig {
         if (!(slewDownPerSec > 0.0) || slewDownPerSec > 100.0) {
             slewDownPerSec = 1.0;
         }
+        sanitiseGuard();
+    }
+
+    /**
+     * Repair the SoC guard. Held to the same rule as the curve -- ascending knees, legal
+     * duties -- plus one the curve does not need: the guard's duties must be
+     * non-decreasing. A floor that sagged as the die got hotter would be worse than no
+     * floor at all, because it would look like protection while removing it.
+     */
+    private void sanitiseGuard() {
+        if (socGuardStartC < 0) {
+            socGuardStartC = 0;
+        }
+        if (socGuardStartC > 120) {
+            socGuardStartC = 120;
+        }
+        // A negative or absent gain is not "off" -- socGuardEnabled is off. Treat it as a
+        // corrupt value and restore the default rather than silently disarming.
+        if (!(socGuardGainPerC > 0.0) || socGuardGainPerC > 20.0) {
+            socGuardGainPerC = 2.0;
+        }
+        if (socGuardMaxDuty < FanIo.MIN_DUTY) {
+            socGuardMaxDuty = FanIo.MIN_DUTY;
+        }
+        if (socGuardMaxDuty > maxDuty) {
+            socGuardMaxDuty = maxDuty;
+        }
+        if (!(socGuardHystC >= 0.0) || socGuardHystC > 20.0) {
+            socGuardHystC = 1.5;
+        }
+    }
+
+    /**
+     * Extra duty points the guard asks for at a given SoC die temperature, on top of
+     * whatever the curve already wants. Zero below the knee, rising linearly above it.
+     * The caller applies {@link #socGuardMaxDuty}, because the cap is on the resulting
+     * duty and not on the contribution.
+     *
+     * An unreadable sensor returns 0, not a high value. The guard is advisory: it exists
+     * to shave a peak the LED thermistor cannot see, and the machine is no worse off
+     * without it than it was before it existed. Failing a fan to 62 % because a monitoring
+     * zone stopped responding would spend a lot of silence on nothing. The LED-driven
+     * curve, which is the actual safety case, is unaffected either way.
+     */
+    public int socGuardBoost(double socCelsius) {
+        if (!socGuardEnabled || Double.isNaN(socCelsius) || Double.isInfinite(socCelsius)) {
+            return 0;
+        }
+        double over = socCelsius - socGuardStartC;
+        if (over <= 0.0) {
+            return 0;
+        }
+        int boost = (int) Math.round(over * socGuardGainPerC);
+        return boost < 0 ? 0 : boost;
     }
 
     /**
@@ -279,6 +411,14 @@ public final class CurveConfig {
         sb.append(',').append(idleDuty);
         sb.append(',').append(minDuty);
         sb.append(',').append(maxDuty);
+        // Appended after the v1 fields on purpose: decode() accepts a line that is longer
+        // than it needs, so a curve saved before the guard existed still loads, and picks
+        // up the default guard rather than none.
+        sb.append(',').append(socGuardEnabled ? 1 : 0);
+        sb.append(',').append(socGuardStartC);
+        sb.append(',').append(socGuardGainPerC);
+        sb.append(',').append(socGuardMaxDuty);
+        sb.append(',').append(socGuardHystC);
         return sb.toString();
     }
 
@@ -311,7 +451,16 @@ public final class CurveConfig {
             c.slewDownPerSec = Double.parseDouble(f[k++].trim());
             c.idleDuty = Integer.parseInt(f[k++].trim());
             c.minDuty = Integer.parseInt(f[k++].trim());
-            c.maxDuty = Integer.parseInt(f[k].trim());
+            c.maxDuty = Integer.parseInt(f[k++].trim());
+            // The guard block is optional. A short line is a curve from before it existed,
+            // not a corrupt one, and it keeps the defaults set in the constructor.
+            if (f.length >= k + GUARD_FIELDS) {
+                c.socGuardEnabled = Integer.parseInt(f[k++].trim()) != 0;
+                c.socGuardStartC = Integer.parseInt(f[k++].trim());
+                c.socGuardGainPerC = Double.parseDouble(f[k++].trim());
+                c.socGuardMaxDuty = Integer.parseInt(f[k++].trim());
+                c.socGuardHystC = Double.parseDouble(f[k].trim());
+            }
         } catch (RuntimeException e) {
             c.setDefaults();
         }

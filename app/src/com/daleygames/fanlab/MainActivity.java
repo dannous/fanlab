@@ -378,6 +378,22 @@ public class MainActivity extends Activity implements StepRow.Listener {
             sb.append("   ● fan_ctrl write failures: ").append(FanService.writeFailures);
         }
         sb.append("   writes: ").append(FanService.writesDone);
+        // The SoC zones are not on a tile because they do not drive the fan; they are here
+        // because they are the one thing the LED thermistor cannot tell you, and without
+        // them a warm-looking machine and a busy one look identical.
+        if (!Double.isNaN(s.socC[0])) {
+            sb.append("\nSoC  pll ").append(Sample.fmt1(s.socC[0])).append(" C");
+            if (!Double.isNaN(s.socC[1])) {
+                sb.append("   ddr ").append(Sample.fmt1(s.socC[1])).append(" C");
+            }
+            if (!Double.isNaN(s.socC[2])) {
+                sb.append("   sar ").append(Sample.fmt1(s.socC[2])).append(" C");
+            }
+            sb.append("   (throttles at 75)");
+            if (FanService.guardBoost > 0) {
+                sb.append("   ● SoC GUARD +").append(FanService.guardBoost);
+            }
+        }
         if (s.note != null && s.note.length() > 0) {
             sb.append("\n").append(s.note);
         }

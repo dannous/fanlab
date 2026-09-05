@@ -35,6 +35,12 @@ public final class FanCurve {
     /** Temperature currently driving the curve, after hysteresis. NaN until the first sample. */
     private double heldC = Double.NaN;
 
+    /** SoC die temperature driving the guard, after its own hysteresis. NaN if never seen. */
+    private double heldSocC = Double.NaN;
+
+    /** Duty points the guard actually added on the last step; 0 when it did nothing. */
+    private int guardBoost;
+
     /** Commanded duty as an exact value, before rounding. NaN until the first sample. */
     private double output = Double.NaN;
 
@@ -92,6 +98,8 @@ public final class FanCurve {
     /** Forget everything, including the held temperature. */
     public void reset() {
         heldC = Double.NaN;
+        heldSocC = Double.NaN;
+        guardBoost = 0;
         output = Double.NaN;
         lastMs = 0L;
         lastProfile = -1;
@@ -110,6 +118,20 @@ public final class FanCurve {
     }
 
     /**
+     * Duty points the SoC guard added on the most recent step, after its ceiling. Zero
+     * means it changed nothing -- either the die is below the knee, the guard is disarmed,
+     * or the curve was already asking for more than the guard's ceiling.
+     */
+    public int guardBoost() {
+        return guardBoost;
+    }
+
+    /** The SoC temperature driving the guard, after hysteresis; NaN if never sampled. */
+    public double heldSocCelsius() {
+        return heldSocC;
+    }
+
+    /**
      * Advance the controller one step.
      *
      * @param cfg       the curve; must already have been {@link CurveConfig#sanitise}d.
@@ -121,6 +143,29 @@ public final class FanCurve {
      * @return a duty in 1..100 that is safe to write.
      */
     public int step(CurveConfig cfg, int profile, double celsius, boolean engineOn, long nowMs) {
+        return step(cfg, profile, celsius, Double.NaN, engineOn, nowMs);
+    }
+
+    /**
+     * Advance the controller one step, with the SoC guard.
+     *
+     * <h3>Why the guard is a floor and not an input</h3>
+     * The obvious design is to drive the curve from {@code max(LED, SoC - offset)} and be
+     * done. That would be wrong here, because it lets a sensor the safety case does not
+     * rest on <i>lower</i> the fan: a cool SoC reading would be able to argue the duty
+     * down below what the LED thermistor is asking for. Taking the guard as a floor
+     * instead -- {@code max(curve(LED), guard(SoC))} -- makes it strictly additive. It can
+     * raise the fan and can never lower it, so arming it cannot make the machine hotter or
+     * the controller less safe than it was without it, and the worst a wrong guard number
+     * can do is cost noise.
+     *
+     * The floor is slew-limited like everything else: engaging is not a tier change and
+     * does not jump.
+     *
+     * @param socCelsius SoC die temperature (thermal_zone0), or NaN if unreadable.
+     */
+    public int step(CurveConfig cfg, int profile, double celsius, double socCelsius,
+            boolean engineOn, long nowMs) {
         if (cfg == null || Double.isNaN(celsius) || Double.isInfinite(celsius)) {
             // Should be unreachable: the caller gates on Thermistor.plausible. Fail high.
             return FanIo.FAIL_SAFE_DUTY;
@@ -133,8 +178,49 @@ public final class FanCurve {
             heldC = celsius;                                  // fall: only past the deadband
         }
 
+        // ---- stage 1b: hysteresis on the guard's input ----
+        // Same asymmetry as the curve's: a rising die is acted on at once, a falling one
+        // only once it has fallen clear of the band. Letting the floor drop as eagerly as
+        // it rose is what would turn it into a cycle.
+        if (!Double.isNaN(socCelsius) && !Double.isInfinite(socCelsius)) {
+            if (Double.isNaN(heldSocC) || socCelsius >= heldSocC) {
+                heldSocC = socCelsius;
+            } else if (socCelsius <= heldSocC - cfg.socGuardHystC) {
+                heldSocC = socCelsius;
+            }
+        } else {
+            // Nothing to go on this tick. Forget rather than hold: a stale value could
+            // keep the fan up indefinitely on a sensor that has stopped reporting.
+            heldSocC = Double.NaN;
+        }
+
         // ---- stage 2: the curve ----
         int target = engineOn ? cfg.dutyAt(profile, heldC) : cfg.idleDuty;
+
+        // ---- stage 2b: the guard ----
+        // Additive, and applied only while the light engine is on: with it off the machine
+        // is idling at duty 10 by design, and a warm die on the way down from a session is
+        // not a reason to spin the fan back up.
+        //
+        // The boost is capped at socGuardMaxDuty rather than at maxDuty, and it can only
+        // ever raise the result -- a curve already above the guard's ceiling is left where
+        // it is, because the curve is the safety case and the guard is not entitled to
+        // argue it down.
+        guardBoost = 0;
+        if (engineOn) {
+            int boost = cfg.socGuardBoost(heldSocC);
+            if (boost > 0) {
+                int raised = target + boost;
+                if (raised > cfg.socGuardMaxDuty) {
+                    raised = cfg.socGuardMaxDuty;
+                }
+                if (raised > target) {
+                    guardBoost = raised - target;
+                    target = raised;
+                }
+            }
+        }
+
         if (target < FanIo.MIN_DUTY) {
             target = FanIo.MIN_DUTY;
         }

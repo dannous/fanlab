@@ -160,7 +160,7 @@ both manifests). The curve is thirty numbers; entering it on a D-pad once per tu
 iteration is how a typo gets into the one table that must not have one.
 
 ```bash
-adb shell am broadcast -n com.daleygames.fanlab/.ConfigReceiver \
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
     -a com.daleygames.fanlab.CONFIG \
     --es curve "v1,42,48,52,55,58,62,30,32,42,56,70,83,34,36,44,56,70,83,38,40,46,56,70,83,0.5,0.25,0.12,10,35,83" \
     --ei mode 2
@@ -178,11 +178,18 @@ Reading state changes nothing, so it is also the quickest way to see what the pr
 currently believes:
 
 ```bash
-adb shell am broadcast -n com.daleygames.fanlab/.ConfigReceiver -a com.daleygames.fanlab.CONFIG
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
 ```
 
 It is also the quickest way to confirm that what is stored matches what was intended,
 which matters because a curve is thirty numbers and a typo in one of them is invisible.
+
+**Use the full component name.** The system build's package is
+`com.daleygames.fanlab.system`, not `com.daleygames.fanlab` -- the two builds have to be
+installable side by side. `am broadcast` does not validate the component, so a broadcast
+addressed to the wrong one reports `Broadcast completed: result=0` and silently does
+nothing. If a setting appears not to take, check the component before you check the code:
+a successful-looking broadcast that changed nothing is the failure mode.
 
 ## 5. Brightness mode can be switched from a shell
 

@@ -90,6 +90,7 @@ public final class FanLabTest {
         testEngineOffAndTierChange();
         testFailSafe();
         testConfigRoundTrip();
+        testSocGuard();
         testCsvLogger();
         testClosedLoopVsStock();
 
@@ -766,6 +767,150 @@ public final class FanLabTest {
         String corrupt = a.encode().replace("v1,", "v1,x");
         check(FanIo.valid(CurveConfig.decode(corrupt).dutyAt(CurveConfig.PROFILE_HIGH, 50)),
                 "a corrupt config still yields a writable duty");
+
+        // the guard block is appended after the v1 fields and must survive a round trip
+        a.socGuardStartC = 66;
+        a.socGuardGainPerC = 3.0;
+        a.socGuardMaxDuty = 71;
+        a.socGuardHystC = 2.0;
+        a.socGuardEnabled = false;
+        CurveConfig g = CurveConfig.decode(a.encode());
+        check(a.encode().equals(g.encode()), "the guard round trips");
+        eq(g.socGuardStartC, 66, "an edited guard knee survives");
+        eq(g.socGuardMaxDuty, 71, "an edited guard ceiling survives");
+        check(!g.socGuardEnabled, "the guard's disabled state survives");
+
+        // a curve saved before the guard existed is short, not corrupt
+        CurveConfig fresh = new CurveConfig();
+        String[] parts = fresh.encode().split(",");
+        StringBuilder legacy = new StringBuilder(parts[0]);
+        int v1Fields = CurveConfig.POINTS + CurveConfig.PROFILES * CurveConfig.POINTS + 6;
+        for (int i = 1; i <= v1Fields; i++) {
+            legacy.append(',').append(parts[i]);
+        }
+        CurveConfig old1 = CurveConfig.decode(legacy.toString());
+        eq(old1.socGuardStartC, fresh.socGuardStartC,
+                "a pre-guard curve loads and picks up the default guard");
+        eq(old1.duty[CurveConfig.PROFILE_HIGH][3], fresh.duty[CurveConfig.PROFILE_HIGH][3],
+                "and its own duties are not disturbed");
+    }
+
+    // ----------------------------------------------------------------- soc guard
+
+    private static void testSocGuard() {
+        section("soc guard: additive, continuous, and unable to lower the fan");
+        CurveConfig c = new CurveConfig();
+
+        // inert everywhere the machine has ever actually been seen
+        eq(c.socGuardBoost(64.5), 0, "the hottest SoC yet observed asks for nothing");
+        eq(c.socGuardBoost(70.0), 0, "nor does the knee itself");
+        eq(c.socGuardBoost(Double.NaN), 0, "an unreadable zone asks for nothing");
+        eq(c.socGuardBoost(Double.POSITIVE_INFINITY), 0, "nor does a nonsense one");
+        eq(c.socGuardBoost(-40.0), 0, "nor does a wildly cold one");
+
+        // continuous at the knee: no step for the machine to park on, which is the
+        // whole failure mode of the stock ladder
+        eq(c.socGuardBoost(70.4), 1, "it starts from nothing and rises a point at a time");
+        check(c.socGuardBoost(70.0) == 0 && c.socGuardBoost(70.6) <= 2,
+                "there is no jump at the knee");
+
+        int prev = -1;
+        for (double t = 60.0; t <= 110.0; t += 0.25) {
+            int b = c.socGuardBoost(t);
+            check(b >= prev, "the boost never sags as the die gets hotter (" + t + ")");
+            check(b >= 0, "and is never negative");
+            prev = b;
+        }
+
+        // disarming it silences it completely
+        CurveConfig off = new CurveConfig();
+        off.socGuardEnabled = false;
+        eq(off.socGuardBoost(95.0), 0, "a disarmed guard asks for nothing at any temperature");
+
+        // --- the property that makes arming it safe ---
+        FanCurve plain = new FanCurve();
+        FanCurve guarded = new FanCurve();
+        long t0 = 0;
+        for (double soc = 30.0; soc <= 100.0; soc += 5.0) {
+            plain.reset();
+            guarded.reset();
+            for (double led = 30.0; led <= 70.0; led += 2.0) {
+                long now = (t0 += 1000);
+                int a1 = plain.step(c, CurveConfig.PROFILE_HIGH, led, Double.NaN, true, now);
+                int b1 = guarded.step(c, CurveConfig.PROFILE_HIGH, led, soc, true, now);
+                check(b1 >= a1, "the guard can raise the fan and never lower it (LED "
+                        + led + ", SoC " + soc + ": " + a1 + " -> " + b1 + ")");
+                check(FanIo.valid(b1), "and always asks for a writable duty");
+            }
+        }
+
+        // the ceiling binds on the result, not on the contribution
+        FanCurve cap = new FanCurve();
+        int settled = 0;
+        for (long t = 1; t <= 4000; t++) {
+            settled = cap.step(c, CurveConfig.PROFILE_HIGH, 45.0, 110.0, true, t * 1000L);
+        }
+        eq(settled, c.socGuardMaxDuty, "a runaway die pins the fan at the guard's ceiling");
+        check(c.socGuardMaxDuty < c.maxDuty,
+                "which is below the hardware maximum, where the authority has run out");
+
+        // a curve already above the guard's ceiling is left alone -- the curve is the
+        // safety case and the guard is not entitled to argue it down
+        FanCurve hotLed = new FanCurve();
+        int hi = 0;
+        for (long t = 1; t <= 4000; t++) {
+            hi = hotLed.step(c, CurveConfig.PROFILE_HIGH, 70.0, 110.0, true, t * 1000L);
+        }
+        check(hi > c.socGuardMaxDuty,
+                "a hot LED still commands more than the guard's ceiling (" + hi + ")");
+
+        // it must not fight the light-engine-off idle
+        FanCurve idle = new FanCurve();
+        eq(idle.step(c, CurveConfig.PROFILE_HIGH, 40.0, 95.0, false, 1000), c.idleDuty,
+                "a hot die does not spin the fan up with the engine off");
+
+        // a sensor that stops reporting releases the boost rather than latching it
+        FanCurve drop = new FanCurve();
+        drop.step(c, CurveConfig.PROFILE_HIGH, 45.0, 95.0, true, 1000);
+        check(drop.guardBoost() > 0, "a hot die engages the guard");
+        drop.step(c, CurveConfig.PROFILE_HIGH, 45.0, Double.NaN, true, 2000);
+        eq(drop.guardBoost(), 0, "and an unreadable zone releases it rather than latching");
+
+        // the guard's input is damped in the same asymmetric way as the curve's
+        FanCurve h = new FanCurve();
+        h.step(c, CurveConfig.PROFILE_HIGH, 45.0, 80.0, true, 1000);
+        int hot = h.guardBoost();
+        check(hot > 0, "the guard engages at 80 C");
+        h.step(c, CurveConfig.PROFILE_HIGH, 45.0, 79.2, true, 2000);
+        eq(h.guardBoost(), hot, "a fall inside the deadband does not move it");
+        h.step(c, CurveConfig.PROFILE_HIGH, 45.0, 78.0, true, 3000);
+        check(h.guardBoost() < hot, "a fall past it does");
+        h.step(c, CurveConfig.PROFILE_HIGH, 45.0, 79.0, true, 4000);
+        check(h.guardBoost() > 0, "and a rise is acted on at once");
+
+        // engaging is slew-limited: it is a temperature change like any other, and the
+        // whole point of the project is that the listener does not hear those
+        FanCurve slew = new FanCurve();
+        int before = 0;
+        for (long t = 1; t <= 600; t++) {
+            before = slew.step(c, CurveConfig.PROFILE_HIGH, 45.0, 60.0, true, t * 1000L);
+        }
+        int after = slew.step(c, CurveConfig.PROFILE_HIGH, 45.0, 95.0, true, 601000L);
+        check(after - before <= 1,
+                "the guard cannot step the fan; it slews like everything else (" + before
+                        + " -> " + after + ")");
+
+        // repair
+        CurveConfig bad = new CurveConfig();
+        bad.socGuardStartC = -10;
+        bad.socGuardGainPerC = -1;
+        bad.socGuardMaxDuty = 99;
+        bad.socGuardHystC = -3;
+        bad.sanitise();
+        check(bad.socGuardStartC >= 0, "a negative guard knee is repaired");
+        check(bad.socGuardGainPerC > 0, "a negative gain is restored, not treated as off");
+        check(bad.socGuardMaxDuty <= bad.maxDuty, "the guard ceiling cannot exceed the curve's");
+        check(bad.socGuardHystC > 0, "a nonsense deadband is replaced");
     }
 
     // ----------------------------------------------------------------- csv

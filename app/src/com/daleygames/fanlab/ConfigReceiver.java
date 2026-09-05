@@ -37,6 +37,11 @@ import android.util.Log;
  *   <tr><td>{@code --ei logevery <n>}</td><td>seconds between routine rows (events are
  *       always logged); 10 by default, 1 while investigating</td></tr>
  *   <tr><td>{@code --ez reset <b>}</td><td>restore the built-in default curve</td></tr>
+ *   <tr><td>{@code --ez socguard <b>}</td><td>arm or disarm the SoC guard</td></tr>
+ *   <tr><td>{@code --ei socstart <n>}</td><td>die temperature it starts adding fan at</td></tr>
+ *   <tr><td>{@code --ef socgain <f>}</td><td>extra duty points per degree above that</td></tr>
+ *   <tr><td>{@code --ei socmax <n>}</td><td>ceiling on the guarded duty</td></tr>
+ *   <tr><td>{@code --ef sochyst <f>}</td><td>deadband on the guard's input</td></tr>
  * </table>
  *
  * <h3>Safety</h3>
@@ -90,6 +95,34 @@ public class ConfigReceiver extends BroadcastReceiver {
             boolean exact = cfg.encode().equals(s);
             did.append(exact ? " curve" : " curve(REPAIRED)");
         }
+        // The guard's four numbers, individually settable, because tuning it means moving
+        // one of them at a time and re-encoding the whole curve to change a knee is how
+        // typos get into a safety table.
+        if (intent.hasExtra("socguard")) {
+            CurveConfig cfg = Prefs.curve(context);
+            cfg.socGuardEnabled = intent.getBooleanExtra("socguard", true);
+            Prefs.setCurve(context, cfg);
+            did.append(" socguard");
+        }
+        if (intent.hasExtra("socstart") || intent.hasExtra("socgain")
+                || intent.hasExtra("socmax") || intent.hasExtra("sochyst")) {
+            CurveConfig cfg = Prefs.curve(context);
+            if (intent.hasExtra("socstart")) {
+                cfg.socGuardStartC = intent.getIntExtra("socstart", cfg.socGuardStartC);
+            }
+            if (intent.hasExtra("socgain")) {
+                cfg.socGuardGainPerC = intent.getFloatExtra("socgain",
+                        (float) cfg.socGuardGainPerC);
+            }
+            if (intent.hasExtra("socmax")) {
+                cfg.socGuardMaxDuty = intent.getIntExtra("socmax", cfg.socGuardMaxDuty);
+            }
+            if (intent.hasExtra("sochyst")) {
+                cfg.socGuardHystC = intent.getFloatExtra("sochyst", (float) cfg.socGuardHystC);
+            }
+            Prefs.setCurve(context, cfg);
+            did.append(" socguard-tune");
+        }
         if (intent.hasExtra("manual")) {
             Prefs.setManualDuty(context, intent.getIntExtra("manual", FanIo.KERNEL_DEFAULT_DUTY));
             did.append(" manual");
@@ -131,6 +164,9 @@ public class ConfigReceiver extends BroadcastReceiver {
     private String state(Context context) {
         CurveConfig c = Prefs.curve(context);
         return "mode=" + Mode.name(Prefs.mode(context))
+                + " socguard=" + (c.socGuardEnabled
+                        ? c.socGuardStartC + "C+" + c.socGuardGainPerC + "/C<=" + c.socGuardMaxDuty
+                        : "off")
                 + " manual=" + Prefs.manualDuty(context)
                 + " autostart=" + Prefs.autostart(context)
                 + " reassert=" + Prefs.reassert(context)

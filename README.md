@@ -42,7 +42,10 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 552**, run on the host as part of every build.
+- **Test count: 1613**, run on the host as part of every build.
+- **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
+  fan only above 70 °C on the die and can never subtract any. See
+  [The SoC guard](#the-soc-guard).
 - **Fail-safe high.** Every error path writes 83 %, never a low value.
 - **Automatic handback.** The app owns the switch that disables the stock controller and
   re-arms it whenever it stops driving, so the projector cannot be left unmanaged.
@@ -82,6 +85,113 @@ To undo it: open FanLab and press **RESTORE STOCK FAN CONTROL**, or uninstall fr
 Settings — but read [docs/safety.md](docs/safety.md) first, because the order matters.
 
 There is also an adb route for development, in [docs/deploy.md](docs/deploy.md).
+
+## The SoC guard
+
+The fan is driven by one sensor: a thermistor on the LED assembly. That is what the stock
+firmware uses and it is what this curve uses, and it has a blind spot. Switching UHD
+processing on moves the SoC die about **11 °C** and moves the LED thermistor **half a
+degree** — the video pipeline and the light engine are different heat sources, and only
+one of them is measured. A load that heats the processor is, to the fan, invisible.
+
+`thermal_zone0` (pll) is the only SoC zone with cooling devices bound to it. They are
+bound at **75 °C**, and what they do there is drop CPU and GPU frequency. So the cost of
+that blind spot is dropped frames, not damaged hardware — the SoC protects itself
+regardless of what the fan does.
+
+### What the fan can actually do about it
+
+Worth establishing before designing anything, and worth measuring rather than inferring.
+A 48-minute sweep with UHD processing **on**, Presentation, six holds at duty
+40 → 50 → 62 → 83 → 30 → 40. Duty 40 is held first *and* last, so if the SoC load had
+drifted during the run the two would disagree; they closed to within 0.5 °C on every
+channel. Each hold is fitted to an exponential rather than averaged, because a hold that
+has not settled has an end value that is simply wrong.
+
+| duty | LED | **pll** | ddr | sar |
+|---:|---:|---:|---:|---:|
+| 30 | 57.7 | **69.0** | 72.6 | 64.0 |
+| 40 | 52.4 | **64.2** | 67.3 | 59.2 |
+| 50 | 49.2 | **61.6** | 64.8 | 56.5 |
+| 62 | 46.3 | **57.8** | 61.0 | 52.9 |
+| 83 | 43.7 | **54.4** | 57.5 | 49.7 |
+
+Across duty 30 → 83 the die swings **14.6 °C** against the LED thermistor's 14.0. The fan
+has at least as much grip on the processor as on the sensor that commands it — the die is
+not thermally isolated from the airflow, it simply is not measured.
+
+From duty 40, where the machine actually sits at 24 °C:
+
+| to duty | 50 | 62 | 83 |
+|---|---:|---:|---:|
+| °C off the die | 2.6 | **6.4** | 9.8 |
+
+Where it spends that authority is lopsided. Per duty point the die moves 0.48 °C at the
+bottom of the range, 0.26–0.32 through the middle, and 0.16 above duty 62. That last
+figure is why the guard stops at 62: the remaining 21 points to full speed buy 3.4 °C, and
+62 is already "way too loud".
+
+### The design
+
+```
+duty = min(socGuardMaxDuty, curve(LED) + gain × (pll − 70))      when pll > 70
+duty = curve(LED)                                                otherwise
+```
+
+Three properties, each load-bearing:
+
+- **Additive, not a floor.** An absolute floor has to climb from the minimum duty back up
+  to whatever the curve already wanted before it achieves anything, and it arrives at its
+  knee as a step — the same discontinuity the stock ladder parks on. Adding to the curve's
+  own output contributes nothing at the knee, rises continuously from there, and spends
+  every point it asks for.
+- **It can only raise the fan.** The obvious design drives the curve from
+  `max(LED, SoC − offset)`, which lets a cool die argue the duty *down* below what the LED
+  thermistor is asking for. Making the guard strictly additive means arming it cannot make
+  the machine hotter or the controller less safe, and the worst a wrong guard number can do
+  is cost noise.
+- **It is inert in normal use.** At the operating point the die sits at 64.2 °C — 10.8 °C
+  under its trip — and the knee is at 70. Working the measured plant forward, the die does
+  not reach the knee until roughly a **30–33 °C room**, and at 33 °C the guard adds about
+  one duty point. A guard that fires in ordinary conditions is not a guard, it is a second
+  curve, and a noisy one.
+
+Defaults: knee **70 °C**, gain **2.0** duty points per degree, ceiling **62**, deadband
+**1.5 °C** (wider than the curve's 0.8, because a die sensor is noisier and faster-moving
+than a thermistor bolted to the chassis). Engaging is slew-limited like everything else.
+
+### Does it hunt?
+
+Adding a second sensor to a loop tuned never to move is the obvious way to reintroduce the
+oscillation this project exists to remove, so it gets a test rather than an argument.
+`tools/CurveSim.java` runs the shipping controller against the measured two-pole plant.
+The die has its own measured rise table and its own lag rather than being modelled as the
+LED trace plus a constant — the two sensors have similar gain but not identical dynamics,
+and a stability test that cannot see a phase difference between the two loops is not
+testing the thing that would oscillate. Sweeping the unseen SoC load from inert through
+part-engaged to saturated, at 24 °C and 30 °C ambient: **zero duty changes in the last 50
+minutes of every run.** The model also reproduces the hardware, predicting 64.4 °C on the
+die at duty 39 where the sweep measured 64.2.
+
+Loop gain, with the measured authority: 2.0 duty/°C × 0.26–0.32 °C/duty = **0.52–0.64**.
+
+Measured on hardware by moving the knee below the current die temperature: the guard
+engaged at `+10@65.0`, duty went 40 → 47, the die fell to 63.0, the boost shrank as it
+cooled, duty eased back to 46, and moving the knee back released it cleanly.
+
+### What it does not do
+
+It buys 0.5–5 °C, depending on how far past the knee the die has gone. In simulation
+against the measured plant that moves the onset of throttling by about 2 °C of unseen SoC
+load at 24 °C ambient, and rather more at 30 °C where the curve has already raised the fan
+on its own. It does **not** prevent throttling on a machine that is genuinely overloaded:
+the fan has 9.8 °C of total authority from the operating point and the guard deliberately
+spends only two-thirds of it. It shaves the peak. The SoC's own throttling remains the
+actual protection, exactly as it was before this existed — and throttling costs frames,
+not hardware.
+
+Disarm it with `--ez socguard false`, or tune it with `--ei socstart`, `--ef socgain`,
+`--ei socmax`, `--ef sochyst`.
 
 ## Telemetry
 

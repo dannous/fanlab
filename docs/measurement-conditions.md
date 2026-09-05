@@ -76,8 +76,39 @@ Three things keep the rest in proportion:
    of 40, so the 11 °C of margin to the throttle point is smaller than it would otherwise
    be, and nothing in the control loop is watching it.
 
-**The measurement that would settle it** — untaken — is to hold the fan at, say, 40 and
-then 70 with UHD on and the same content, and see how far the SoC zones move. That gives
-the fan's actual authority over SoC temperature. If it is small, this is a non-issue; if it
-is large, a future curve could take `max(LED, ddr − offset)` as its input instead, which
-`FanService` already reads and logs.
+## The measurement that settled it
+
+Taken. Six holds with UHD **on**, Presentation, duty 40 → 50 → 62 → 83 → 30 → 40, eight
+minutes each. Duty 40 appears first and last so that a change in SoC load over the run
+would show up as the two disagreeing; they closed to within 0.5 °C on every channel, so
+the load held and the run is usable. Every hold is fitted to an exponential rather than
+averaged — an unsettled hold has an end value that is simply wrong, and the trace alone
+does not say which it is.
+
+| duty | LED | **pll** | ddr | sar |
+|---:|---:|---:|---:|---:|
+| 30 | 57.7 | **69.0** | 72.6 | 64.0 |
+| 40 | 52.4 | **64.2** | 67.3 | 59.2 |
+| 50 | 49.2 | **61.6** | 64.8 | 56.5 |
+| 62 | 46.3 | **57.8** | 61.0 | 52.9 |
+| 83 | 43.7 | **54.4** | 57.5 | 49.7 |
+
+**The authority is large, not small.** Over duty 30 → 83 the die moves **14.6 °C** against
+the LED thermistor's 14.0 — the fan has at least as much grip on the processor as on the
+sensor that commands it. The die is not thermally isolated from the airflow; it is simply
+not measured. From the operating point at duty 40 the fan can take 6.4 °C off it by duty
+62 and 9.8 °C at full speed.
+
+This corrects an earlier estimate of 7.5 °C, which came from transferring the LED plant
+across on the strength of a ratio observed in drifting holds taken with UHD off. The ratio
+argument turned out to be sound — the two sensors do move together, within a few
+hundredths of a degree per duty point — but the magnitudes it was applied to were too
+pessimistic at the top of the range.
+
+### What was done about it
+
+Not the `max(LED, ddr − offset)` input suggested above: an input can *lower* the duty as
+well as raise it, which would let a monitoring sensor argue down the one the safety case
+rests on. Instead an additive guard, described in the README, that can only ever raise the
+fan and contributes nothing below 70 °C on the die — 5.8 °C above where the die actually
+sits.

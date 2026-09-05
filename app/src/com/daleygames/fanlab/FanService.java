@@ -102,6 +102,12 @@ public class FanService extends Service {
     private int lastWritten = -1;
     /** Whether the previous tick was driving, so a transition to OFF can be caught. */
     private boolean wasDriving;
+
+    /** Was the SoC guard the binding constraint last tick? Edge-triggers the log note. */
+    private boolean guardWasBiting;
+
+    /** Duty points the SoC guard is currently adding, for the screen. 0 when inert. */
+    public static volatile int guardBoost;
     /** Latched once the service is being torn down; stops the tick re-taking the node. */
     private volatile boolean stopped;
     private int badReads;
@@ -670,9 +676,22 @@ public class FanService extends Service {
                 // engine is running is the conservative assumption.
                 boolean engineOn = s.ledStatus != 0;
                 CurveConfig cfg = Prefs.curve(this);
-                desired = curve.step(cfg, s.profile, s.degC, engineOn, mono);
+                // socC[0] is thermal_zone0 (pll) -- the only SoC zone with cooling devices
+                // bound to it, so the only one whose temperature has a consequence.
+                desired = curve.step(cfg, s.profile, s.degC, s.socC[0], engineOn, mono);
                 if (!engineOn) {
                     append(note, "engine-off");
+                }
+                // Log the guard only on the edge where it starts or stops being the
+                // binding constraint. Logging it every tick while it holds would bypass
+                // the heartbeat decimation and fill the file.
+                guardBoost = curve.guardBoost();
+                boolean biting = guardBoost > 0;
+                if (biting != guardWasBiting) {
+                    append(note, biting
+                            ? "socguard +" + curve.guardBoost() + "@" + Sample.fmt1(s.socC[0])
+                            : "socguard released");
+                    guardWasBiting = biting;
                 }
             }
         } else {
