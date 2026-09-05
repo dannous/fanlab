@@ -44,6 +44,36 @@ public final class Sample {
      */
     public double[] socC = {Double.NaN, Double.NaN, Double.NaN};
 
+    /**
+     * Cooling-device states, in {@link Sysfs#COOLING_DEVICES} order; -1 if unreadable.
+     * Any value above zero means the governor is throttling, now.
+     */
+    public int[] throttle = {-1, -1, -1, -1};
+
+    /** Is the thermal governor actively throttling anything? */
+    public boolean throttling() {
+        for (int i = 0; i < throttle.length; i++) {
+            if (throttle[i] > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The states as a log note, e.g. {@code cpufreq=2 gpufreq=1}; empty when idle. */
+    public String throttleNote() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < throttle.length && i < Sysfs.COOLING_NAMES.length; i++) {
+            if (throttle[i] > 0) {
+                if (sb.length() > 0) {
+                    sb.append(' ');
+                }
+                sb.append(Sysfs.COOLING_NAMES[i]).append('=').append(throttle[i]);
+            }
+        }
+        return sb.toString();
+    }
+
     public String toCsv() {
         StringBuilder sb = new StringBuilder(140);
         sb.append(epochMs).append(',');
@@ -63,6 +93,9 @@ public final class Sample {
         sb.append(CsvLogger.q(note));
         for (int i = 0; i < socC.length; i++) {
             sb.append(',').append(Double.isNaN(socC[i]) ? "" : fmt1(socC[i]));
+        }
+        for (int i = 0; i < throttle.length; i++) {
+            sb.append(',').append(throttle[i] < 0 ? "" : Integer.toString(throttle[i]));
         }
         return sb.toString();
     }

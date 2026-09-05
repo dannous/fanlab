@@ -108,6 +108,23 @@ public class FanService extends Service {
 
     /** Duty points the SoC guard is currently adding, for the screen. 0 when inert. */
     public static volatile int guardBoost;
+
+    /** Is the thermal governor throttling right now? For the screen. */
+    public static volatile boolean throttling;
+
+    /**
+     * Seconds spent throttled since the service started.
+     *
+     * The fan cannot prevent throttling outright: it has about 9.8 C of authority over the
+     * die from the operating point and the guard deliberately spends only two thirds of
+     * that, because the rest costs more noise than it is worth. So the question a log has
+     * to be able to answer is not whether throttling could happen but whether it did, and
+     * for how long. Nothing else in the system records that.
+     */
+    public static volatile long throttledSec;
+
+    /** Was it throttling last tick? Edge-triggers the log note. */
+    private boolean wasThrottling;
     /** Latched once the service is being torn down; stops the tick re-taking the node. */
     private volatile boolean stopped;
     private int badReads;
@@ -537,6 +554,9 @@ public class FanService extends Service {
             s.socC[i] = (milli == Integer.MIN_VALUE || milli < -40000 || milli > 150000)
                     ? Double.NaN : milli / 1000.0;
         }
+        for (int i = 0; i < Sysfs.COOLING_DEVICES.length && i < s.throttle.length; i++) {
+            s.throttle[i] = Sysfs.readInt(Sysfs.COOLING_DEVICES[i], -1);
+        }
         s.rgblevel = Sysfs.readInt(Sysfs.RGBLEVEL, -1);
         s.ledStatus = Sysfs.readInt(Sysfs.LED_STATUS, -1);
         s.profile = CurveConfig.profileForLevel(s.rgblevel);
@@ -703,6 +723,20 @@ public class FanService extends Service {
         // duty simply stops being updated and the fan stays wherever the curve last put
         // it (30, or idleDuty 10), with the stock ladder only writing when the rounded
         // temperature next changes, which at equilibrium is exactly when it does not.
+        // Sampled in every mode, including OFF and MANUAL. A record that only exists
+        // while the curve is driving cannot answer the one comparison worth making --
+        // whether this curve throttles the machine more often than the stock ladder did.
+        throttling = s.throttling();
+        if (throttling) {
+            throttledSec++;
+        }
+        if (throttling != wasThrottling) {
+            append(note, throttling
+                    ? "THROTTLING " + s.throttleNote() + " pll=" + Sample.fmt1(s.socC[0])
+                    : "throttling cleared after " + throttledSec + "s");
+            wasThrottling = throttling;
+        }
+
         boolean drivingNow = Mode.writes(mode) || sessionRunning;
         if (wasDriving && !drivingNow && desired <= 0) {
             desired = FanIo.FAIL_SAFE_DUTY;
@@ -786,6 +820,7 @@ public class FanService extends Service {
                 boolean interesting = s.wrote > 0
                         || failSafeLatched
                         || sessionRunning
+                        || throttling
                         || (s.note != null && s.note.length() > 0);
                 if (interesting || ticks % Prefs.logEverySec(this) == 0) {
                     csv.append(s.toCsv());

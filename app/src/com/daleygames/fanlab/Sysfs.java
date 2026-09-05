@@ -49,6 +49,27 @@ public final class Sysfs {
             "/sys/class/thermal/thermal_zone2/temp",   // sar  -- monitor only
     };
 
+    /**
+     * The thermal governor's cooling devices, in the order of {@link #COOLING_NAMES}.
+     * {@code cur_state} is 0 when the device is doing nothing and counts up towards its
+     * {@code max_state} (11, 4, 5 and 2 respectively) as the governor throttles harder.
+     *
+     * All four are bound to {@code pll_thermal} trip 1, at 75 C, and to nothing else. So a
+     * non-zero reading here is not an inference from temperature -- it is the governor
+     * saying it is actively reducing CPU or GPU frequency right now. That is worth reading
+     * directly, because the fan's own sensors cannot distinguish a machine that is merely
+     * warm from one that is dropping frames.
+     */
+    public static final String[] COOLING_DEVICES = {
+            "/sys/class/thermal/cooling_device0/cur_state",   // thermal-cpufreq-0
+            "/sys/class/thermal/cooling_device1/cur_state",   // thermal-cpucore-0
+            "/sys/class/thermal/cooling_device2/cur_state",   // thermal-gpufreq-0
+            "/sys/class/thermal/cooling_device3/cur_state",   // thermal-gpucore-0
+    };
+
+    /** Short names for {@link #COOLING_DEVICES}, for log notes and the screen. */
+    public static final String[] COOLING_NAMES = {"cpufreq", "cpucore", "gpufreq", "gpucore"};
+
     /** Read-only diagnostics targets. Not all of these are guaranteed to exist. */
     public static final String[] DLPC_NODES = {
             "/sys/class/dlpc343x/rgblevel",

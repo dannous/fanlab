@@ -24,7 +24,8 @@ public final class CsvLogger {
 
     public static final String HEADER =
             "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
-                    + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c";
+                    + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c"
+                    + ",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore";
 
     private static final class Target {
         final File file;

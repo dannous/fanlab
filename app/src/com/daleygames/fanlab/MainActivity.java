@@ -394,6 +394,11 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 sb.append("   ● SoC GUARD +").append(FanService.guardBoost);
             }
         }
+        if (FanService.throttling) {
+            sb.append("   ● THROTTLING ").append(s.throttleNote());
+        } else if (FanService.throttledSec > 0) {
+            sb.append("   throttled ").append(FanService.throttledSec).append("s so far");
+        }
         if (s.note != null && s.note.length() > 0) {
             sb.append("\n").append(s.note);
         }

@@ -1000,8 +1000,27 @@ public final class FanLabTest {
             eq(countLines(read(new File(c, "t.csv"))), 3,
                     "an unchanged header appends as before");
 
-            check(CsvLogger.HEADER.endsWith(",soc_pll_c,soc_ddr_c,soc_sar_c"),
+            check(CsvLogger.HEADER.contains(",soc_pll_c,soc_ddr_c,soc_sar_c"),
                     "the SoC zones are logged");
+            check(CsvLogger.HEADER.endsWith(",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore"),
+                    "and so is what the thermal governor is doing about them");
+
+            // a row must have exactly as many fields as the header promises, or every
+            // downstream parser silently reads the wrong column
+            Sample blank = new Sample();
+            eq(blank.toCsv().split(",", -1).length, CsvLogger.HEADER.split(",", -1).length,
+                    "an empty sample still fills every column");
+            check(blank.toCsv().endsWith(",,,,"),
+                    "unread cooling devices are blank, not zero -- 0 means 'not throttling'");
+            check(!blank.throttling(), "and an unread device does not read as throttling");
+
+            Sample hot = new Sample();
+            hot.throttle = new int[]{2, 0, 1, 0};
+            check(hot.throttling(), "any non-zero cooling state is throttling");
+            check(hot.throttleNote().equals("cpufreq=2 gpufreq=1"),
+                    "and the note names which, got '" + hot.throttleNote() + "'");
+            eq(hot.toCsv().split(",", -1).length, CsvLogger.HEADER.split(",", -1).length,
+                    "a populated sample fills every column too");
 
             check(CsvLogger.q("a,b").equals("\"a,b\""), "commas are quoted");
             check(CsvLogger.q("a\"b").equals("\"a\"\"b\""), "quotes are doubled");

@@ -42,7 +42,7 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 1613**, run on the host as part of every build.
+- **Test count: 1620**, run on the host as part of every build.
 - **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
   fan only above 70 °C on the die and can never subtract any. See
   [The SoC guard](#the-soc-guard).
@@ -190,8 +190,24 @@ spends only two-thirds of it. It shaves the peak. The SoC's own throttling remai
 actual protection, exactly as it was before this existed — and throttling costs frames,
 not hardware.
 
-Disarm it with `--ez socguard false`, or tune it with `--ei socstart`, `--ef socgain`,
-`--ei socmax`, `--ef sochyst`.
+### Knowing when it happens anyway
+
+Since the fan cannot rule throttling out, the app records it rather than guessing. All four
+cooling devices are read every second and logged, the screen shows `● THROTTLING cpufreq=2`
+while it is happening and a running total afterwards, and the CSV carries a note on each
+edge:
+
+```
+THROTTLING cpufreq=2 gpufreq=1 pll=76.3
+throttling cleared after 41s
+```
+
+So the question the logs can answer is not "could the machine throttle" but "did it, when,
+for how long, and what was the fan doing at the time". Nothing in the stock firmware
+records that.
+
+Disarm the guard with `--ez socguard false`, or tune it with `--ei socstart`, `--ef
+socgain`, `--ei socmax`, `--ef sochyst`.
 
 ## Telemetry
 
@@ -214,7 +230,8 @@ heartbeat interval is.
 
 ```
 epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,
-profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c
+profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c,
+thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore
 ```
 
 `adc` is the raw 12-bit thermistor count and `degC` is that count through the
@@ -228,6 +245,14 @@ cannot see them**: it is driven by the LED thermistor alone, so a load that heat
 and not the light engine — switching UHD processing on moves the SoC about 11 °C and the
 LED thermistor half a degree — is invisible to the controller. Only `soc_pll_c` has
 cooling devices bound to it, at 75 °C; the other two are monitoring.
+
+The four `thr_*` columns are the thermal governor's cooling devices, read straight from
+sysfs: 0 means idle, anything higher means CPU or GPU frequency is being reduced **right
+now**. That is a fact rather than an inference from temperature, and it is the only way to
+tell a machine that is merely warm from one that is dropping frames. Blank means the device
+could not be read, which is not the same as zero. They are sampled in every mode, including
+with the app not driving, so the curve can be compared against the stock controller on this
+too, and a throttled row is never decimated away by the heartbeat.
 
 If a future version adds a column, the existing file is rolled aside rather than appended
 to, so no file ever contains rows of two different widths.
