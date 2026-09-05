@@ -5,7 +5,9 @@ and characterised duty 40 and above. The second used twelve-minute holds to meas
 quiet end directly, where the thermal response steepens sharply and a short hold cannot
 resolve it.
 
-Measured at ambient **24 °C** with twelve-minute holds. Tooling in `tools/`.
+Measured at ambient **24 °C** with twelve-minute holds. Tooling in `tools/`. The full
+configuration these numbers were taken in — including that UHD processing was off — is in
+[measurement-conditions.md](measurement-conditions.md).
 
 ---
 

@@ -197,7 +197,7 @@ variant on first run.
 |---|---|
 | `app/` | the application: source, manifests, resources, host tests, build script |
 | `tools/` | measurement and deployment tooling — see [docs/measuring.md](docs/measuring.md) |
-| `docs/` | curve derivation, findings, safety, deployment, measuring |
+| `docs/` | curve derivation, findings, safety, deployment, measuring, measurement conditions |
 | `release/` | the signed APK |
 | `final_curve.txt` | the deployed curve, in the app's own encoding |
 

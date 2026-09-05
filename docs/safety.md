@@ -128,6 +128,23 @@ adb shell setprop persist.sys.fanctrl.by.temperatue 1
 
 Or reinstall the app, press the takeover control, then press RESTORE.
 
+## The controller cannot see SoC temperature
+
+The fan is driven by the LED thermistor, and nothing in the loop reads the SoC. Switching
+UHD processing on raises the three SoC die sensors by about **11 °C** while moving the LED
+thermistor by **0.5 °C** — so the fan does not respond to it at all. With UHD on, those
+zones sit at or above their first passive trip point of 60 °C.
+
+Three things keep that in proportion. The **stock controller is equally blind** — it reads
+the same single sensor, so this is not something the new curve introduced. The **SoC
+protects itself**, throttling CPU and GPU frequency at those trip points regardless of any
+fan. And the readings, around 68 °C against a "hot" trip of 85 °C, are ordinary for a die.
+
+But it is an honest limitation: **a quieter fan means a warmer SoC too**, and no sensor in
+the control loop is watching that. See
+[measurement-conditions.md](measurement-conditions.md) for the numbers and for the
+measurement that would settle how much the fan can actually do about it.
+
 ## Scope
 
 - **Firmware 1.7.1 only.** Property names, sysfs paths and every offset behind the analysis
