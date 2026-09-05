@@ -124,13 +124,17 @@ public final class CurveConfig {
         System.arraycopy(all, 0, duty[PROFILE_NORMAL], 0, POINTS);
         System.arraycopy(all, 0, duty[PROFILE_HIGH], 0, POINTS);
 
-        // 0.8 C, measured rather than chosen. At 0.5 the duty dithers by a point at
-        // 24 C ambient; at 0.8 a six-minute acceptance run on hardware saw the LED range
-        // 51.42..51.91 C -- plus or minus a quarter of a degree -- with zero duty changes.
+        // 0.8. Measured, not guessed: at 0.5 the duty dithered by a point at 24 C
+        // ambient; at 0.8 the six-minute acceptance test on hardware saw the LED range
+        // 51.42..51.91 C (+/-0.25 C) with ZERO duty changes.
         //
-        // Widening it is not free: the band is asymmetric, so the held temperature tracks
-        // the recent maximum and a wider band biases the duty upward by roughly
-        // (band x curve slope), about one duty point per degree of band here.
+        // Briefly raised to 1.2 on the strength of a failing test, and put back. That
+        // test starts the controller at duty 62 and counts transitions while it slews to
+        // the curve's target; under the old curve 45.5 C WAS duty 62 so nothing moved,
+        // and under this one it ramps 62 -> 30 and logs ~32 changes. It was measuring
+        // settling, not dither sensitivity. Widening the band would not have helped, and
+        // because the band is asymmetric it would have cost about a duty point of upward
+        // bias on every machine, forever, to fix nothing.
         hysteresisC = 0.8;
         // Slow on purpose. One point every 4 s rising, every 8 s falling, is inaudible as
         // a change; the stock controller's 10-15 point step is not.

@@ -1,0 +1,11 @@
+# LF in the repository for everything text, whatever the checkout platform does.
+# The PowerShell build script is the exception: some Windows shells are unhappy with
+# LF-only .ps1 files, so it is checked out with CRLF.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+
+# Binaries
+*.apk  binary
+*.png  binary
+*.jks  binary
+*.keystore binary

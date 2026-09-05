@@ -38,7 +38,11 @@ continuous curve removes that failure structurally: there is no boundary left to
   not about which mode produced it, so changing brightness causes **no fan step** — the
   measured jump on a mode change is 1 duty point, against 10 for a per-mode design.
 - **A 0.8 °C deadband and a 1-point-per-4-seconds rate limit**, so even a real change is
-  inaudible as a change.
+  inaudible as a change. Rate limiting exists to hide drift the listener did not cause, so
+  it is deliberately bypassed when the controller is *handed* a duty someone else chose —
+  after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
+  crawling for seven minutes.
+- **Test count: 546**, run on the host as part of every build.
 - **Fail-safe high.** Every error path writes 83 %, never a low value.
 - **Automatic handback.** The app owns the switch that disables the stock controller and
   re-arms it whenever it stops driving, so the projector cannot be left unmanaged.
@@ -128,7 +132,7 @@ Summarised; the detail is in [docs/findings.md](docs/findings.md).
 ## How the tests work
 
 `app/test/FanLabTest.java` is a plain Java program — no JUnit, no Android — that runs on
-the host as part of every build. **542 assertions**, and the build refuses to produce an
+the host as part of every build. **546 assertions**, and the build refuses to produce an
 APK if any fail.
 
 It covers four things:

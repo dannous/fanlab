@@ -422,15 +422,17 @@ public class MainActivity extends Activity implements StepRow.Listener {
         try {
             if ("mode".equals(row.tagName)) {
                 int mode = Prefs.mode(this);
+                // OFF -> CURVE -> MANUAL -> CURVE -> ... The two driving modes toggle
+                // between each other, because going from one driver to the other has no
+                // business routing through a handback: OFF writes the fail-safe 83 and
+                // re-arms the stock controller, which then has to be undone. Reaching OFF
+                // is a deliberate act with its own control (RESTORE STOCK), not something
+                // to stumble into while auditioning a duty.
                 int next = mode == Mode.OFF ? Mode.CURVE
-                        : mode == Mode.CURVE ? Mode.MANUAL : Mode.OFF;
-                if (next == Mode.OFF) {
-                    confirmOff();
-                } else {
-                    Prefs.setMode(this, next);
-                    FanService.poke(this, FanService.ACTION_REFRESH);
-                    syncControlsFromPrefs();
-                }
+                        : mode == Mode.CURVE ? Mode.MANUAL : Mode.CURVE;
+                Prefs.setMode(this, next);
+                FanService.poke(this, FanService.ACTION_REFRESH);
+                syncControlsFromPrefs();
             } else if ("reassert".equals(row.tagName)) {
                 Prefs.setReassert(this, !Prefs.reassert(this));
                 syncControlsFromPrefs();
@@ -464,33 +466,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    private void confirmOff() {
-        new AlertDialog.Builder(this)
-                .setTitle("Stop controlling the fan?")
-                .setMessage("OFF stops this app writing fan_ctrl and leaves the fan exactly "
-                        + "where it is. The stock controller only writes when the rounded "
-                        + "temperature changes, which can be minutes away.\n\n"
-                        + "If you want the fan handed back in a state that is definitely "
-                        + "safe, use RELEASE CONTROL instead — it writes "
-                        + FanIo.FAIL_SAFE_DUTY + " %.")
-                .setPositiveButton("Just stop writing", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int w) {
-                        Prefs.setMode(MainActivity.this, Mode.OFF);
-                        FanService.poke(MainActivity.this, FanService.ACTION_REFRESH);
-                        syncControlsFromPrefs();
-                    }
-                })
-                .setNeutralButton("Release at " + FanIo.FAIL_SAFE_DUTY + " %",
-                        new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface d, int w) {
-                                doRelease();
-                            }
-                        })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
 
     private void doRelease() {
         FanService s = FanService.instance;

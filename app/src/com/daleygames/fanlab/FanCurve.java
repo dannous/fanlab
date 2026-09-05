@@ -41,6 +41,19 @@ public final class FanCurve {
     /** Timestamp of the previous step, for the slew rate. 0 means "no previous step". */
     private long lastMs = 0L;
 
+    /**
+     * Set when the controller has just been handed the fan and the duty it inherited is
+     * not the one the curve wants. While set, the output converges at
+     * {@link #CATCHUP_PER_SEC} instead of the comfort slew.
+     *
+     * The slew limiter exists to hide changes the listener did not cause. A change that
+     * follows immediately from someone pressing a button is attributable, expected, and
+     * does not need hiding -- whereas making them wait seven minutes for the fan to crawl
+     * down from a fail-safe 83 is exactly the noise the whole design is meant to avoid.
+     * So: hide drift, do not hide the consequences of an instruction.
+     */
+    private boolean catchingUp;
+
     /** Profile the previous step ran with, to detect a tier change. */
     private int lastProfile = -1;
 
@@ -49,6 +62,13 @@ public final class FanCurve {
 
     /** Longest gap the slew limiter will integrate over, seconds. Guards against a stalled loop. */
     private static final double MAX_DT_SEC = 5.0;
+
+    /**
+     * Convergence rate, duty points per second, while catching up to the curve after
+     * being handed a duty someone else chose. 1.5 covers the worst case -- the fail-safe
+     * 83 down to the floor of 30 -- in about 35 seconds rather than seven minutes.
+     */
+    private static final double CATCHUP_PER_SEC = 1.5;
 
     /**
      * Adopt the duty the hardware is actually at, and forget the ramp history.
@@ -66,6 +86,7 @@ public final class FanCurve {
     public void resync(int currentDuty) {
         output = FanIo.valid(currentDuty) ? currentDuty : FanIo.FAIL_SAFE_DUTY;
         lastMs = 0L;
+        catchingUp = true;
     }
 
     /** Forget everything, including the held temperature. */
@@ -75,6 +96,7 @@ public final class FanCurve {
         lastMs = 0L;
         lastProfile = -1;
         lastEngineOn = true;
+        catchingUp = false;
     }
 
     /** The temperature currently driving the curve; NaN before the first sample. */
@@ -137,10 +159,20 @@ public final class FanCurve {
             if (dt > MAX_DT_SEC) {
                 dt = MAX_DT_SEC;
             }
+            // Catching up runs faster in BOTH directions, but only until the output first
+            // reaches the curve; after that this is ordinary running and the comfort slew
+            // applies. Never slower than the configured rate, so a user who deliberately
+            // sets a brisk slew is not overridden.
+            double up = catchingUp ? Math.max(cfg.slewUpPerSec, CATCHUP_PER_SEC) : cfg.slewUpPerSec;
+            double down = catchingUp ? Math.max(cfg.slewDownPerSec, CATCHUP_PER_SEC)
+                    : cfg.slewDownPerSec;
             if (target > output) {
-                output = Math.min(target, output + cfg.slewUpPerSec * dt);
+                output = Math.min(target, output + up * dt);
             } else if (target < output) {
-                output = Math.max(target, output - cfg.slewDownPerSec * dt);
+                output = Math.max(target, output - down * dt);
+            }
+            if (catchingUp && Math.abs(output - target) < 1e-9) {
+                catchingUp = false;
             }
         }
         lastMs = nowMs;

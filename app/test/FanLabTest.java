@@ -86,6 +86,7 @@ public final class FanLabTest {
         testCurveVsStockAtRungs();
         testHysteresis();
         testSlew();
+        testCatchUpAfterResync();
         testEngineOffAndTierChange();
         testFailSafe();
         testConfigRoundTrip();
@@ -566,6 +567,57 @@ public final class FanLabTest {
                 + "(got " + d + ")");
     }
 
+    private static void testCatchUpAfterResync() {
+        section("catch-up: a duty someone else chose is converged on quickly");
+        CurveConfig c = new CurveConfig();
+
+        // Handed the fail-safe 83 with the machine cool: the curve wants the floor. At the
+        // comfort slew of 0.12/s that is 53 points and seven minutes of audible fan, which
+        // is worse than the change it is trying to hide. The slew limiter exists to mask
+        // drift the listener did not cause -- not the consequences of an instruction they
+        // just gave.
+        FanCurve f = new FanCurve();
+        f.resync(FanIo.FAIL_SAFE_DUTY);
+        long t = 0;
+        int d = FanIo.FAIL_SAFE_DUTY;
+        int steps = 0;
+        while (steps < 600 && d > c.minDuty) {
+            t += 1000;
+            d = f.step(c, CurveConfig.PROFILE_HIGH, 40.0, true, t);
+            steps++;
+        }
+        eq(d, c.minDuty, "it does reach the floor from the fail-safe");
+        check(steps <= 60, "and gets there in under a minute (" + steps + " s), not seven");
+
+        // Once converged it must be back on the comfort slew, or every later adjustment
+        // would be fast too and the whole point is lost.
+        int before = d;
+        int worst = 0;
+        for (int i = 0; i < 30; i++) {
+            t += 1000;
+            int n = f.step(c, CurveConfig.PROFILE_HIGH, 60.0, true, t);
+            worst = Math.max(worst, n - before);
+            before = n;
+        }
+        check(worst <= 1, "after converging, changes are back to 1 point per tick (worst "
+                + worst + ")");
+
+        // Catching up must never be slower than the configured slew: a user who sets a
+        // brisk rate deliberately should not be throttled by this.
+        CurveConfig fast = new CurveConfig();
+        fast.slewDownPerSec = 9.0;
+        fast.sanitise();
+        FanCurve g = new FanCurve();
+        g.resync(FanIo.FAIL_SAFE_DUTY);
+        long gt = 1000;
+        int gd = g.step(fast, CurveConfig.PROFILE_HIGH, 40.0, true, gt);
+        gt += 1000;
+        gd = g.step(fast, CurveConfig.PROFILE_HIGH, 40.0, true, gt);
+        check(FanIo.FAIL_SAFE_DUTY - gd >= 9,
+                "a configured slew faster than the catch-up rate still wins (dropped "
+                        + (FanIo.FAIL_SAFE_DUTY - gd) + " points)");
+    }
+
     private static void testEngineOffAndTierChange() {
         section("light engine and tier changes");
         CurveConfig c = new CurveConfig();
@@ -847,11 +899,18 @@ public final class FanLabTest {
             ms += 1000;
             if (want != duty2) {
                 int delta = Math.abs(want - duty2);
-                curveChanges++;
-                if (delta >= 5) {
-                    curveAudible++;
+                // The first minute is the controller converging on a duty it was handed
+                // rather than chose (resync(55) above), which is deliberately faster than
+                // the comfort slew. The invariant being measured here is about RUNNING --
+                // that ordinary operation never produces an audible step -- so the
+                // convergence is excluded rather than allowed to define the worst case.
+                if (s >= 60) {
+                    curveChanges++;
+                    if (delta >= 5) {
+                        curveAudible++;
+                    }
+                    curveWorst = Math.max(curveWorst, delta);
                 }
-                curveWorst = Math.max(curveWorst, delta);
                 duty2 = want;
             }
             if (s > 600) {
