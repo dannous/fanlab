@@ -79,6 +79,22 @@ for why Philips picked 46 °C.
 - **Focus drift is the failure Philips actually named** — heat distorting the optical
   engine and softening the image. It is observable and reversible, and the remote has a
   refocus button.
+
+  **It was looked for on the deployed curve, and not observed.** From cold, the top of the
+  projected image was already slightly soft; after heat-soaking on this curve, it was
+  *equally* soft — no change between the two states. A constant blur that does not vary
+  with temperature is not thermal drift; it is something else, probably geometry or an
+  optical tolerance.
+
+  That result is stronger than it first appears, because the autofocus cannot be masking
+  it: the autofocus stack is pure time-of-flight and open-loop, with **no temperature input
+  anywhere** in the native library or any of its classes. It cannot silently refocus in
+  response to heat.
+
+  **Caveats, and they matter.** This is a single observation, by eye, at about 24 °C
+  ambient — the condition in which the curve sits *furthest* from its ceiling. It shows no
+  *observable* drift, which is not the same as bounding a slow one. It is worth repeating
+  in a warm room, where the curve runs closest to 55 °C.
 - Not affected: the power supply is an external brick, so its capacitors are not in the
   airflow at all. And the fan itself lasts *longer* run slower.
 

@@ -117,6 +117,9 @@ Summarised; the detail is in [docs/findings.md](docs/findings.md).
   datasheets constrains anything near it. Philips stated publicly in 2022 that the
   Presentation fan speed was raised because heat was distorting the optical engine and
   softening the image — a focus-stability concern, which is observable and reversible.
+  Tested on this curve, cold against heat-soaked: **no observable change in focus.** One
+  observation by eye at 24 °C, so it shows no drift rather than bounding a slow one —
+  but it is the failure mode the whole safety argument turns on, and it was looked for.
 - **No DMD temperature is readable from userspace.** The display controller's own
   `Read System Temperature` register responds but returns a hard zero. Separately, the
   board's device tree declares a temperature device at i2c `0x1c` named `dlp_i2c_tmp` —
