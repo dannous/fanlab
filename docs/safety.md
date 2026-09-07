@@ -128,55 +128,81 @@ adb shell setprop persist.sys.fanctrl.by.temperatue 1
 
 Or reinstall the app, press the takeover control, then press RESTORE.
 
-## The CAIC switch adds no heat, and may add nothing
+## The two display switches add no heat, and change the picture
 
-The `CAIC` control is the one thing in the app that writes to the display controller rather
-than the fan. It asks the DLPC3436 to run Content Adaptive Illumination Control: lower the
-LED current and raise the mirror duty cycle together, per frame, on content that does not
-need full output. Done as designed, that is **less** LED power and **less** heat at the
-thermistor — it cannot raise LED current above what the brightness mode already commands.
-The 75 °C shutdown and the fan-stall watchdog are as untouched by it as by everything else.
+`CAIC` and `LABB` are the only two controls in the app that write to the display controller
+rather than the fan. Both are off by default, both are experiments, and the risk they carry
+is not a thermal one — it is that a bad result is a bad *picture*, and a bad picture can be
+one you cannot see well enough to undo.
 
-What it is **not** is a known quantity on this board. CAIC lowers LED current through a TI
-LED driver, and this board has none — the LED currents are set by the kernel, over SPI, to
-two MAX20096 drivers the display controller does not talk to. So the honest range of
-outcomes runs from "saves power as designed" through "brightens the image at the same
-power" to "does nothing" to "visible artefacts from lookup tables never calibrated for this
-engine". Nothing in the app or these documents claims a saving; the screen reports the
-setting, and separately what the controller itself said when asked, and says `unverified`
-when it has not been asked or could not answer.
+**Neither adds heat.** LABB is pure image processing inside the DLPC3436: it gains up the
+darker parts of the frame on the mirrors, and the LED drive is untouched, so the light
+engine draws exactly what it drew before. CAIC's method is the opposite direction — lowering
+LED current on content that does not need full output and opening the mirrors to compensate
+— which is **less** LED power, not more. There is one conditional worth stating rather than
+glossing: CAIC's *maximum lumens gain*, which this app now writes, is a ceiling on how far
+CAIC may lift the image, and if the controller did turn out to have some path to the LED
+drivers nobody has found, that is the direction in which it could raise current. It has no
+such path here — the LED currents are driven by the SoC over SPI to two MAX20096 chips the
+DLPC cannot reach, and its own current registers sit at a nominal 13 and go nowhere. Neither
+switch touches `rgbcurrent`, `redcurrent` or anything else the LED thermistor responds to.
+The 75 °C shutdown and the fan-stall watchdog are as untouched by both as by everything else.
 
-It is runtime only. The write is `w 50 1 1` to `/sys/class/dlpc343x/picoreg`, the undo is
-`w 50 1 0`, and a **power cycle undoes it regardless**, because the controller reloads the
-factory settings — which have it off — at every boot. The factory settings partition is
-deliberately never written. The app turns it off itself when it stops, if it was the one
-that turned it on, and RELEASE CONTROL turns it off along with the fan. The one way to be
-left with it on is a process killed with no chance to run code, and then the next power
-cycle clears it.
+**LABB is the one with a mechanism here; CAIC may still do nothing.** CAIC saves power by
+lowering LED current through a TI DLPA LED driver, and this board has none. Fixing its gain
+budget — see below — removes one reason it might do nothing; it does not remove that one. So
+the honest range of CAIC outcomes still runs from "saves power as designed" through
+"brightens the image at the same power" to "does nothing" to "visible artefacts from lookup
+tables never calibrated for this engine". LABB needs no LED control at all, so only the last
+of those applies to it. Nothing in the app or these documents claims a saving; the screen
+reports each setting, and separately what the controller itself said when asked, and says
+`unverified` when it has not been asked or could not answer.
 
-### If it takes the picture away — three ways out, and none of them needs the screen
+**The CAIC gain budget, and why it is written at all.** Selecting CAIC with `0x50` is only
+half of it. A second register, `0x84`, holds the maximum lumens gain, and reading it back on
+this projector gave `00 20 60` — a gain of `0x20`, which in that fixed-point byte is **1.0**,
+the bottom of the legal 1.0–4.0 range. CAIC was permitted to lift the image by nothing. The
+app now writes the budget (default 2.0×) before selecting CAIC and restores it to 1.0 when
+switching CAIC off, so the machine is left as it was found. A value outside 1.0–4.0 is
+refused locally rather than sent, because the controller rejects the whole command on an
+invalid write parameter and the app would otherwise believe it had set a budget it had not.
+
+**Both are runtime only.** CAIC is `w 50 1 1` to `/sys/class/dlpc343x/picoreg`, undone by
+`w 50 1 0`; the gain is `w 84 3 0 40 60`, undone by `w 84 3 0 20 60`; LABB is `w 80 2 14 80`,
+undone by `w 80 2 10 80` — the bytes the machine was found holding, not a cleared row. A
+**power cycle undoes all of it regardless**, because the controller reloads the factory
+settings — which have both off — at every boot. The factory settings partition is
+deliberately never written. The app turns both off itself when it stops, if it was the one
+that turned them on, and RELEASE CONTROL turns them off along with the fan. The one way to
+be left with either on is a process killed with no chance to run code, and then the next
+power cycle clears it.
+
+### If one takes the picture away — three ways out, and none of them needs the screen
 
 The bad case is specific: the DLPC lookup tables were never calibrated for this engine, so
 "visible artefacts" includes a picture too broken to read — and then the control that would
-undo it is on a screen you cannot see. So the switch **asks first**, the way a monitor asks
+undo it is on a screen you cannot see. So each switch **asks first**, the way a monitor asks
 whether a new resolution worked:
 
-- Turning CAIC on writes the register and starts a **15-second countdown**. Press OK and it
-  stays. Press nothing and the app writes `w 50 1 0` and puts it back.
-- **The setting is stored only after you confirm it.** An unconfirmed CAIC is held in
+- Turning either on writes the register and starts a **15-second countdown**. Press OK and
+  it stays. Press nothing and the app writes it back off.
+- **The setting is stored only after you confirm it.** An unconfirmed change is held in
   memory and nowhere else, so it cannot come back after a reboot. That is deliberate and it
   is the important half: a power cycle is your guaranteed escape, and a setting that
   survived one would take that escape away.
 - **The countdown belongs to the service, not the screen.** Pressing HOME, force-stopping
   the app, or the launcher reclaiming it all still leave the revert running.
+- **There is one countdown, not two.** If both are armed at once, one confirmation keeps
+  both and one silence reverts both — two clocks running against one screen could not be
+  told apart by the person looking at it.
 
 So, blind, in order of how little they ask of you:
 
 | escape | what to do | why it works |
 |---|---|---|
 | **wait** | nothing, for 15 seconds | the service reverts it with no input at all |
-| **power cycle** | pull the power | the register is runtime-only; the factory `picosetting` blob is never touched, and it has CAIC off |
-| **adb** | `adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver -a com.daleygames.fanlab.CONFIG --ez caic false` | clears the stored setting too, for a CAIC that was confirmed and is only now showing a problem |
+| **power cycle** | pull the power | the registers are runtime-only; the factory `picosetting` blob is never touched, and it has both off |
+| **adb** | `adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver -a com.daleygames.fanlab.CONFIG --ez caic false --ez labb false` | clears the stored settings too, for a change that was confirmed and is only now showing a problem |
 
 ## The LED drive override runs the light engine harder
 

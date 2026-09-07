@@ -798,4 +798,501 @@ public final class PicoReg {
         }
         return sb.toString();
     }
+
+    // ------------------------------------------------------------------ the shared read
+
+    /**
+     * One read on this channel: write the {@code r} command, then look for the answer in
+     * the node and then in the kernel log.
+     *
+     * The route is the same for every opcode and the reason it is this shape is above:
+     * {@code picoreg}'s {@code show()} is NULL on this firmware, so the reply lands in the
+     * kernel log behind {@code READ_LOGS}. Bytes or a reason, never a guess.
+     */
+    private static final class RoundTrip {
+        int[] bytes;
+        String source;
+        String reason;
+    }
+
+    private static RoundTrip roundTrip(int opcode, int want) {
+        RoundTrip t = new RoundTrip();
+        String cmd = readCommand(opcode, want);
+        if (!Sysfs.exists(NODE)) {
+            t.reason = NODE + " does not exist on this firmware";
+            return t;
+        }
+        if (!Sysfs.write(NODE, cmd)) {
+            t.reason = "cannot write \"" + cmd + "\" to " + NODE
+                    + " (the node should be 0777; check the app is the API-28 build)";
+            return t;
+        }
+        // The node itself first. An echo of the command is not a response: without this
+        // guard a node that plays back what was written would be decoded as if it were data.
+        String back = Sysfs.read(NODE);
+        if (back != null && !back.trim().startsWith(cmd)) {
+            int[] bytes = parseHexBytes(back, want);
+            if (bytes != null) {
+                t.bytes = bytes;
+                t.source = "sysfs";
+                return t;
+            }
+        }
+        int[] bytes = fromKernelLog(opcode, want);
+        if (bytes != null) {
+            t.bytes = bytes;
+            t.source = "kernel log";
+            return t;
+        }
+        t.reason = "the command was accepted but no response came back: " + NODE
+                + " has no show() handler on this firmware, and the driver's "
+                + "\"read 0x%02x data:\" line goes to the kernel log, which needs "
+                + "READ_LOGS. This build cannot see the answer.";
+        return t;
+    }
+
+    // ------------------------------------------------------------------ image processing
+
+    /*
+     * The two IntelliBright image-processing controls, and which half of it this board can
+     * actually run.
+     *
+     * CAIC (above, 0x50) selects the method. What it is *allowed to do* once selected lives
+     * in a second command, Write CAIC Image Processing Control (0x84), and reading it back
+     * (0x85) on this projector answered
+     *
+     *     00 20 60
+     *
+     * -- gain display off, maximum lumens gain 0x20, clipping threshold 96. And 0x20 in
+     * that fixed-point byte is 1.0, which is the bottom of the legal range: CAIC was being
+     * selected with permission to raise the image by nothing at all. That is the most
+     * likely reason switching 0x50 on alone produced nothing measurable on the hardware --
+     * the method was chosen and the budget was zero.
+     *
+     * LABB (0x80/0x81) is the other half of IntelliBright, and DLPU078A describes it as
+     * adaptively gaining up darker parts of the image to achieve an overall brighter one.
+     * It is supported in TPG, splash and external input mode, and auto-disabled in curtain
+     * mode. The projector reads back
+     *
+     *     10 80 20 00
+     *
+     * -- sharpness strength 1, LABB control 0h = Disabled, strength already preset to 128,
+     * current gain 0x20. So the strength this board would run at has been chosen by
+     * somebody; the feature is simply switched off.
+     *
+     * Why LABB is the one that can work here. CAIC's mechanism is the controller lowering
+     * LED current, and this board has no TI DLPA LED driver for it to lower current
+     * through: the LED currents are driven by the SoC over SPI to two MAX20096 chips the
+     * DLPC cannot reach, and the DLPC's own current registers sit at a nominal 13 and go
+     * nowhere. So even with the gain budget fixed, CAIC may still achieve nothing here.
+     * LABB is pure DMD-side image processing and needs no LED control at all. Neither is
+     * claimed to work; only one of them has a mechanism that does not depend on hardware
+     * this board does not have.
+     */
+
+    /** DLPU078A Write / Read Local Area Brightness Boost Control. */
+    public static final int OPCODE_LABB_WRITE = 0x80;
+    public static final int OPCODE_LABB_READ = 0x81;
+    /** The write takes two bytes: the control byte, then the strength. */
+    public static final int LABB_WRITE_LEN = 2;
+    /** The read answers four: control, strength, current gain, status. */
+    public static final int LABB_READ_LEN = 4;
+
+    /** DLPU078A Write / Read CAIC Image Processing Control. */
+    public static final int OPCODE_CAIC_IMAGE_WRITE = 0x84;
+    public static final int OPCODE_CAIC_IMAGE_READ = 0x85;
+    public static final int CAIC_IMAGE_LEN = 3;
+
+    /**
+     * The legal range for the maximum lumens gain, DLPU078A.
+     *
+     * <b>A value outside it is rejected as an invalid write parameter and the command does
+     * not execute</b> -- the whole command, not just the offending byte. So this is not a
+     * clamp for tidiness: sending 0.9 would silently leave the gain, the gain-display bit
+     * and the clipping threshold all at whatever they were, and the app would have no way
+     * to know. {@link #encodeCaicGain} refuses instead.
+     */
+    public static final double CAIC_GAIN_MIN = 1.0;
+    public static final double CAIC_GAIN_MAX = 4.0;
+
+    /**
+     * Byte weights for the gain, DLPU078A: b7=2^2, b6=2^1, b5=2^0, b4=2^-1, b3=2^-2,
+     * b2=2^-3, b1=2^-4, b0=2^-5. The least significant bit is a thirty-second, so the byte
+     * is simply the gain times 32: 1.0=0x20, 1.5=0x30, 2.0=0x40, 4.0=0x80.
+     */
+    public static final int CAIC_GAIN_SCALE = 32;
+
+    /** What this projector was found holding: 0x20, which is 1.0 -- no boost permitted. */
+    public static final double CAIC_GAIN_STOCK = 1.0;
+    public static final int CAIC_GAIN_STOCK_BYTE = 0x20;
+
+    /**
+     * The clipping threshold the projector was found holding, byte 3 of 0x84.
+     *
+     * Carried through every write rather than zeroed. The command sets all three bytes at
+     * once, so writing the gain means restating this, and restating it as anything other
+     * than what the machine had would be changing a setting nobody asked to change.
+     */
+    public static final int CAIC_CLIP_THRESHOLD_STOCK = 0x60;
+
+    /** LABB control field values, DLPU078A: 0h Disabled, 1h Enabled; 2h and 3h reserved. */
+    public static final int LABB_CONTROL_DISABLED = 0x0;
+    public static final int LABB_CONTROL_ENABLED = 0x1;
+
+    /** What the projector was found holding: strength 128, sharpness 1, control disabled. */
+    public static final int LABB_STRENGTH_STOCK = 0x80;
+    public static final int LABB_SHARPNESS_STOCK = 1;
+    public static final int LABB_STRENGTH_MAX = 255;
+    public static final int LABB_SHARPNESS_MAX = 15;
+
+    /**
+     * The CAIC maximum lumens gain as its fixed-point byte.
+     *
+     * @return the byte, or <b>-1 for a gain outside {@link #CAIC_GAIN_MIN}..
+     *         {@link #CAIC_GAIN_MAX}</b>. Refusing rather than clamping is deliberate: the
+     *         controller rejects the whole command on an out-of-range parameter, so an app
+     *         that sent one would believe it had set a gain it had not, and the caller has
+     *         to be able to tell that apart from a write that failed.
+     */
+    public static int encodeCaicGain(double gain) {
+        if (Double.isNaN(gain) || gain < CAIC_GAIN_MIN || gain > CAIC_GAIN_MAX) {
+            return -1;
+        }
+        // Rounding to the nearest thirty-second can move the value by at most 1/64, and the
+        // two ends of the range are exactly representable, so this can never round out of
+        // range: 1.0 -> 0x20 and 4.0 -> 0x80 are both exact.
+        return (int) Math.round(gain * CAIC_GAIN_SCALE) & 0xFF;
+    }
+
+    /** The inverse: the byte as a gain. NaN when there is no byte, never 0. */
+    public static double decodeCaicGain(int b) {
+        if (b < 0 || b > 0xFF) {
+            return Double.NaN;
+        }
+        return (b & 0xFF) / (double) CAIC_GAIN_SCALE;
+    }
+
+    /**
+     * The 0x84 command string, e.g. {@code w 84 3 0 40 60} for a 2.0 gain.
+     *
+     * Byte 1 is held at 0. Its b7 is the CAIC gain <i>display</i> enable -- a five-bar debug
+     * overlay that DLPU078A says "must never be used for normal operation" -- and b6 scales
+     * that overlay. Nothing here has any reason to switch a debug overlay on, so the bit is
+     * a constant rather than a setting.
+     *
+     * @return the command, or null if the gain is out of range; see {@link #encodeCaicGain}.
+     */
+    public static String caicImageControlCommand(double gain, int clipThreshold) {
+        int g = encodeCaicGain(gain);
+        if (g < 0) {
+            return null;
+        }
+        return writeCommand(OPCODE_CAIC_IMAGE_WRITE,
+                new int[]{0x00, g, clipThreshold & 0xFF});
+    }
+
+    /**
+     * The LABB control byte: sharpness strength in b7:4, the control field in b3:2, b1:0
+     * reserved and left clear.
+     *
+     * Sharpness is carried through rather than owned by the enable, because DLPU078A ties
+     * the two together -- "The LABB function must be enabled to make use of sharpness" --
+     * so turning LABB on with sharpness zeroed would quietly drop a setting the machine
+     * already had. Enabling what the projector was found holding is {@code 0x14}.
+     */
+    public static int labbControlByte(int sharpness, boolean enabled) {
+        int s = sharpness < 0 ? 0 : (sharpness > LABB_SHARPNESS_MAX ? LABB_SHARPNESS_MAX : sharpness);
+        return (s << 4) | ((enabled ? LABB_CONTROL_ENABLED : LABB_CONTROL_DISABLED) << 2);
+    }
+
+    /** The sharpness strength out of a control byte, 0..15. */
+    public static int labbSharpnessOf(int controlByte) {
+        return (controlByte >> 4) & 0x0F;
+    }
+
+    /** The raw control field out of a control byte: 0 disabled, 1 enabled, 2 and 3 reserved. */
+    public static int labbControlOf(int controlByte) {
+        return (controlByte >> 2) & 0x03;
+    }
+
+    /**
+     * The 0x80 command string, e.g. {@code w 80 2 14 80} to enable LABB at the strength and
+     * sharpness the projector was already holding.
+     *
+     * Strength is 0..255 where DLPU078A says 0 is no boost and 255 "the maximum boost
+     * viable in a product" -- and that "the strength is not a direct indication of the
+     * gain, since the gain varies depending on the image content". So it is a dial, not a
+     * multiplier, and nothing here converts it into one.
+     */
+    public static String labbCommand(boolean enabled, int strength, int sharpness) {
+        return writeCommand(OPCODE_LABB_WRITE,
+                new int[]{labbControlByte(sharpness, enabled), strength & 0xFF});
+    }
+
+    /** One attempt at reading the CAIC image processing control back (0x85). */
+    public static final class CaicImage {
+        /** True only when three bytes actually arrived. Never inferred from a write. */
+        public boolean known;
+        /** b7 of byte 1: the debug overlay. This app never sets it; a true here is someone else's. */
+        public boolean gainDisplay;
+        /** The raw fixed-point gain byte, or -1. */
+        public int gainByte = -1;
+        /** The gain it decodes to, or NaN. */
+        public double gain = Double.NaN;
+        /** Byte 3, the clipping threshold, or -1. */
+        public int clipThreshold = -1;
+        /** Where the bytes came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        /** "gain 1.0 (0x20), clip 96", or null when nothing was read. */
+        public String summary() {
+            return known ? "gain " + fmtGain(gain) + " (0x" + pad2(Integer.toHexString(gainByte))
+                    + "), clip " + clipThreshold : null;
+        }
+    }
+
+    /** Decode a 0x85 response. Three bytes or nothing; a short reply is not a reading. */
+    public static CaicImage caicImageFromBytes(int[] bytes, String source) {
+        CaicImage r = new CaicImage();
+        if (bytes == null || bytes.length < CAIC_IMAGE_LEN) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        r.gainDisplay = (bytes[0] & 0x80) != 0;
+        r.gainByte = bytes[1] & 0xFF;
+        r.gain = decodeCaicGain(r.gainByte);
+        r.clipThreshold = bytes[2] & 0xFF;
+        r.known = true;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /** As {@link #caicImageFromBytes}, from arbitrary response text. For the host test. */
+    public static CaicImage caicImageFromResponseText(String text, String source) {
+        CaicImage r = new CaicImage();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, CAIC_IMAGE_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + CAIC_IMAGE_LEN
+                    + " hex bytes; treating it as unread rather than guessing";
+            return r;
+        }
+        return caicImageFromBytes(bytes, source);
+    }
+
+    /** One attempt at reading the LABB control back (0x81). */
+    public static final class Labb {
+        /**
+         * True only when four bytes arrived <i>and</i> the control field was one of the two
+         * DLPU078A defines. A reserved 2h or 3h is a wrong answer, not a third state.
+         */
+        public boolean known;
+        /** Whether LABB is running. Meaningless unless {@link #known}. */
+        public boolean enabled;
+        /** The raw control field, 0..3, or -1. */
+        public int control = -1;
+        /** Byte 2, the strength, 0..255, or -1. */
+        public int strength = -1;
+        /** The sharpness strength out of byte 1, 0..15, or -1. */
+        public int sharpness = -1;
+        /**
+         * Byte 3, the current LABB gain, read-only.
+         *
+         * Kept raw and deliberately not converted. Table 3-81 gives the range as 1..8, and
+         * this projector answers 0x20 = 32, which is not in that range -- so either the
+         * units are not whole gain steps or the table does not describe this firmware.
+         * Recording the byte lets that be settled later; inventing a gain from it would not.
+         */
+        public int gainRaw = -1;
+        /** Byte 4, further status. Recorded, not interpreted. */
+        public int status = -1;
+        /** Where the bytes came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        /** "on, strength 128, sharpness 1, gain 0x20", or null when nothing was read. */
+        public String summary() {
+            return known ? (enabled ? "on" : "off") + ", strength " + strength
+                    + ", sharpness " + sharpness
+                    + ", gain 0x" + pad2(Integer.toHexString(gainRaw)) : null;
+        }
+    }
+
+    /** Decode a 0x81 response: four bytes, control field 0h or 1h, everything else unknown. */
+    public static Labb labbFromBytes(int[] bytes, String source) {
+        Labb r = new Labb();
+        if (bytes == null || bytes.length < LABB_READ_LEN) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        r.control = labbControlOf(bytes[0]);
+        r.sharpness = labbSharpnessOf(bytes[0]);
+        r.strength = bytes[1] & 0xFF;
+        r.gainRaw = bytes[2] & 0xFF;
+        r.status = bytes[3] & 0xFF;
+        if (r.control != LABB_CONTROL_DISABLED && r.control != LABB_CONTROL_ENABLED) {
+            r.reason = "the control field read " + r.control + "h, which DLPU078A reserves. "
+                    + "Recorded as unknown rather than rounded to a state.";
+            return r;
+        }
+        r.enabled = r.control == LABB_CONTROL_ENABLED;
+        r.known = true;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /** As {@link #labbFromBytes}, from arbitrary response text. For the host test. */
+    public static Labb labbFromResponseText(String text, String source) {
+        Labb r = new Labb();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, LABB_READ_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + LABB_READ_LEN
+                    + " hex bytes; treating it as unread rather than guessing";
+            return r;
+        }
+        return labbFromBytes(bytes, source);
+    }
+
+    /**
+     * Write the CAIC image processing control: the gain budget CAIC is allowed to work
+     * within, and the clipping threshold restated as found.
+     *
+     * @return false either because the gain is out of range -- in which case
+     *         <b>nothing was written</b>, deliberately, since the controller would have
+     *         rejected the command anyway -- or because the node write failed. Callers hold
+     *         the gain to {@link #CAIC_GAIN_MIN}..{@link #CAIC_GAIN_MAX} before getting
+     *         here, so in practice a false is a node problem.
+     */
+    public static boolean writeCaicImageControl(double gain, int clipThreshold) {
+        String cmd = caicImageControlCommand(gain, clipThreshold);
+        if (cmd == null || !Sysfs.exists(NODE)) {
+            return false;
+        }
+        return Sysfs.write(NODE, cmd);
+    }
+
+    /** Ask the DLPC what gain budget CAIC has (0x85). Never invents one. */
+    public static CaicImage readCaicImageControl() {
+        try {
+            RoundTrip t = roundTrip(OPCODE_CAIC_IMAGE_READ, CAIC_IMAGE_LEN);
+            if (t.bytes == null) {
+                CaicImage r = new CaicImage();
+                r.reason = t.reason;
+                return r;
+            }
+            return caicImageFromBytes(t.bytes, t.source);
+        } catch (Throwable e) {
+            CaicImage r = new CaicImage();
+            r.reason = "exception while reading: " + e;
+            return r;
+        }
+    }
+
+    /** As {@link #readCaicImageControl()}, bounded, on a thread of its own. */
+    public static CaicImage readCaicImageControl(long timeoutMs) {
+        final CaicImage[] slot = new CaicImage[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readCaicImageControl();
+                }
+            }, "fanlab-picoreg-caicimage");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            CaicImage r = new CaicImage();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            CaicImage r = new CaicImage();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    /**
+     * Write the LABB control: enabled or not, at this strength, keeping this sharpness.
+     *
+     * @return whatever {@link Sysfs#write} said. True means the bytes reached the node, not
+     *         that the DLPC took them; only {@link #readLabb} can say that, and only where
+     *         the kernel log is readable.
+     */
+    public static boolean writeLabb(boolean enabled, int strength, int sharpness) {
+        if (!Sysfs.exists(NODE)) {
+            return false;
+        }
+        return Sysfs.write(NODE, labbCommand(enabled, strength, sharpness));
+    }
+
+    /** Ask the DLPC what LABB is doing (0x81). Never answers on or off without the bytes. */
+    public static Labb readLabb() {
+        try {
+            RoundTrip t = roundTrip(OPCODE_LABB_READ, LABB_READ_LEN);
+            if (t.bytes == null) {
+                Labb r = new Labb();
+                r.reason = t.reason;
+                return r;
+            }
+            return labbFromBytes(t.bytes, t.source);
+        } catch (Throwable e) {
+            Labb r = new Labb();
+            r.reason = "exception while reading: " + e;
+            return r;
+        }
+    }
+
+    /** As {@link #readLabb()}, bounded, on a thread of its own. */
+    public static Labb readLabb(long timeoutMs) {
+        final Labb[] slot = new Labb[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readLabb();
+                }
+            }, "fanlab-picoreg-labb");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            Labb r = new Labb();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            Labb r = new Labb();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    /**
+     * A gain to one decimal, without {@link Sample} -- which is on the pure side too, but
+     * this class is used by the sweep report and should not grow a dependency for one
+     * number.
+     */
+    static String fmtGain(double v) {
+        if (Double.isNaN(v)) {
+            return "?";
+        }
+        long tenths = Math.round(v * 10.0);
+        return (tenths / 10) + "." + Math.abs(tenths % 10);
+    }
 }

@@ -127,38 +127,54 @@ adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.Con
     -a com.daleygames.fanlab.CONFIG --ez logging true
 ```
 
-## The CAIC experiment
+## The two display-controller experiments
 
-Not part of the deployment; off by default, and `deploy.sh` never touches it. Documented
-here because it goes over the same broadcast.
+Not part of the deployment; both off by default, and `deploy.sh` never touches either.
+Documented here because they go over the same broadcast.
 
 ```bash
-# ask the display controller to run Content Adaptive Illumination Control
+# LABB -- lift the darker parts of the image. Try this one first: it works on the
+# mirrors and needs nothing from an LED driver this board does not have.
 adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
-    -a com.daleygames.fanlab.CONFIG --ez caic true
+    -a com.daleygames.fanlab.CONFIG --ei labbstrength 128 --ei labbsharpness 1 --ez labb true
 
-# a few seconds later: the reply's caic= field says what the controller itself reported
+# CAIC -- with the gain budget it needs. The number is applied before the switch,
+# so one broadcast sets 0x84 and then selects CAIC with 0x50.
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --ef caicgain 2.0 --ez caic true
+
+# a few seconds later: caic= and labb= say what the controller itself reported
 adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
     -a com.daleygames.fanlab.CONFIG
 
-# undo -- or power-cycle the projector, which undoes it regardless
+# undo -- or power-cycle the projector, which undoes both regardless
 adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
-    -a com.daleygames.fanlab.CONFIG --ez caic false
+    -a com.daleygames.fanlab.CONFIG --ez caic false --ez labb false
 ```
 
 `caic=` reads `off`, `on (not written yet)` for the tick before the service acts,
 `on (unverified)` once `w 50 1 1` has gone to `picoreg`, and `on (read back: on)` or
 `on (read back: off)` once the controller's own answer has come back through the kernel
-log. Only the system build gets a read-back — the plain build has no `READ_LOGS` — so on
-the plain build `unverified` is permanent and correct. `--ez reset` turns it off along with
-the curve. What CAIC is, and why on this board it is an experiment rather than a feature,
-is in the README under *The CAIC experiment* and in [safety.md](safety.md).
+log. `labb=` follows the same states and adds the register contents to the read-back
+(`on (read back: on, strength 128, sharpness 1, gain 0x20)`). Only the system build gets a
+read-back — the plain build has no `READ_LOGS` — so on the plain build `unverified` is
+permanent and correct. `--ez reset` turns both off, and their tuning back to the defaults,
+along with the curve.
 
-**The broadcast is not the on-screen control, and the difference matters.** The row in the
-app arms CAIC: it writes the register, counts down for 15 seconds, and reverts unless
+`caicgain=` is the budget separately from the switch, because it is the half that was wrong:
+the projector was found holding `0x20` = 1.0×, the bottom of the range, which is CAIC
+selected with permission to do nothing. Legal values are 1.0 to 4.0; anything else comes back
+`caicgain(REPAIRED)`, since the controller rejects the whole command on an invalid write
+parameter rather than clamping it. What the two features are, and why on this board only one
+of them has a mechanism, is in the README under *The two display-controller experiments* and
+in [safety.md](safety.md).
+
+**The broadcast is not the on-screen control, and the difference matters.** The rows in the
+app *arm* these: they write the register, count down for 15 seconds, and revert unless
 someone presses OK — because a display-controller change that goes wrong takes away the
-screen you would need to undo it. `--ez caic true` sets the stored preference directly, with
-no countdown, on the reasonable assumption that anyone with a shell has another way in.
+screen you would need to undo it. `--ez caic true` and `--ez labb true` set the stored
+preference directly, with no countdown, on the reasonable assumption that anyone with a
+shell has another way in.
 
 ### If the picture is gone
 
@@ -166,15 +182,17 @@ Three escapes, none of which needs a readable screen:
 
 1. **Wait 15 seconds.** Only if it was armed from the app: the countdown belongs to
    `FanService`, not to the activity, so force-stopping the app or navigating away does not
-   stop the revert. An unconfirmed CAIC is never persisted, so it cannot come back after a
-   reboot either.
-2. **Power-cycle the projector.** The register is runtime-only. The factory `picosetting`
-   blob is never written by this app, and it has CAIC off, so the controller reloads it at
+   stop the revert. There is one countdown for both features, so one silence reverts
+   whatever was armed. An unconfirmed change is never persisted, so it cannot come back
+   after a reboot either.
+2. **Power-cycle the projector.** Both registers are runtime-only. The factory `picosetting`
+   blob is never written by this app, and it has both off, so the controller reloads it at
    every boot. This is the escape that always works, which is exactly why an unconfirmed
    setting must never survive one.
-3. **`--ez caic false`**, the third command in the block above. This is the one for a CAIC
-   that was confirmed and stored, and is only now showing a problem — it clears the setting
-   as well as the register, so the next start does not put it back.
+3. **`--ez caic false --ez labb false`**, the last command in the block above. This is the
+   one for a change that was confirmed and stored, and is only now showing a problem — it
+   clears the settings as well as the registers, so the next start does not put them back.
+   Switching CAIC off also hands `0x84` back to the 1.0 the projector was found holding.
 
 ## The LED drive override
 

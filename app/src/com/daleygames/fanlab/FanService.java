@@ -55,9 +55,10 @@ import java.util.Set;
  *   <li>the LED drive override is applied <i>only</i> while this app is the temperature
  *       controller, and the stock table goes back on every path out of that state. See
  *       {@link LedDrive} for why the two are inseparable;</li>
- *   <li>CAIC is armed rather than set: the register is written, a fifteen-second countdown
- *       runs <b>here</b> rather than in the activity, and the preference is persisted only
- *       once someone confirms the picture survived. See {@link CaicArm}.</li>
+ *   <li>the two display-controller experiments, CAIC and LABB, are armed rather than set:
+ *       the register is written, a fifteen-second countdown runs <b>here</b> rather than in
+ *       the activity, and the preference is persisted only once someone confirms the
+ *       picture survived. See {@link PictureArm}.</li>
  * </ul>
  */
 public class FanService extends Service {
@@ -135,17 +136,18 @@ public class FanService extends Service {
     private static final long STAMP_EVERY_MS = 60000L;
 
     /**
-     * How often the CAIC state is read back from the DLPC, at most. Each read-back is a
-     * picoreg write plus a {@code logcat} exec on a thread of its own, so one a minute is
-     * the budget; the write path is edge-triggered and does not wait for it.
+     * How often a display-controller register is read back from the DLPC, at most. Each
+     * read-back is a picoreg write plus a {@code logcat} exec on a thread of its own, so one
+     * a minute per feature is the budget; the write paths are edge-triggered and do not wait
+     * for it.
      */
-    private static final long CAIC_READ_EVERY_MS = 60000L;
+    private static final long DLPC_READ_EVERY_MS = 60000L;
     /** A read-back is brought forward to this long after a write, so the screen answers soon. */
-    private static final long CAIC_READ_AFTER_WRITE_MS = 3000L;
+    private static final long DLPC_READ_AFTER_WRITE_MS = 3000L;
     /** The bound on one read-back's round trip. On its own thread, so this stalls nothing. */
-    private static final long CAIC_READ_TIMEOUT_MS = 4000L;
-    /** After a failed CAIC write, how long before the tick tries again. */
-    private static final long CAIC_RETRY_AFTER_FAIL_MS = 60000L;
+    private static final long DLPC_READ_TIMEOUT_MS = 4000L;
+    /** After a failed display-controller write, how long before the tick tries again. */
+    private static final long DLPC_RETRY_AFTER_FAIL_MS = 60000L;
 
     // ---- state the UI reads; single process, so plain volatiles are enough ----
     public static volatile FanService instance;
@@ -185,21 +187,60 @@ public class FanService extends Service {
      * build this stays null and the screen says "unverified", which is the truth.
      */
     public static volatile PicoReg.CaicReading caicReadback;
+    /**
+     * The most recent 0x85 read-back: the gain budget CAIC is working within, which is the
+     * half of the experiment that was wrong. Null until one has landed.
+     */
+    public static volatile PicoReg.CaicImage caicImageReadback;
     /** rgblevel the previous tick saw, so a brightness-mode change can re-assert the write. */
     private int lastRgbSeen = -1;
     /** Monotonic time of the last read-back attempt; 0 means never. */
     private long caicReadMonoMs;
     /** Monotonic time of the last failed write; 0 means never. */
     private long caicFailMonoMs;
-    /** A read-back is in flight, so a slow one is never stacked on another. */
-    private volatile boolean caicReading;
+    /**
+     * A read-back is in flight on the picoreg node, so no second one is started.
+     *
+     * <b>One flag for both features, not one each.</b> A read is a write of the {@code r}
+     * command followed by a look at what came back, and two of those interleaving on one
+     * node means each can find the other's command sitting in it. The echo guard and the
+     * byte-count check refuse that rather than decoding it, so the failure mode is a lost
+     * reading rather than a wrong one -- but a lost reading is still lost, and the two have
+     * no reason to overlap. Whichever asks first goes; the other tries again next tick.
+     */
+    private volatile boolean dlpcReading;
     /** The previous read-back's summary, so the log carries the change and not the minute. */
     private volatile String lastCaicReadLine = "";
+    /**
+     * The gain, in tenths, that went out with the last successful on write; -1 for none.
+     *
+     * The re-assert edges are all events on the hardware -- a resume, a brightness change.
+     * Moving the gain slider is an event on this side, and without this the tick would see
+     * CAIC already on, find no hardware edge, and leave the new number unsent.
+     */
+    private int caicGainWritten = -1;
     /** Which build this is. Read once; it decides whether a read-back can ever succeed. */
     private boolean systemVariant;
 
+    // ---- LABB ----
     /**
-     * The arm-and-confirm countdown for CAIC.
+     * What this process last wrote to the DLPC's LABB control (0x80): -1 never, 0 off, 1 on.
+     * The hand-back paths write off only when this is 1, exactly as CAIC's does.
+     */
+    public static volatile int labbWritten = -1;
+    /** The last LABB write failed, and the tick is backing off before retrying. */
+    public static volatile boolean labbWriteFailed;
+    /** The most recent 0x81 read-back, or null. System variant only, like CAIC's. */
+    public static volatile PicoReg.Labb labbReadback;
+    private long labbReadMonoMs;
+    private long labbFailMonoMs;
+    private volatile String lastLabbReadLine = "";
+    /** Strength and sharpness as last written, so a settings change is an edge. */
+    private int labbStrengthWritten = -1;
+    private int labbSharpnessWritten = -1;
+
+    /**
+     * The arm-and-confirm countdown the two display experiments share.
      *
      * Static and final, for two reasons. The activity has to be able to arm it on the press
      * that also starts the service, when {@link #instance} is still null; and the window has
@@ -207,7 +248,7 @@ public class FanService extends Service {
      * is not a safety net. It holds no preference, so a process death ends an unconfirmed
      * arm rather than carrying it anywhere.
      */
-    public static final CaicArm caicArm = new CaicArm();
+    public static final PictureArm pictureArm = new PictureArm();
 
     // ---- the LED drive override ----
     /**
@@ -420,6 +461,10 @@ public class FanService extends Service {
         caicWritten = -1;
         caicWriteFailed = false;
         caicReadback = null;
+        caicImageReadback = null;
+        labbWritten = -1;
+        labbWriteFailed = false;
+        labbReadback = null;
         try {
             systemVariant = android.os.Process.myUid() == android.os.Process.SYSTEM_UID;
         } catch (Throwable ignored) {
@@ -587,15 +632,17 @@ public class FanService extends Service {
         } catch (Throwable t) {
             Log.e(TAG, "onDestroy failsafe", t);
         }
-        // The display controller too: if this process turned CAIC on, it turns it off on
-        // the way out, and a process that never wrote 0x50 does not start now. The setting
-        // survives, so a restart with it on writes on again -- but an unconfirmed arm is
-        // not a setting and does not survive anything, which is the whole point of it.
+        // The display controller too: if this process turned CAIC or LABB on, it turns them
+        // off on the way out, and a process that never wrote 0x50 or 0x80 does not start
+        // now. The settings survive, so a restart with one on writes it on again -- but an
+        // unconfirmed arm is not a setting and does not survive anything, which is the whole
+        // point of it.
         try {
-            caicArm.cancel();
+            pictureArm.cancel();
             handBackCaic("service_stop");
+            handBackLabb("service_stop");
         } catch (Throwable t) {
-            Log.e(TAG, "onDestroy caic", t);
+            Log.e(TAG, "onDestroy display", t);
         }
         // Close out a session that was still running, so the files on the stick describe
         // what happened rather than stopping mid-sentence.
@@ -694,14 +741,17 @@ public class FanService extends Service {
             lastWritten = ok ? FanIo.FAIL_SAFE_DUTY : -1;
             curve.reset();
             linear.reset();
-            // RELEASE means everything this app drives, and the CAIC write is a thing it
-            // drives. The setting is cleared as well as the register, for the same reason
-            // the mode is set OFF above: a tick racing us must reach the same conclusion,
-            // not put it back a second later. An arm in flight is dropped rather than
-            // expired, so the note says "release" and not "unconfirmed".
+            // RELEASE means everything this app drives, and the two display-controller
+            // writes are things it drives. The settings are cleared as well as the
+            // registers, for the same reason the mode is set OFF above: a tick racing us
+            // must reach the same conclusion, not put them back a second later. An arm in
+            // flight is dropped rather than expired, so the note says "release" and not
+            // "unconfirmed".
             Prefs.setCaic(this, false);
-            caicArm.cancel();
+            Prefs.setLabb(this, false);
+            pictureArm.cancel();
             handBackCaic("release");
+            handBackLabb("release");
             note("release->" + FanIo.FAIL_SAFE_DUTY + (ok ? "" : " FAILED"));
             statusLine = ok
                     ? "released: fan handed back at " + FanIo.FAIL_SAFE_DUTY
@@ -1105,11 +1155,11 @@ public class FanService extends Service {
             }
         }
 
-        // ---------------- CAIC ----------------
-        // Edge-triggered, never per tick: the register is written when the setting
-        // changes and re-asserted where the DLPC is known or suspected to be re-programmed.
-        // The read-back is a minute apart at most and runs on its own thread.
-        syncCaic(s, interactive, resumeEdge, engineOnEdge, note, mono);
+        // ---------------- the display controller ----------------
+        // Edge-triggered, never per tick: the registers are written when a setting changes
+        // and re-asserted where the DLPC is known or suspected to be re-programmed. The
+        // read-backs are a minute apart at most and run on their own threads.
+        syncDisplay(s, interactive, resumeEdge, engineOnEdge, note, mono);
 
         // ---------------- the LED drive override, first half ----------------
         // Loaded here because two different parts of the tick need the answer and neither
@@ -1604,25 +1654,28 @@ public class FanService extends Service {
         return Provenance.offSource(engineOnWallMs, engineOnBootMs, bootWallMs());
     }
 
-    /** Persist the stamp, off the control loop. See {@link #runOffLoop}. */
-    // ---- CAIC ----
+    // ---- the display controller: CAIC and LABB ----
 
     /**
-     * Keep the DLPC's LED output control method coupled to the CAIC setting.
+     * Keep the two display-controller registers coupled to their settings.
      *
-     * <h3>When it writes</h3>
+     * <h3>When they write</h3>
      * <ul>
-     *   <li>On the edge where the setting turns on, or on the first tick of a service
-     *       that starts with it on: {@code w 50 1 1}.</li>
-     *   <li>On the edge where it turns off, if this process ever wrote on: {@code w 50 1 0}.</li>
+     *   <li>On the edge where a setting turns on, or on the first tick of a service that
+     *       starts with it on: {@code w 50 1 1} for CAIC, {@code w 80 2 14 80} for LABB.</li>
+     *   <li>On the edge where it turns off, if this process ever wrote on.</li>
+     *   <li>On the edge where a number behind an already-applied feature moves -- the CAIC
+     *       gain, LABB's strength or sharpness. Those are the one kind of edge the hardware
+     *       cannot produce, so without it a slider moved with the feature already on would
+     *       change nothing until the next resume.</li>
      *   <li>Re-asserted on -- one write, not a loop -- when {@code rgblevel} changes,
      *       because the kernel re-programs the DLPC LED registers on a brightness-mode
      *       change; after a resume edge and a light-engine power-on, because the DLPC may
      *       be re-initialised across a display-off and a power cycle certainly resets it.
-     *       Whether any of those actually clears 0x50 is not known; a write that was not
-     *       needed costs one I2C transaction, and a write that was needed and not made
-     *       costs the experiment.</li>
-     *   <li>Once, on the first tick, if a previous process turned CAIC on and died before
+     *       Whether any of those actually clears these registers is not known; a write that
+     *       was not needed costs one I2C transaction, and a write that was needed and not
+     *       made costs the experiment.</li>
+     *   <li>Once, on the first tick, if a previous process turned one on and died before
      *       turning it off and the setting is now off: see {@link Prefs#caicDriven}.</li>
      * </ul>
      * Never while the display is off -- the DLPC is not reliably up, and the resume edge
@@ -1630,36 +1683,38 @@ public class FanService extends Service {
      * rather than retrying every tick, because a note per tick is a row per tick.
      *
      * <h3>What it does not do</h3>
-     * It does not infer the register's state from its own writes. What the DLPC is
-     * actually doing is {@link #caicReadback}'s business, and that is null until a read
-     * has genuinely returned a byte.
+     * It does not infer either register's state from its own writes. What the DLPC is
+     * actually doing is {@link #caicReadback} and {@link #labbReadback}'s business, and
+     * those are null until a read has genuinely returned bytes.
      */
-    private void syncCaic(Sample s, boolean interactive, boolean resumeEdge,
-                          boolean engineOnEdge, StringBuilder note, long mono) {
+    private void syncDisplay(Sample s, boolean interactive, boolean resumeEdge,
+                             boolean engineOnEdge, StringBuilder note, long mono) {
         // The countdown is swept first, above every gate below, so an unconfirmed arm
         // expires on the second it is due even with the display off -- an owner who cannot
         // see the picture is precisely who the window is for, and one who has walked away
-        // is the case the activity could not have covered.
+        // is the case the activity could not have covered. Once per tick, for both
+        // features, because there is one window and one deadline.
         //
-        // The write that reverts it still obeys the gates: the DLPC is not reliably up
-        // while the display is off, so the revert may have to wait for the resume edge.
-        // CaicArm.reverting() is what carries the reason across that wait, so the note the
-        // log eventually gets says "unconfirmed" rather than "setting".
-        if (caicArm.poll(mono)) {
+        // The writes that revert it still obey the gates: the DLPC is not reliably up while
+        // the display is off, so a revert may have to wait for the resume edge.
+        // PictureArm.reverting() is what carries the reason across that wait, so the note
+        // the log eventually gets says "unconfirmed" rather than "setting".
+        if (pictureArm.poll(mono)) {
+            // A setting that went true while the window was open -- a shell sent
+            // `--ez caic true`, which is a deliberate act by someone who has another way in.
+            // There is nothing left to revert, so drop the debt rather than leaving it owed
+            // against a write that is now wanted.
             if (Prefs.caic(this)) {
-                // The setting went true while the window was open -- a shell sent
-                // `--ez caic true`, which is a deliberate act by someone who has another
-                // way in. There is nothing left to revert, so drop the debt rather than
-                // leaving it owed against a write that is now wanted.
-                caicArm.reverted();
-            } else {
-                append(note, "caic arm expired unconfirmed -> off");
+                pictureArm.reverted(PictureArm.CAIC);
+            }
+            if (Prefs.labb(this)) {
+                pictureArm.reverted(PictureArm.LABB);
+            }
+            String owed = PictureArm.name(pictureArm.revertingWhat());
+            if (owed.length() > 0) {
+                append(note, "picture arm expired unconfirmed -> " + owed + " off");
             }
         }
-        // An arm counts as wanting it on. The preference does not move until someone
-        // confirms -- see confirmCaic, which is the only thing in the app that writes it
-        // true -- so a process death here ends with CAIC off and nothing persisted.
-        boolean wanted = Prefs.caic(this) || caicArm.armed(mono);
         boolean rgbEdge = lastRgbSeen >= 0 && s.rgblevel >= 0 && s.rgblevel != lastRgbSeen;
         if (s.rgblevel >= 0) {
             lastRgbSeen = s.rgblevel;
@@ -1667,11 +1722,22 @@ public class FanService extends Service {
         if (stopped || !interactive) {
             return;
         }
-        if (caicFailMonoMs != 0L && mono - caicFailMonoMs < CAIC_RETRY_AFTER_FAIL_MS) {
+        syncCaic(resumeEdge, engineOnEdge, rgbEdge, note, mono);
+        syncLabb(resumeEdge, engineOnEdge, rgbEdge, note, mono);
+    }
+
+    private void syncCaic(boolean resumeEdge, boolean engineOnEdge, boolean rgbEdge,
+                          StringBuilder note, long mono) {
+        // An arm counts as wanting it on. The preference does not move until someone
+        // confirms -- see confirmPicture, which is the only thing in the app that writes it
+        // true -- so a process death here ends with CAIC off and nothing persisted.
+        boolean wanted = Prefs.caic(this) || pictureArm.armed(PictureArm.CAIC, mono);
+        if (caicFailMonoMs != 0L && mono - caicFailMonoMs < DLPC_RETRY_AFTER_FAIL_MS) {
             return;
         }
         if (wanted) {
             String why = caicWritten != 1 ? (caicWritten < 0 ? "start" : "setting")
+                    : caicGainWritten != Prefs.caicGainTenths(this) ? "gain"
                     : rgbEdge ? "rgblevel"
                     : resumeEdge ? "resume"
                     : engineOnEdge ? "poweron"
@@ -1680,18 +1746,18 @@ public class FanService extends Service {
                 writeCaic(true, why, note, mono);
             }
         } else if (caicWritten == 1) {
-            boolean unconfirmed = caicArm.reverting();
+            boolean unconfirmed = pictureArm.reverting(PictureArm.CAIC);
             if (writeCaic(false, unconfirmed ? "unconfirmed" : "setting", note, mono)
                     && unconfirmed) {
-                caicArm.reverted();
-                statusLine = "CAIC was not confirmed within " + (CaicArm.WINDOW_MS / 1000)
+                pictureArm.reverted(PictureArm.CAIC);
+                statusLine = "CAIC was not confirmed within " + (PictureArm.WINDOW_MS / 1000)
                         + " s, so it has been turned back off.";
             }
-        } else if (caicArm.reverting()) {
+        } else if (pictureArm.reverting(PictureArm.CAIC)) {
             // The window closed but this process never got the on write onto the hardware,
             // so there is nothing to undo. Clear the latch rather than leaving a revert
             // owed for ever.
-            caicArm.reverted();
+            pictureArm.reverted(PictureArm.CAIC);
         } else if (ticks == 1 && Prefs.caicDriven(this)) {
             // A previous process wrote on and never wrote off. Leave the machine as the
             // owner now wants it, once, and clear the memory.
@@ -1701,24 +1767,96 @@ public class FanService extends Service {
         // ---- the read-back, system variant only, at most once a minute ----
         // Gated on the experiment being in play: a build that has never written 0x50 and
         // is not asked to has no reason to send the DLPC a command a minute.
-        if (systemVariant && (wanted || caicWritten >= 0) && !caicReading
-                && (caicReadMonoMs == 0L || mono - caicReadMonoMs >= CAIC_READ_EVERY_MS)) {
+        if (systemVariant && (wanted || caicWritten >= 0) && !dlpcReading
+                && (caicReadMonoMs == 0L || mono - caicReadMonoMs >= DLPC_READ_EVERY_MS)) {
             caicReadMonoMs = mono;
             readCaicAsync();
         }
     }
 
-    /** @return true if the DLPC took the write. */
+    private void syncLabb(boolean resumeEdge, boolean engineOnEdge, boolean rgbEdge,
+                          StringBuilder note, long mono) {
+        boolean wanted = Prefs.labb(this) || pictureArm.armed(PictureArm.LABB, mono);
+        if (labbFailMonoMs != 0L && mono - labbFailMonoMs < DLPC_RETRY_AFTER_FAIL_MS) {
+            return;
+        }
+        if (wanted) {
+            String why = labbWritten != 1 ? (labbWritten < 0 ? "start" : "setting")
+                    : (labbStrengthWritten != Prefs.labbStrength(this)
+                            || labbSharpnessWritten != Prefs.labbSharpness(this)) ? "tuning"
+                    : rgbEdge ? "rgblevel"
+                    : resumeEdge ? "resume"
+                    : engineOnEdge ? "poweron"
+                    : null;
+            if (why != null) {
+                writeLabb(true, why, note, mono);
+            }
+        } else if (labbWritten == 1) {
+            boolean unconfirmed = pictureArm.reverting(PictureArm.LABB);
+            if (writeLabb(false, unconfirmed ? "unconfirmed" : "setting", note, mono)
+                    && unconfirmed) {
+                pictureArm.reverted(PictureArm.LABB);
+                statusLine = "LABB was not confirmed within " + (PictureArm.WINDOW_MS / 1000)
+                        + " s, so it has been turned back off.";
+            }
+        } else if (pictureArm.reverting(PictureArm.LABB)) {
+            pictureArm.reverted(PictureArm.LABB);
+        } else if (ticks == 1 && Prefs.labbDriven(this)) {
+            writeLabb(false, "leftover", note, mono);
+        }
+
+        if (systemVariant && (wanted || labbWritten >= 0) && !dlpcReading
+                && (labbReadMonoMs == 0L || mono - labbReadMonoMs >= DLPC_READ_EVERY_MS)) {
+            labbReadMonoMs = mono;
+            readLabbAsync();
+        }
+    }
+
+    /**
+     * Write CAIC on or off, gain budget included.
+     *
+     * <h3>Two commands, in this order, and why</h3>
+     * {@code 0x84} says how much CAIC is <i>allowed</i> to raise the image; {@code 0x50} is
+     * what selects CAIC at all. Turning on writes the budget first, so the controller never
+     * runs a frame with CAIC selected and a gain of 1.0 -- which is the state this projector
+     * was found in, and the likeliest reason enabling 0x50 alone produced nothing anyone
+     * could measure. Turning off is the mirror: deselect, then hand the budget back to the
+     * 1.0 it was found holding, so the machine is left as it was rather than as we left it.
+     *
+     * A gain write that does not land aborts the on write. Selecting CAIC behind an unknown
+     * budget reproduces exactly the ambiguous state this change exists to remove, and it
+     * would be indistinguishable in the log from the feature doing nothing.
+     *
+     * @return true if the DLPC took the write.
+     */
     private boolean writeCaic(boolean on, String why, StringBuilder note, long mono) {
+        int gainTenths = Prefs.caicGainTenths(this);
+        double gain = gainTenths / 10.0;
+        if (on && !PicoReg.writeCaicImageControl(gain, PicoReg.CAIC_CLIP_THRESHOLD_STOCK)) {
+            caicWriteFailed = true;
+            caicFailMonoMs = mono;
+            append(note, "caic gain WRITE FAILED:" + why);
+            statusLine = "cannot write " + PicoReg.NODE
+                    + " - CAIC not applied; check the node exists and is 0777";
+            return false;
+        }
         boolean ok = PicoReg.writeLedOutputControl(on);
         if (ok) {
             caicWritten = on ? 1 : 0;
+            caicGainWritten = on ? gainTenths : -1;
             caicWriteFailed = false;
             caicFailMonoMs = 0L;
-            append(note, "caic<-" + (on ? "on" : "off") + ":" + why);
+            append(note, "caic<-" + (on ? "on" : "off") + ":" + why
+                    + (on ? " gain=" + Sample.fmt1(gain) : ""));
+            if (!on && PicoReg.writeCaicImageControl(PicoReg.CAIC_GAIN_STOCK,
+                    PicoReg.CAIC_CLIP_THRESHOLD_STOCK)) {
+                append(note, "caic gain<-" + Sample.fmt1(PicoReg.CAIC_GAIN_STOCK));
+            } else if (!on) {
+                append(note, "caic gain RESTORE FAILED:" + why);
+            }
             // Bring the next read-back forward, so the screen can say what the DLPC did
             // with the write within seconds rather than at the next minute boundary.
-            caicReadMonoMs = mono - CAIC_READ_EVERY_MS + CAIC_READ_AFTER_WRITE_MS;
+            caicReadMonoMs = mono - DLPC_READ_EVERY_MS + DLPC_READ_AFTER_WRITE_MS;
             if (Prefs.caicDriven(this) != on) {
                 persistCaicDriven(on);
             }
@@ -1728,6 +1866,42 @@ public class FanService extends Service {
             append(note, "caic WRITE FAILED:" + why);
             statusLine = "cannot write " + PicoReg.NODE
                     + " - CAIC not applied; check the node exists and is 0777";
+        }
+        return ok;
+    }
+
+    /**
+     * Write LABB on or off.
+     *
+     * Off is not a cleared row. The projector was found holding {@code 10 80} -- control
+     * disabled, sharpness 1, strength 128 -- so off writes exactly that back, rather than
+     * zeroing two fields that were set before this app existed. On writes the configured
+     * strength and sharpness, which default to the same two numbers.
+     *
+     * @return true if the DLPC took the write.
+     */
+    private boolean writeLabb(boolean on, String why, StringBuilder note, long mono) {
+        int strength = on ? Prefs.labbStrength(this) : PicoReg.LABB_STRENGTH_STOCK;
+        int sharpness = on ? Prefs.labbSharpness(this) : PicoReg.LABB_SHARPNESS_STOCK;
+        boolean ok = PicoReg.writeLabb(on, strength, sharpness);
+        if (ok) {
+            labbWritten = on ? 1 : 0;
+            labbStrengthWritten = on ? strength : -1;
+            labbSharpnessWritten = on ? sharpness : -1;
+            labbWriteFailed = false;
+            labbFailMonoMs = 0L;
+            append(note, "labb<-" + (on ? "on" : "off") + ":" + why
+                    + " strength=" + strength + " sharp=" + sharpness);
+            labbReadMonoMs = mono - DLPC_READ_EVERY_MS + DLPC_READ_AFTER_WRITE_MS;
+            if (Prefs.labbDriven(this) != on) {
+                persistLabbDriven(on);
+            }
+        } else {
+            labbWriteFailed = true;
+            labbFailMonoMs = mono;
+            append(note, "labb WRITE FAILED:" + why);
+            statusLine = "cannot write " + PicoReg.NODE
+                    + " - LABB not applied; check the node exists and is 0777";
         }
         return ok;
     }
@@ -1743,11 +1917,39 @@ public class FanService extends Service {
         }
         if (PicoReg.writeLedOutputControl(false)) {
             caicWritten = 0;
+            caicGainWritten = -1;
+            // And the gain budget with it. A hand-back that deselected CAIC but left a 2.0
+            // gain sitting in 0x84 would be this app changing the display controller and
+            // then not putting it back. Said out loud when it fails, rather than swallowed:
+            // it is the one path that can end with the machine holding a value nobody asked
+            // for, and a power cycle is then the thing that clears it.
+            if (!PicoReg.writeCaicImageControl(PicoReg.CAIC_GAIN_STOCK,
+                    PicoReg.CAIC_CLIP_THRESHOLD_STOCK)) {
+                note("caic gain RESTORE FAILED:" + why);
+                Log.w(TAG, "CAIC gain restore failed (" + why + "); a power cycle clears it");
+            }
             note("caic<-off:" + why);
             persistCaicDriven(false);
         } else {
             note("caic hand-back WRITE FAILED:" + why);
             Log.w(TAG, "CAIC hand-back write failed (" + why + "); a power cycle clears it");
+        }
+    }
+
+    /** As {@link #handBackCaic}, for LABB: back to the {@code 10 80} the machine had. */
+    private void handBackLabb(String why) {
+        if (labbWritten != 1) {
+            return;
+        }
+        if (PicoReg.writeLabb(false, PicoReg.LABB_STRENGTH_STOCK, PicoReg.LABB_SHARPNESS_STOCK)) {
+            labbWritten = 0;
+            labbStrengthWritten = -1;
+            labbSharpnessWritten = -1;
+            note("labb<-off:" + why);
+            persistLabbDriven(false);
+        } else {
+            note("labb hand-back WRITE FAILED:" + why);
+            Log.w(TAG, "LABB hand-back write failed (" + why + "); a power cycle clears it");
         }
     }
 
@@ -1764,22 +1966,36 @@ public class FanService extends Service {
         });
     }
 
+    private void persistLabbDriven(final boolean v) {
+        runOffLoop(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Prefs.setLabbDriven(FanService.this, v);
+                } catch (Throwable t) {
+                    Log.w(TAG, "persistLabbDriven", t);
+                }
+            }
+        });
+    }
+
     /**
      * Ask the DLPC what it is doing, on a thread that is neither the control loop nor
      * the housekeeping looper -- a hung {@code logcat} must be able to take nothing down
      * with it. Publishes to {@link #caicReadback} and files a note only when the answer
-     * changes, plus the max-available-power word while CAIC reads on, since that number
-     * moving with the content is the one piece of evidence the experiment can produce
-     * without a light meter.
+     * changes, plus, while CAIC reads on, the gain budget it is actually working within
+     * and the max-available-power word -- the first because a 1.0 there is the whole reason
+     * 0x84 is now written at all, the second because that number moving with the content is
+     * the one piece of evidence the experiment can produce without a light meter.
      */
     private void readCaicAsync() {
-        caicReading = true;
+        dlpcReading = true;
         try {
             Thread t = new Thread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        PicoReg.CaicReading r = PicoReg.readLedOutputControl(CAIC_READ_TIMEOUT_MS);
+                        PicoReg.CaicReading r = PicoReg.readLedOutputControl(DLPC_READ_TIMEOUT_MS);
                         caicReadback = r;
                         String line = "caic_read=" + r.state
                                 + (r.known() ? "(" + r.source + ")" : "");
@@ -1790,7 +2006,13 @@ public class FanService extends Service {
                             note(r.known() ? line : line + " (" + r.reason + ")");
                         }
                         if (PicoReg.CAIC_ON.equals(r.state)) {
-                            PicoReg.CaicPower p = PicoReg.readCaicMaxPower(CAIC_READ_TIMEOUT_MS);
+                            PicoReg.CaicImage img =
+                                    PicoReg.readCaicImageControl(DLPC_READ_TIMEOUT_MS);
+                            if (img.known) {
+                                caicImageReadback = img;
+                                note("caic_image=" + img.summary());
+                            }
+                            PicoReg.CaicPower p = PicoReg.readCaicMaxPower(DLPC_READ_TIMEOUT_MS);
                             if (p.rawWord >= 0) {
                                 note("caic_maxpower=" + p.rawHex()
                                         + "(" + Sample.fmt1(p.watts) + "W?)");
@@ -1799,15 +2021,46 @@ public class FanService extends Service {
                     } catch (Throwable t) {
                         Log.w(TAG, "caic read", t);
                     } finally {
-                        caicReading = false;
+                        dlpcReading = false;
                     }
                 }
             }, "fanlab-caic-read");
             t.setDaemon(true);
             t.start();
         } catch (Throwable t) {
-            caicReading = false;
+            dlpcReading = false;
             Log.w(TAG, "readCaicAsync", t);
+        }
+    }
+
+    /** As {@link #readCaicAsync}, for LABB's 0x81. Four bytes, or an unknown with a reason. */
+    private void readLabbAsync() {
+        dlpcReading = true;
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        PicoReg.Labb r = PicoReg.readLabb(DLPC_READ_TIMEOUT_MS);
+                        labbReadback = r;
+                        String line = "labb_read=" + (r.known ? r.summary() : "unknown")
+                                + (r.known ? "(" + r.source + ")" : "");
+                        if (!line.equals(lastLabbReadLine)) {
+                            lastLabbReadLine = line;
+                            note(r.known ? line : line + " (" + r.reason + ")");
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "labb read", t);
+                    } finally {
+                        dlpcReading = false;
+                    }
+                }
+            }, "fanlab-labb-read");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable t) {
+            dlpcReading = false;
+            Log.w(TAG, "readLabbAsync", t);
         }
     }
 
@@ -1825,11 +2078,11 @@ public class FanService extends Service {
         // The countdown outranks both: while it is running the setting still reads false,
         // because nothing is persisted until it is confirmed, and reporting that as "off"
         // would be the one moment the screen contradicts the picture.
-        int left = caicCountdownSec();
-        if (left > 0) {
-            return "arming - " + left + " s to confirm, reverts on its own otherwise";
+        if (pictureArmed(PictureArm.CAIC)) {
+            return "arming - " + pictureCountdownSec()
+                    + " s to confirm, reverts on its own otherwise";
         }
-        if (caicArm.reverting()) {
+        if (pictureArm.reverting(PictureArm.CAIC)) {
             return "reverting: not confirmed";
         }
         if (!wanted) {
@@ -1846,43 +2099,84 @@ public class FanService extends Service {
     }
 
     /**
-     * Ask for CAIC and start the countdown. The tick writes {@code w 50 1 1}; nothing is
-     * persisted, and in {@link CaicArm#WINDOW_MS} the tick writes it back off unless
-     * {@link #confirmCaic} has been called.
+     * One line for the screen and the broadcast reply, LABB's version of
+     * {@link #caicSummary}. Same discipline: nothing here says on until the DLPC has.
+     */
+    public static String labbSummary(boolean wanted) {
+        PicoReg.Labb rb = labbReadback;
+        boolean known = rb != null && rb.known;
+        if (pictureArmed(PictureArm.LABB)) {
+            return "arming - " + pictureCountdownSec()
+                    + " s to confirm, reverts on its own otherwise";
+        }
+        if (pictureArm.reverting(PictureArm.LABB)) {
+            return "reverting: not confirmed";
+        }
+        if (!wanted) {
+            return known && rb.enabled && labbWritten == 1 ? "off (read back: still ON)" : "off";
+        }
+        if (labbWritten == 1) {
+            return known ? "on (read back: " + rb.summary() + ")" : "on (unverified)";
+        }
+        return labbWriteFailed ? "on (WRITE FAILED)" : "on (not written yet)";
+    }
+
+    /**
+     * Ask for a display change and start the countdown. The tick writes the register;
+     * nothing is persisted, and in {@link PictureArm#WINDOW_MS} the tick writes it back off
+     * unless {@link #confirmPicture} has been called.
      *
      * Static, and it arms before it pokes, because the same press is what starts the
      * service on a cold app: by the time the first tick runs the window is already open.
      */
-    public static void armCaic(Context c) {
-        caicArm.arm(SystemClock.elapsedRealtime());
+    public static void armPicture(Context c, int what) {
+        pictureArm.arm(what, SystemClock.elapsedRealtime());
         poke(c, ACTION_REFRESH);
     }
 
     /**
      * The owner confirmed the picture survived. <b>The only place in the app that stores
-     * CAIC on</b> -- everything else arms it.
+     * either of these on</b> -- everything else arms them.
      *
      * @return false if the window had already closed, in which case nothing is stored: a
      *         press that arrives late is a press at a picture that has already come back.
      */
-    public static boolean confirmCaic(Context c) {
-        if (!caicArm.confirm()) {
+    public static boolean confirmPicture(Context c) {
+        int was = pictureArm.confirm();
+        if (was == PictureArm.NONE) {
             return false;
         }
-        Prefs.setCaic(c, true);
+        // Exactly what the window covered, which is why confirm() returns it rather than a
+        // boolean: a press must not switch on a second feature that was never armed.
+        if ((was & PictureArm.CAIC) != 0) {
+            Prefs.setCaic(c, true);
+        }
+        if ((was & PictureArm.LABB) != 0) {
+            Prefs.setLabb(c, true);
+        }
         poke(c, ACTION_REFRESH);
         return true;
     }
 
     /** Drop an arm before its time. The tick writes off; nothing was ever persisted. */
-    public static void cancelCaicArm(Context c) {
-        caicArm.cancel();
+    public static void cancelPictureArm(Context c, int what) {
+        pictureArm.cancel(what);
         poke(c, ACTION_REFRESH);
     }
 
-    /** Seconds left on the CAIC countdown, 0 when nothing is armed. For the screen. */
-    public static int caicCountdownSec() {
-        return caicArm.secondsLeft(SystemClock.elapsedRealtime());
+    /** Seconds left on the countdown, 0 when nothing is armed. For the screen. */
+    public static int pictureCountdownSec() {
+        return pictureArm.secondsLeft(SystemClock.elapsedRealtime());
+    }
+
+    /** Is {@code what} riding on the open window? */
+    public static boolean pictureArmed(int what) {
+        return pictureArm.armed(what, SystemClock.elapsedRealtime());
+    }
+
+    /** What the open window covers, for the dialog's own wording. */
+    public static int pictureArmedWhat() {
+        return pictureArm.armedWhat(SystemClock.elapsedRealtime());
     }
 
     // ---- the LED drive override ----

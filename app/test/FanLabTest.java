@@ -1,4 +1,3 @@
-import com.daleygames.fanlab.CaicArm;
 import com.daleygames.fanlab.CsvLogger;
 import com.daleygames.fanlab.CurveConfig;
 import com.daleygames.fanlab.ExpFit;
@@ -11,6 +10,7 @@ import com.daleygames.fanlab.LedDrive;
 import com.daleygames.fanlab.LinearConfig;
 import com.daleygames.fanlab.Mode;
 import com.daleygames.fanlab.PicoReg;
+import com.daleygames.fanlab.PictureArm;
 import com.daleygames.fanlab.Provenance;
 import com.daleygames.fanlab.Sample;
 import com.daleygames.fanlab.SweepEngine;
@@ -135,7 +135,8 @@ public final class FanLabTest {
         testHoldSession();
         testPicoReg();
         testCaic();
-        testCaicArm();
+        testImageProcessing();
+        testPictureArm();
         testReportOutput();
 
         System.out.println();
@@ -2536,83 +2537,342 @@ public final class FanLabTest {
     /**
      * The arm-and-confirm window, which is the only thing standing between "CAIC blanked
      * the picture" and "CAIC blanked the picture and the owner cannot see the control that
-     * would undo it".
+     * would undo it". LABB rides the same window, and for the same reason.
      *
      * Two properties matter more than the arithmetic. An unconfirmed window must revert
      * itself, once, without anyone doing anything; and it must leave nothing behind, so a
      * process death is an end rather than a carry-over -- which is what makes a power cycle
      * a reliable escape rather than a way of booting back into a broken picture.
+     *
+     * Sharing it adds a third: a confirmation must store exactly what was armed. A press
+     * that switched on a feature nobody armed would be the app changing the display without
+     * being asked, which is the thing the window exists to prevent.
      */
-    private static void testCaicArm() {
-        section("CAIC: the arm-and-confirm window, and what must not survive it");
+    private static void testPictureArm() {
+        section("the arm-and-confirm window, and what must not survive it");
 
         long t = 1000L;
-        eq((int) CaicArm.WINDOW_MS, 15000, "the window is fifteen seconds");
+        eq((int) PictureArm.WINDOW_MS, 15000, "the window is fifteen seconds");
 
-        CaicArm fresh = new CaicArm();
+        PictureArm fresh = new PictureArm();
         check(!fresh.armed(t), "a fresh window is not armed - there is nowhere to store one");
         check(!fresh.reverting(), "and owes nothing");
         eq(fresh.secondsLeft(t), 0, "with no countdown to draw");
         check(!fresh.poll(t), "polling an idle window asks for nothing");
+        eq(fresh.armedWhat(t), PictureArm.NONE, "and covers nothing");
+        fresh.arm(PictureArm.NONE, t);
+        check(!fresh.armed(t), "arming nothing opens no window");
 
         // ---- unconfirmed: it reverts itself, once ----
-        CaicArm a = new CaicArm();
-        a.arm(t);
+        PictureArm a = new PictureArm();
+        a.arm(PictureArm.CAIC, t);
         check(a.armed(t), "arming opens the window");
+        check(a.armed(PictureArm.CAIC, t), "  covering what was armed");
+        check(!a.armed(PictureArm.LABB, t), "  and nothing else");
         eq(a.secondsLeft(t), 15, "which starts at fifteen");
         eq(a.secondsLeft(t + 14500), 1,
                 "and rounds up, so the last part-second still reads 1 rather than 0");
-        check(!a.poll(t + CaicArm.WINDOW_MS - 1),
+        check(!a.poll(t + PictureArm.WINDOW_MS - 1),
                 "a millisecond short of the deadline is still inside the window");
-        check(a.armed(t + CaicArm.WINDOW_MS - 1), "and still armed");
-        check(a.poll(t + CaicArm.WINDOW_MS), "the deadline closes it and asks for the revert");
-        check(!a.armed(t + CaicArm.WINDOW_MS), "it is no longer armed");
-        check(a.reverting(), "and a revert is owed");
-        check(!a.poll(t + CaicArm.WINDOW_MS + 5000),
+        check(a.armed(t + PictureArm.WINDOW_MS - 1), "and still armed");
+        check(a.poll(t + PictureArm.WINDOW_MS), "the deadline closes it and asks for the revert");
+        check(!a.armed(t + PictureArm.WINDOW_MS), "it is no longer armed");
+        check(a.reverting(PictureArm.CAIC), "and a revert is owed on what was armed");
+        check(!a.reverting(PictureArm.LABB), "  and on nothing else");
+        check(!a.poll(t + PictureArm.WINDOW_MS + 5000),
                 "which is asked for once, not on every tick that follows");
         check(a.reverting(),
                 "but stays owed however long the write takes - the display may be asleep");
-        a.reverted();
+        a.reverted(PictureArm.CAIC);
         check(!a.reverting(), "and is cleared only when the write lands");
-        eq(a.secondsLeft(t + CaicArm.WINDOW_MS), 0, "with no countdown left to draw");
+        eq(a.secondsLeft(t + PictureArm.WINDOW_MS), 0, "with no countdown left to draw");
 
-        // ---- confirmed: the caller may persist, and nothing reverts ----
-        CaicArm b = new CaicArm();
-        b.arm(t);
-        check(b.confirm(),
-                "confirming inside the window succeeds, which is the caller's one "
-                        + "permission to store the setting");
+        // ---- confirmed: the caller may persist exactly what was armed, and nothing reverts ----
+        PictureArm b = new PictureArm();
+        b.arm(PictureArm.LABB, t);
+        eq(b.confirm(), PictureArm.LABB,
+                "confirming inside the window returns what was armed, which is the caller's "
+                        + "one permission to store that setting");
         check(!b.armed(t + 1), "and closes the window");
         check(!b.reverting(), "owing no revert");
-        check(!b.poll(t + CaicArm.WINDOW_MS * 2),
+        check(!b.poll(t + PictureArm.WINDOW_MS * 2),
                 "so the original deadline passing does nothing at all");
 
         // ---- a late press must not resurrect what has already been reverted ----
-        CaicArm c = new CaicArm();
-        c.arm(t);
-        check(c.poll(t + CaicArm.WINDOW_MS), "the window closes unconfirmed");
-        check(!c.confirm(),
+        PictureArm c = new PictureArm();
+        c.arm(PictureArm.CAIC, t);
+        check(c.poll(t + PictureArm.WINDOW_MS), "the window closes unconfirmed");
+        eq(c.confirm(), PictureArm.NONE,
                 "a press after it ran out confirms nothing - the picture being looked at "
                         + "is the one that already came back");
-        check(c.reverting(), "and does not cancel the revert it arrived too late to stop");
+        check(c.reverting(PictureArm.CAIC),
+                "and does not cancel the revert it arrived too late to stop");
 
         // ---- cancel is the third exit ----
-        CaicArm d = new CaicArm();
-        d.arm(t);
+        PictureArm d = new PictureArm();
+        d.arm(PictureArm.CAIC, t);
         d.cancel();
         check(!d.armed(t), "cancelling drops the window");
         check(!d.reverting(),
                 "and owes nothing of its own - the caller is turning it off anyway");
-        check(!d.poll(t + CaicArm.WINDOW_MS), "the cancelled deadline never fires");
+        check(!d.poll(t + PictureArm.WINDOW_MS), "the cancelled deadline never fires");
 
         // ---- re-arming restarts rather than stacking ----
-        CaicArm e = new CaicArm();
-        e.arm(t);
-        e.arm(t + 10000L);
+        PictureArm e = new PictureArm();
+        e.arm(PictureArm.CAIC, t);
+        e.arm(PictureArm.CAIC, t + 10000L);
         eq(e.secondsLeft(t + 10000L), 15, "re-arming restarts the countdown");
-        check(!e.poll(t + CaicArm.WINDOW_MS + 1L),
+        check(!e.poll(t + PictureArm.WINDOW_MS + 1L),
                 "so the first arm's deadline does not fire under the second");
-        check(e.poll(t + 10000L + CaicArm.WINDOW_MS), "the second one does");
+        check(e.poll(t + 10000L + PictureArm.WINDOW_MS), "the second one does");
+
+        // ---- two changes, one window ----
+        PictureArm f = new PictureArm();
+        f.arm(PictureArm.CAIC, t);
+        f.arm(PictureArm.LABB, t + 5000L);
+        eq(f.armedWhat(t + 5000L), PictureArm.CAIC | PictureArm.LABB,
+                "arming a second change adds it to the window rather than replacing it");
+        eq(f.secondsLeft(t + 5000L), 15,
+                "and restarts the clock, so the full fifteen seconds runs against what is "
+                        + "on screen now rather than what was five seconds ago");
+        check(f.poll(t + 5000L + PictureArm.WINDOW_MS), "one deadline closes both");
+        check(f.reverting(PictureArm.CAIC) && f.reverting(PictureArm.LABB),
+                "and both are owed a revert");
+        check("CAIC and LABB".equals(PictureArm.name(f.revertingWhat())),
+                "which the note names in full: " + quote(PictureArm.name(f.revertingWhat())));
+        f.reverted(PictureArm.CAIC);
+        check(!f.reverting(PictureArm.CAIC) && f.reverting(PictureArm.LABB),
+                "each write clears its own debt and not the other's");
+
+        // ---- a confirmation stores what was armed, and nothing else ----
+        PictureArm g = new PictureArm();
+        g.arm(PictureArm.LABB, t);
+        eq(g.confirm(), PictureArm.LABB,
+                "confirming a LABB window is not permission to switch CAIC on");
+
+        // ---- a confirmation does not cancel a debt from an earlier window ----
+        PictureArm h = new PictureArm();
+        h.arm(PictureArm.CAIC, t);
+        check(h.poll(t + PictureArm.WINDOW_MS), "CAIC's window closes unconfirmed");
+        h.arm(PictureArm.LABB, t + PictureArm.WINDOW_MS + 1000L);
+        eq(h.confirm(), PictureArm.LABB, "a later LABB window is confirmed");
+        check(h.reverting(PictureArm.CAIC),
+                "and the CAIC revert, which may still be waiting for the display to wake, "
+                        + "is still owed");
+
+        // ---- re-arming supersedes a revert owed on the same change ----
+        PictureArm i = new PictureArm();
+        i.arm(PictureArm.CAIC, t);
+        check(i.poll(t + PictureArm.WINDOW_MS), "the window closes unconfirmed");
+        i.arm(PictureArm.CAIC, t + PictureArm.WINDOW_MS + 100L);
+        check(!i.reverting(PictureArm.CAIC),
+                "arming the same change again withdraws the revert - undoing it now would "
+                        + "be carrying out an instruction that has been replaced");
+
+        // ---- cancelling one change leaves the other counting ----
+        PictureArm j = new PictureArm();
+        j.arm(PictureArm.CAIC | PictureArm.LABB, t);
+        j.cancel(PictureArm.CAIC);
+        check(j.armed(t) && j.armed(PictureArm.LABB, t) && !j.armed(PictureArm.CAIC, t),
+                "cancelling one change leaves the window open on the other");
+        eq(PictureArm.name(PictureArm.NONE).length(), 0, "and nothing armed has no name");
+    }
+
+    // ----------------------------------------------------------------- image processing
+
+    /**
+     * The two image-processing controls, which are the reason CAIC had nothing to do.
+     *
+     * The whole case rests on bytes: the fixed-point gain, the packed LABB control byte, and
+     * the exact command strings. The projector's own read-backs -- {@code 00 20 60} and
+     * {@code 10 80 20 00} -- are in here verbatim, so a decoder that drifts from what the
+     * hardware actually said fails here rather than on the machine.
+     */
+    private static void testImageProcessing() throws Exception {
+        section("CAIC image control (0x84/0x85) and LABB (0x80/0x81) - the bytes");
+
+        eq(PicoReg.OPCODE_CAIC_IMAGE_WRITE, 0x84, "Write CAIC Image Processing Control is 0x84");
+        eq(PicoReg.OPCODE_CAIC_IMAGE_READ, 0x85, "and the read is 0x85");
+        eq(PicoReg.OPCODE_LABB_WRITE, 0x80, "Write Local Area Brightness Boost is 0x80");
+        eq(PicoReg.OPCODE_LABB_READ, 0x81, "and the read is 0x81");
+
+        // ---- the fixed-point gain: b7=2^2 down to b0=2^-5, so the byte is gain x 32 ----
+        eq(PicoReg.encodeCaicGain(1.0), 0x20, "1.0 encodes as 0x20");
+        eq(PicoReg.encodeCaicGain(1.5), 0x30, "1.5 encodes as 0x30");
+        eq(PicoReg.encodeCaicGain(2.0), 0x40, "2.0 encodes as 0x40");
+        eq(PicoReg.encodeCaicGain(4.0), 0x80, "4.0 encodes as 0x80");
+        eq(PicoReg.decodeCaicGain(0x20), 1.0, 1e-9, "and 0x20 decodes back to 1.0");
+        eq(PicoReg.decodeCaicGain(0x30), 1.5, 1e-9, "0x30 back to 1.5");
+        eq(PicoReg.decodeCaicGain(0x40), 2.0, 1e-9, "0x40 back to 2.0");
+        eq(PicoReg.decodeCaicGain(0x80), 4.0, 1e-9, "0x80 back to 4.0");
+        // Every representable step round-trips, not just the four named ones.
+        for (int b = 0x20; b <= 0x80; b++) {
+            if (PicoReg.encodeCaicGain(PicoReg.decodeCaicGain(b)) != b) {
+                check(false, "the gain round trip loses byte 0x" + Integer.toHexString(b));
+                break;
+            }
+        }
+        check(true, "and every byte from 0x20 to 0x80 survives decode-then-encode");
+
+        // Out of range is refused, not clamped: the controller rejects the whole command on
+        // an invalid write parameter, so a clamp would send a gain the caller never asked
+        // for while a pass-through would send one that silently does not execute.
+        eq(PicoReg.encodeCaicGain(0.9), -1, "0.9 is refused - below the 1.0 the DLPC accepts");
+        eq(PicoReg.encodeCaicGain(4.1), -1, "4.1 is refused - above the 4.0 the DLPC accepts");
+        eq(PicoReg.encodeCaicGain(0.0), -1, "and so is 0");
+        eq(PicoReg.encodeCaicGain(Double.NaN), -1, "and NaN");
+        check(PicoReg.caicImageControlCommand(4.1, 0x60) == null,
+                "so no command string is produced for one either - nothing is sent at all");
+        check(Double.isNaN(PicoReg.decodeCaicGain(-1)), "no byte decodes to NaN, never to 0");
+
+        // ---- what the projector actually answered ----
+        PicoReg.CaicImage img = PicoReg.caicImageFromBytes(new int[]{0x00, 0x20, 0x60}, "kernel log");
+        check(img.known, "the projector's own \"00 20 60\" is a reading");
+        eq(img.gain, 1.0, 1e-9,
+                "  and its maximum lumens gain is 1.0 - the bottom of the range, so CAIC was "
+                        + "selected with permission to lift the image by nothing");
+        eq(img.gainByte, 0x20, "  from byte 0x20");
+        eq(img.clipThreshold, 96, "  with the clipping threshold at 96");
+        check(!img.gainDisplay,
+                "  and the debug overlay off, which is where it must stay - the guide says "
+                        + "it must never be used for normal operation");
+        check(img.summary().indexOf("gain 1.0") >= 0,
+                "  summarised for the log as " + quote(img.summary()));
+        check(!PicoReg.caicImageFromBytes(new int[]{0x00, 0x20}, "x").known,
+                "two bytes is not a 0x85 reading and is refused");
+        check(!PicoReg.caicImageFromBytes(null, "x").known, "nor is none");
+        check(!PicoReg.caicImageFromResponseText("", "x").known, "nor an empty response");
+        check(PicoReg.caicImageFromResponseText("00 20 60", "sysfs").known
+                        && PicoReg.caicImageFromResponseText("002060", "sysfs").known,
+                "and it parses whether the bytes arrive spaced or packed");
+
+        // ---- the LABB control byte, and the sharpness it must not drop ----
+        eq(PicoReg.labbControlByte(1, true), 0x14,
+                "sharpness 1 with LABB enabled is 0x14: b7:4 the sharpness, b3:2 the control");
+        eq(PicoReg.labbControlByte(1, false), 0x10, "and disabled is 0x10, which is what the "
+                + "projector was found holding");
+        eq(PicoReg.labbControlByte(0, true), 0x04, "sharpness 0 enabled is 0x04");
+        eq(PicoReg.labbControlByte(15, true), 0xF4, "sharpness 15 enabled is 0xf4");
+        eq(PicoReg.labbControlByte(15, false), 0xF0, "and disabled 0xf0");
+        for (int s = 0; s <= 15; s++) {
+            int on = PicoReg.labbControlByte(s, true);
+            int off = PicoReg.labbControlByte(s, false);
+            if (PicoReg.labbSharpnessOf(on) != s || PicoReg.labbSharpnessOf(off) != s
+                    || PicoReg.labbControlOf(on) != PicoReg.LABB_CONTROL_ENABLED
+                    || PicoReg.labbControlOf(off) != PicoReg.LABB_CONTROL_DISABLED) {
+                check(false, "the LABB control byte loses sharpness " + s);
+                break;
+            }
+        }
+        check(true, "and every sharpness 0..15 survives the round trip through either state - "
+                + "which is the point, since the two share a byte and DLPU078A says sharpness "
+                + "does nothing unless LABB is enabled");
+        eq(PicoReg.labbControlByte(99, true), 0xF4, "an over-large sharpness is held to 15");
+        eq(PicoReg.labbControlByte(-3, true), 0x04, "and a negative one to 0");
+        eq(PicoReg.labbControlByte(1, true) & 0x03, 0,
+                "b1:0 are reserved and are left clear");
+
+        // ---- what the projector actually answered ----
+        PicoReg.Labb labb = PicoReg.labbFromBytes(new int[]{0x10, 0x80, 0x20, 0x00}, "kernel log");
+        check(labb.known, "the projector's own \"10 80 20 00\" is a reading");
+        check(!labb.enabled, "  and LABB is Disabled - control field 0h");
+        eq(labb.strength, 128, "  with the strength already preset to 128");
+        eq(labb.sharpness, 1, "  and sharpness 1");
+        eq(labb.gainRaw, 0x20,
+                "  and the read-only current gain kept as the raw 0x20 - Table 3-81 gives "
+                        + "the range as 1..8 and 32 is not in it, so converting it would be "
+                        + "inventing units");
+        eq(labb.status, 0x00, "  with byte 4 recorded as it came");
+        PicoReg.Labb on = PicoReg.labbFromBytes(new int[]{0x14, 0x80, 0x20, 0x00}, "kernel log");
+        check(on.known && on.enabled && on.sharpness == 1,
+                "\"14 80 20 00\" is the same row with LABB enabled");
+        PicoReg.Labb reserved = PicoReg.labbFromBytes(new int[]{0x18, 0x80, 0x20, 0x00}, "x");
+        check(!reserved.known && !reserved.enabled,
+                "a 2h control field is reserved, so it is unknown rather than a third state");
+        eq(reserved.strength, 128, "  though the bytes around it are still kept");
+        check(reserved.reason.indexOf("reserve") >= 0,
+                "  and the reason says so: " + quote(reserved.reason));
+        check(!PicoReg.labbFromBytes(new int[]{0x10, 0x80, 0x20}, "x").known,
+                "three bytes is not a 0x81 reading");
+        check(!PicoReg.labbFromResponseText("zip", "x").known,
+                "and text with no hex in it is not one either");
+
+        // ---- the command strings, byte for byte, against the stub node ----
+        check("w 84 3 0 40 60".equals(PicoReg.caicImageControlCommand(2.0, 0x60)),
+                "a 2.0 gain is exactly \"w 84 3 0 40 60\"");
+        check("w 84 3 0 20 60".equals(
+                        PicoReg.caicImageControlCommand(PicoReg.CAIC_GAIN_STOCK, 0x60)),
+                "and the restore is \"w 84 3 0 20 60\" - the bytes the projector was found "
+                        + "holding, so switching CAIC off leaves the machine as it was");
+        check("w 80 2 14 80".equals(PicoReg.labbCommand(true, 128, 1)),
+                "enabling LABB is exactly \"w 80 2 14 80\"");
+        check("w 80 2 10 80".equals(PicoReg.labbCommand(false, 128, 1)),
+                "and the undo is \"w 80 2 10 80\"");
+        check("r 85 3".equals(PicoReg.readCommand(PicoReg.OPCODE_CAIC_IMAGE_READ,
+                        PicoReg.CAIC_IMAGE_LEN)),
+                "the CAIC image read-back is \"r 85 3\"");
+        check("r 81 4".equals(PicoReg.readCommand(PicoReg.OPCODE_LABB_READ,
+                        PicoReg.LABB_READ_LEN)),
+                "and LABB's is \"r 81 4\"");
+
+        File tmp = File.createTempFile("fanlab-imgproc", "");
+        tmp.delete();
+        tmp.mkdirs();
+        String oldRoot = Sysfs.root;
+        try {
+            Sysfs.root = tmp.getAbsolutePath();
+            check(!PicoReg.writeCaicImageControl(2.0, 0x60),
+                    "with no picoreg node the gain write reports failure rather than pretending");
+            check(!PicoReg.writeLabb(true, 128, 1), "and so does the LABB write");
+            check(!PicoReg.readLabb().known,
+                    "and the read is unknown, not a state nobody read");
+
+            File dir = new File(tmp, "sys/class/dlpc343x");
+            dir.mkdirs();
+            File node = new File(dir, "picoreg");
+            write(node, "");
+            check(PicoReg.writeCaicImageControl(2.0, PicoReg.CAIC_CLIP_THRESHOLD_STOCK),
+                    "the gain write succeeds against the node");
+            check("w 84 3 0 40 60".equals(slurp(node)),
+                    "and the node holds exactly \"w 84 3 0 40 60\" - no newline, nothing else");
+            check(PicoReg.writeLabb(true, PicoReg.LABB_STRENGTH_STOCK,
+                            PicoReg.LABB_SHARPNESS_STOCK),
+                    "the LABB write succeeds");
+            check("w 80 2 14 80".equals(slurp(node)),
+                    "and the node holds exactly \"w 80 2 14 80\" - no newline, nothing else");
+            check(PicoReg.writeLabb(false, PicoReg.LABB_STRENGTH_STOCK,
+                            PicoReg.LABB_SHARPNESS_STOCK),
+                    "the off write succeeds");
+            check("w 80 2 10 80".equals(slurp(node)), "and holds exactly \"w 80 2 10 80\"");
+
+            // An out-of-range gain must not reach the node at all: the DLPC would reject the
+            // whole command, so the byte on the wire would change nothing while the app
+            // believed it had set a budget.
+            check(!PicoReg.writeCaicImageControl(9.0, 0x60),
+                    "a 9.0 gain is refused even with the node right there");
+            check("w 80 2 10 80".equals(slurp(node)),
+                    "  and nothing was written - the node still holds the previous command");
+
+            // The stub echoes what was last written, which is what a file does and exactly
+            // what a node with no show() must not be mistaken for.
+            PicoReg.Labb echoed = PicoReg.readLabb();
+            check(!echoed.known, "an echo of \"r 81 4\" is not decoded as a state");
+            check(echoed.reason.indexOf("show()") >= 0
+                            && echoed.reason.indexOf("READ_LOGS") >= 0,
+                    "  and the reason names the obstacle and the permission: "
+                            + quote(echoed.reason));
+            PicoReg.CaicImage echoedImg = PicoReg.readCaicImageControl();
+            check(!echoedImg.known, "the same for \"r 85 3\"");
+
+            PicoReg.Labb timed = PicoReg.readLabb(1500L);
+            check(timed != null && !timed.known,
+                    "the bounded LABB read always answers, so the 1 Hz loop cannot stall on it");
+            PicoReg.CaicImage timedImg = PicoReg.readCaicImageControl(1500L);
+            check(timedImg != null && !timedImg.known, "and so does the bounded gain read");
+        } finally {
+            Sysfs.root = oldRoot;
+            rmrf(tmp);
+        }
     }
 
     // ----------------------------------------------------------------- LED drive

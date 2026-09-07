@@ -90,9 +90,30 @@ import android.util.Log;
  *       at. Off by default, which is how stock ships; a power cycle turns it off
  *       regardless. {@code caic=} in the reply gives the setting and, on the system build
  *       once a read-back has landed, what the DLPC actually says. See {@link PicoReg}</td></tr>
+ *   <tr><td>{@code --ef caicgain <f>}</td><td>how far CAIC is permitted to lift the image,
+ *       {@code 1.0}..{@code 4.0}, snapped to a tenth and written to {@code 0x84} before
+ *       {@code 0x50} selects CAIC. <b>Outside that range the controller rejects the whole
+ *       command</b>, so a value outside it is clamped here and the reply says REPAIRED.
+ *       Default 2.0. The projector was found at 1.0, which is the bottom of the range and
+ *       permits no lift at all -- which is why enabling CAIC alone did nothing measurable.
+ *       Restored to 1.0 whenever CAIC goes off, so the machine is left as found</td></tr>
+ *   <tr><td>{@code --ez labb <b>}</td><td>ask the display controller to run Local Area
+ *       Brightness Boost -- adaptively gaining up the darker parts of the image
+ *       ({@code w 80 2 14 80} to picoreg; {@code false} writes {@code w 80 2 10 80}, the
+ *       bytes the projector was found holding). Off by default. Unlike CAIC this needs
+ *       nothing from an LED driver -- it is DMD-side image processing -- so it is the half
+ *       of IntelliBright this board has a mechanism for. Still an experiment: nobody has
+ *       run it on this model</td></tr>
+ *   <tr><td>{@code --ei labbstrength <n>}</td><td>how hard LABB pushes, 0..255, default 128
+ *       (the value the register already held). DLPU078A: 0 is no boost, 255 the maximum
+ *       viable, and the strength is <b>not</b> a direct indication of the gain, because the
+ *       gain varies with the image content</td></tr>
+ *   <tr><td>{@code --ei labbsharpness <n>}</td><td>LABB's sharpness strength, 0..15, 0 off,
+ *       default 1 (again what the hardware had). It shares a byte with the enable and does
+ *       nothing unless LABB itself is on</td></tr>
  *   <tr><td>{@code --ez reset <b>}</td><td>restore the built-in default curve, put the LED
- *       drive back to the stock table and switch it off, and turn the CAIC experiment
- *       off</td></tr>
+ *       drive back to the stock table and switch it off, and turn both display-controller
+ *       experiments off with their tuning back to the defaults</td></tr>
  *   <tr><td>{@code --ez export <b>}</td><td>copy every existing log to
  *       {@code FanLab-export/} on each mounted USB volume, now, whether or not this boot
  *       has already done it. Runs on its own thread; the reply says it started, and
@@ -145,10 +166,12 @@ public class ConfigReceiver extends BroadcastReceiver {
 
         if (intent.getBooleanExtra("reset", false)) {
             Prefs.resetCurve(context);
-            // The CAIC experiment goes with it. "Reset" is the word someone reaches for
-            // when they want the machine back as the manufacturer left it, and stock has
-            // CAIC off; the service sees the setting change and writes the off command.
-            Prefs.setCaic(context, false);
+            // Both display experiments go with it, tuning included. "Reset" is the word
+            // someone reaches for when they want the machine back as the manufacturer left
+            // it, and stock has CAIC and LABB both off; the service sees the settings change
+            // and writes the off commands, which also hand the CAIC gain budget back to the
+            // 1.0 the projector was found holding.
+            Prefs.resetDisplay(context);
             // And the LED drive, for exactly the same reason and by the same mechanism:
             // stock is the kernel's own table with the override off, and the tick that sees
             // the setting change hands the hardware back within a second. LINEAR's own
@@ -323,9 +346,41 @@ public class ConfigReceiver extends BroadcastReceiver {
             Prefs.setRoomC(context, intent.getIntExtra("room", 0));
             did.append(" room");
         }
+        // The gain budget before the switch, so `--ef caicgain 3.0 --ez caic true` in one
+        // command sets the budget and then selects CAIC, rather than selecting it behind
+        // whatever budget happened to be stored a moment earlier.
+        if (intent.hasExtra("caicgain")) {
+            double asked = intent.getFloatExtra("caicgain", (float) Prefs.caicGain(context));
+            Prefs.setCaicGain(context, asked);
+            // Half a tenth, exactly as the LINEAR ceiling does it: --ef arrives as a float,
+            // so 2.5 reaches us as 2.4999999403953552 and snapping that back to a tenth is
+            // the transport being undone, not a repair. A real clamp moves the value by
+            // whole units, and needs saying -- the controller would have rejected the
+            // command outright, so a caller who sent 5.0 must not be left believing CAIC is
+            // running with a five-times budget.
+            boolean repaired = Math.abs(Prefs.caicGain(context) - asked) > 0.05;
+            did.append(repaired ? " caicgain(REPAIRED)" : " caicgain");
+        }
         if (intent.hasExtra("caic")) {
             Prefs.setCaic(context, intent.getBooleanExtra("caic", false));
             did.append(" caic");
+        }
+        // LABB's two numbers before its switch, for the same reason as the CAIC gain.
+        if (intent.hasExtra("labbstrength")) {
+            int asked = intent.getIntExtra("labbstrength", PicoReg.LABB_STRENGTH_STOCK);
+            Prefs.setLabbStrength(context, asked);
+            did.append(Prefs.labbStrength(context) == asked
+                    ? " labbstrength" : " labbstrength(REPAIRED)");
+        }
+        if (intent.hasExtra("labbsharpness")) {
+            int asked = intent.getIntExtra("labbsharpness", PicoReg.LABB_SHARPNESS_STOCK);
+            Prefs.setLabbSharpness(context, asked);
+            did.append(Prefs.labbSharpness(context) == asked
+                    ? " labbsharpness" : " labbsharpness(REPAIRED)");
+        }
+        if (intent.hasExtra("labb")) {
+            Prefs.setLabb(context, intent.getBooleanExtra("labb", false));
+            did.append(" labb");
         }
         if (intent.hasExtra("mode")) {
             int m = intent.getIntExtra("mode", Mode.OFF);
@@ -369,6 +424,19 @@ public class ConfigReceiver extends BroadcastReceiver {
             }
         }
         return CurveConfig.PRESET_CUSTOM;
+    }
+
+    /**
+     * "(read back: 1.0x)" when the DLPC has actually answered, and nothing at all otherwise.
+     *
+     * Nothing rather than "unknown", because the setting is right beside it and a reader
+     * seeing two numbers would take the second for a contradiction. Absence is the honest
+     * form of "nobody has asked the controller".
+     */
+    private static String caicGainReadback() {
+        PicoReg.CaicImage img = FanService.caicImageReadback;
+        return img == null || !img.known
+                ? "" : "(read back: " + PicoReg.fmtGain(img.gain) + "x)";
     }
 
     /** "quiet, balanced, cool, cold or bright" -- the accepted words, as the list has them. */
@@ -420,6 +488,15 @@ public class ConfigReceiver extends BroadcastReceiver {
                 // read-back lags a write by a few seconds and runs only on the system
                 // build, so a second round trip after --ez caic true is how to see it.
                 + " caic=" + FanService.caicSummary(Prefs.caic(context))
+                // The budget separately from the switch, because it is the half that was
+                // wrong: CAIC selected with a 1.0 gain is CAIC permitted to do nothing. The
+                // read-back is what the controller said 0x85 holds, and only lands on the
+                // system build with CAIC on.
+                + " caicgain=" + Sample.fmt1(Prefs.caicGain(context)) + "x"
+                + caicGainReadback()
+                + " labb=" + FanService.labbSummary(Prefs.labb(context))
+                + " labbstrength=" + Prefs.labbStrength(context)
+                + " labbsharpness=" + Prefs.labbSharpness(context)
                 // The table, then what is actually on the hardware -- which is not the same
                 // question, because the override is held off entirely unless this app is
                 // the fan controller, and it drops itself on its own ceiling trip.
