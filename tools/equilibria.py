@@ -15,9 +15,17 @@ report every sign change. One crossing is what a well-behaved curve looks like. 
 two-plus is a design error.
 
     python equilibria.py --curve "v1,..." [--ambient 24,27,30]
+                         [--drive Presentation=90,Normal=70,Eco=50,SuperEco=30]
+                         [--rise-offset Normal=2.5]
+
+The plant flags are solve_curve.plant_args: --drive scales a mode's column for a raised
+LED drive (an inference from the fitted rise-vs-drive line, not a measurement), and
+--rise-offset adds to a column first, which is how Normal's known-low table column is
+brought up to the field log.
 """
 import sys
-from solve_curve import PLANT, MODES, PROFILE_OF, parse_curve, duty_at, rise_at, audible
+from solve_curve import (PLANT, MODES, PROFILE_OF, parse_curve, duty_at, rise_at, audible,
+                         plant_args, plant_note)
 
 
 def crossings(cfg, mode, ambient, lo=25.0, hi=83.0, step=0.05):
@@ -99,7 +107,7 @@ def main():
     ambients = [21, 24, 27, 30, 33]
     ceiling = 55.0
     duty_cap = 50.0
-    args = sys.argv[1:]
+    args = plant_args(sys.argv[1:])
     i = 0
     while i < len(args):
         if args[i] == "--curve":
@@ -116,6 +124,8 @@ def main():
 
     cfg = parse_curve(curve)
     print("curve: %s" % curve)
+    if plant_note():
+        print(plant_note())
     print("checked against: LED <= %.0f C, operating duty <= %.0f, exactly one equilibrium\n"
           % (ceiling, duty_cap))
     worst = []
