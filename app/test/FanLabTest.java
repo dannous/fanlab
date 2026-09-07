@@ -2708,17 +2708,31 @@ public final class FanLabTest {
         // under the labels r/g/b/b2 while the map is green/red/b2/blue.
         int[] rb = LedDrive.parseReadback("red_current=13 green_current=13 blue_current=13 "
                 + "duty_r=89 duty_g=83 duty_b=89 duty_b2=89");
-        check(rb != null && rb[0] == 83 && rb[1] == 89,
+        check(rb != null && rb[0] == 83 && rb[1] == 89 && rb[2] == 89,
                 "duty_g carries red and the other three carry the common level");
         check(LedDrive.parseReadback("duty_r=100 duty_g=100") != null,
                 "100 is a legal reading");
 
         // Three fields carry the common level, so one glitching is not a lost reading.
         rb = LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=89 duty_b2=89");
-        check(rb != null && rb[0] == 83 && rb[1] == 89,
+        check(rb != null && rb[0] == 83 && rb[1] == 89 && rb[2] == 89,
                 "a glitch in one common field is covered by the other two");
         rb = LedDrive.parseReadback("duty_r=241 duty_g=83 duty_b=238 duty_b2=89");
-        check(rb != null && rb[1] == 89, "two glitches still leave a usable reading");
+        check(rb != null && rb[1] == 89 && rb[2] == 89,
+                "two glitches still leave a usable reading");
+
+        // The half-written table: the kernel writes the four channels one at a time, and
+        // this is Eco part way through, read off the projector. Agreeing with it is how a
+        // colour cast gets reported as a correct override.
+        rb = LedDrive.parseReadback("duty_r=49 duty_g=44 duty_b=39 duty_b2=39");
+        check(rb != null && rb[1] == 39 && rb[2] == 49,
+                "channels that disagree come back as a range, not as whichever was first");
+        check(!LedDrive.readbackAgrees(rb, 45, 50),
+                "and a range never agrees, however close one end of it is");
+        check(LedDrive.readbackAgrees(
+                        LedDrive.parseReadback("duty_r=49 duty_g=44 duty_b=49 duty_b2=49"),
+                        45, 50),
+                "while the fully applied table does, at the handler's one below");
         check(LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=241 duty_b2=238") == null,
                 "but all three glitching is 'could not tell', not a mismatch");
 
@@ -2800,11 +2814,23 @@ public final class FanLabTest {
                     "and the 238 glitch is 'could not tell', which also writes nothing");
 
             // ---- a genuine mismatch rewrites, but not before the rate limit ----
-            t += 1000L;
+            // Anchored to the constant rather than to a wall-clock guess: this assertion
+            // was written against a 5 s limit and silently became untrue when the limit
+            // was shortened, which is the sort of test that only fails once it matters.
+            // Start the limit's clock from a known write rather than from whatever the
+            // steps above happened to leave behind.
+            p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t, true);
+            eq(p.action, LedDrive.Plan.APPLY,
+                    "urgent rewrites regardless of the limit -- what a mode change needs");
+            check(d.perform(p), "and that write lands");
+            long applied = t;
+
+            t = applied + LedDrive.REAPPLY_EVERY_MS / 2;
             p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "the stock table reappearing inside REAPPLY_EVERY_MS waits its turn");
-            t += LedDrive.REAPPLY_EVERY_MS;
+
+            t = applied + LedDrive.REAPPLY_EVERY_MS;
             p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t);
             eq(p.action, LedDrive.Plan.APPLY, "and is put back once the limit has passed");
             eq(p.other, 90, "at the same level");

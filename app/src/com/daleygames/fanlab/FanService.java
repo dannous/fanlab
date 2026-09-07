@@ -73,6 +73,53 @@ public class FanService extends Service {
     private static final String CHANNEL_ID = "fanlab.telemetry";
 
     private static final long TICK_MS = 1000L;
+
+    /**
+     * How often the brightness mode alone is re-read, while the LED drive override is on.
+     *
+     * The kernel applies the stock LED table synchronously inside its own {@code rgblevel}
+     * write, so a mode change puts stock brightness on the screen before this app can know
+     * it happened. Measured on the projector: at 156 ms after the write the panel was still
+     * at stock 75, and the override did not land until 597 ms. That is a visible flick to
+     * the old brightness and back, and the owner saw it before any log did.
+     *
+     * Nothing can remove that window -- the kernel wins the race by construction -- but its
+     * width is ours. Re-reading at 50 ms instead of once a tick cuts it to about three
+     * frames, which is where it stops being a flick and starts being a step.
+     *
+     * It cannot be closed entirely from user space, and the docs say so rather than
+     * implying the override is seamless.
+     *
+     * Cheap on purpose: this path reads {@code rgblevel} and nothing else, whose show
+     * handler returns a stored int. It must never read {@code rgbcurrent}, which costs four
+     * SPI transactions per call.
+     */
+    private static final long LED_FAST_MS = 50L;
+
+    /**
+     * How long after a brightness-mode change the override keeps re-asserting itself.
+     *
+     * Long enough to outlast the kernel's own four SPI writes, and bounded so a projector
+     * that never confirms cannot leave this hammering the bus. It stops the moment a
+     * read-back agrees.
+     *
+     * Measured rather than guessed: with a 600 ms window the projector still showed stock
+     * on the common channels five seconds after a mode change, because the kernel's
+     * sequence was not finished when the window closed and the ordinary rewrite limit then
+     * held the repair off. Three seconds covers the sequence with room to spare, and the
+     * loop exits as soon as the hardware agrees, so the full window is only ever spent
+     * when something is genuinely wrong.
+     */
+    private static final long LED_SETTLE_MS = 3000L;
+
+    // There is deliberately no fixed hold-off after a mode change. An earlier version
+    // waited 200 ms for the kernel to finish its four SPI writes, which was a guess at a
+    // number the hardware will state outright: while the kernel is mid-sequence the
+    // channels disagree with each other, and when it has finished they agree. Waiting for
+    // agreement is both safer than a guess and faster than the 200 ms it replaced -- the
+    // kernel was measured finishing inside 117 ms, and the owner uses the near-instant
+    // jump between brightness modes to compare them by eye, so the delay is a feature
+    // being taken away rather than an implementation detail.
     private static final int RESCAN_EVERY_TICKS = 30;
     private static final int NOTIF_EVERY_TICKS = 5;
     /** Consecutive bad temperature reads tolerated in CURVE mode before failing high. */
@@ -186,6 +233,18 @@ public class FanService extends Service {
 
     /** Was this app the temperature controller last tick? Edge-triggers the arm above. */
     private boolean lastLedControlling;
+
+    /** Set by the tick: is the fast brightness-mode watch worth running right now? */
+    private volatile boolean ledFastArmed;
+
+    /** The brightness mode the fast watch last acted on, or -1 before it has run. */
+    private volatile int ledFastLevel = -1;
+
+    /** Last plausible light-engine temperature, so the fast path can honour the trip. */
+    private volatile double ledFastC = Double.NaN;
+
+    /** While non-zero, the deadline until which a mode change is still being chased. */
+    private volatile long ledFastSettleUntil;
 
     /** Was LINEAR's ceiling promoted for the boost last tick? Edge-triggers the log note. */
     private boolean linearCeilingWasRaised;
@@ -445,6 +504,7 @@ public class FanService extends Service {
             // lands on the first row, which is where a run boundary belongs.
             note(resync(FanIo.readDuty(), "service_start"));
             handler.post(tickRunnable);
+            handler.postDelayed(ledFastRunnable, LED_FAST_MS);
         } catch (Throwable t) {
             Log.e(TAG, "onCreate loop", t);
             statusLine = "loop failed to start: " + t;
@@ -846,6 +906,61 @@ public class FanService extends Service {
     }
 
     // ------------------------------------------------------------------ the loop
+
+    /**
+     * Watch the brightness mode between ticks and put the override back the moment it
+     * changes. See {@link #LED_FAST_MS} for why this exists at all.
+     *
+     * It re-posts unconditionally so it survives the override being switched off and on,
+     * and does nothing but a single small read while disarmed. {@link LedDrive} is
+     * synchronized, so racing the 1 Hz tick is safe by construction rather than by timing;
+     * the read-back is passed as null because a mode change is an edge, and an edge applies
+     * without needing to compare anything.
+     */
+    private final Runnable ledFastRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (ledFastArmed) {
+                    long now = SystemClock.elapsedRealtime();
+                    int level = Sysfs.readInt(Sysfs.RGBLEVEL, -1);
+                    if (level > 0 && level != ledFastLevel) {
+                        ledFastLevel = level;
+                        ledFastSettleUntil = now + LED_SETTLE_MS;
+                    }
+                    if (level > 0 && now < ledFastSettleUntil) {
+                        // Inside the window the read-back is worth its four SPI reads: it
+                        // is the only thing that says whether the kernel has finished.
+                        LedDrive.Config cfg = Prefs.ledDrive(FanService.this);
+                        String rbText = Sysfs.read(Sysfs.RGBCURRENT);
+                        int[] rb = LedDrive.parseReadback(rbText);
+                        if (rb != null && rb[1] == rb[2]) {
+                            // Coherent: whatever is on the hardware, all of it is on the
+                            // hardware. Either it is already ours, or the kernel has
+                            // finished and this is the first safe moment to write.
+                            if (ledDrive.confirmed(cfg, level, rbText)) {
+                                ledFastSettleUntil = 0L;
+                            } else {
+                                LedDrive.Plan plan = ledDrive.decide(cfg, level, true,
+                                        ledFastC, rbText, now, true);
+                                if (plan.action != LedDrive.Plan.NONE) {
+                                    ledDrive.perform(plan);
+                                }
+                            }
+                        }
+                        // Incoherent or unreadable: the kernel is still pushing channels
+                        // out, or the SPI read dropped. Writing now is what produced a
+                        // colour cast on the projector. Wait for the next 50 ms look.
+                    }
+                }
+            } catch (Throwable t) {
+                // The fan is not involved here and the tick will do this again within a
+                // second. Never let a brightness cosmetic take the loop down.
+                Log.w(TAG, "ledfast", t);
+            }
+            handler.postDelayed(this, LED_FAST_MS);
+        }
+    };
 
     private final Runnable tickRunnable = new Runnable() {
         @Override
@@ -1321,6 +1436,12 @@ public class FanService extends Service {
                 append(note, plan.note);
             }
             ledDriveStatus = ledDriveLine(ledFeatureOn, ledInCharge, interactive, s.ledStatus);
+            // Hand the fast watch its inputs. Arming it only while the override is
+            // genuinely in force keeps it a no-op the rest of the time, and re-reading
+            // rgblevel here means a mode change the tick saw first is not acted on twice.
+            ledFastLevel = s.rgblevel;
+            ledFastC = Thermistor.plausible(s.degC) ? s.degC : Double.NaN;
+            ledFastArmed = ledAllowed && ledFeatureOn && !ledCfg.isStock();
         } catch (Throwable t) {
             // Sysfs does not throw and LedDrive catches its own arithmetic, so this is the
             // outermost belt: the fan has already been written this tick and nothing about

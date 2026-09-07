@@ -146,7 +146,7 @@ public final class LedDrive {
      * write. An {@code rgblevel} edge or the first apply is never held back by this; it
      * only stops a node that keeps disagreeing from being rewritten every second.
      */
-    public static final long REAPPLY_EVERY_MS = 5000L;
+    public static final long REAPPLY_EVERY_MS = 1500L;
 
     // ------------------------------------------------------------------ config
 
@@ -303,10 +303,18 @@ public final class LedDrive {
      * 285 pointless rewrites in one evening's log, and a mismatch check that could never
      * have caught a real mismatch because it was always reporting one.
      *
-     * Three fields carry the common level, so any one of them answers and a glitch in one
-     * costs nothing. Red is printed once and has no stand-in.
+     * Three fields carry the common level, and <b>all three have to agree</b>. Taking the
+     * first readable one looked like useful glitch tolerance and was a bug: the kernel
+     * writes the four channels one at a time, so mid-sequence the readable fields genuinely
+     * disagree, and answering with whichever came first reported success over a half-applied
+     * table. On the projector that showed as Eco reading 49/44 on two channels and stock 39
+     * on the other two -- a colour cast that the override then declared correct.
      *
-     * @return {@code {red, other}}, or null if either value is missing, unparseable, or
+     * So the common level is returned as a range. Equal ends mean the table is coherent;
+     * unequal ends mean it is being written right now and no comparison against it is
+     * meaningful. Red is printed once and has no stand-in.
+     *
+     * @return {@code {red, otherLow, otherHigh}}, or null if a value is missing, unparseable, or
      *         above 100. Above 100 is the handler's failed-SPI glitch -- {@code 0x8080}
      *         read back, {@code percent = -18} computed, printed as an unsigned byte, which
      *         is the 238 and 241 seen in the field -- and it must read as "could not tell"
@@ -320,19 +328,32 @@ public final class LedDrive {
         if (red < 0 || red > 100) {
             return null;
         }
-        int other = -1;
+        int low = -1;
+        int high = -1;
         String[] commonFields = {"duty_r=", "duty_b=", "duty_b2="};
         for (int i = 0; i < commonFields.length; i++) {
             int v = field(text, commonFields[i]);
-            if (v >= 0 && v <= 100) {
-                other = v;
-                break;
+            if (v < 0 || v > 100) {
+                // A failed SPI read on one channel says nothing about the others.
+                continue;
+            }
+            if (low < 0 || v < low) {
+                low = v;
+            }
+            if (v > high) {
+                high = v;
             }
         }
-        if (other < 0) {
+        if (low < 0) {
             return null;
         }
-        return new int[]{red, other};
+        return new int[]{red, low, high};
+    }
+
+    /** True when every channel that could be read agrees with what was written. */
+    public static boolean readbackAgrees(int[] rb, int red, int other) {
+        return rb != null && rb.length >= 3 && rb[1] == rb[2]
+                && matches(rb[0], red) && matches(rb[1], other);
     }
 
     private static int field(String text, String key) {
@@ -426,6 +447,25 @@ public final class LedDrive {
      */
     public synchronized Plan decide(Config cfg, int rgblevel, boolean allowed, double ledC,
                                     String readback, long nowMs) {
+        return decide(cfg, rgblevel, allowed, ledC, readback, nowMs, false);
+    }
+
+    /**
+     * As above, but {@code urgent} drops the {@link #REAPPLY_EVERY_MS} floor on rewrites.
+     *
+     * There is exactly one caller and one reason. The kernel's {@code rgblevel} handler
+     * stores the new level <i>before</i> it pushes the stock table out over four SPI
+     * writes, so anything watching that node learns about the change while the table is
+     * still being written. An override applied in that gap is partly overwritten -- the
+     * projector showed stock on the common channels and the raised value on red, which is
+     * a colour cast, not just a flicker. The answer is to keep putting it back until a
+     * read-back agrees, and five seconds between attempts would make that useless.
+     *
+     * Restores are deliberately still rate-limited: those write {@code rgblevel} itself,
+     * and hammering that node would restart the very sequence being waited on.
+     */
+    public synchronized Plan decide(Config cfg, int rgblevel, boolean allowed, double ledC,
+                                    String readback, long nowMs, boolean urgent) {
         Plan p = new Plan();
         p.wasOverriding = overriding;
         p.wasOther = appliedOther;
@@ -498,10 +538,11 @@ public final class LedDrive {
         // the stock table underneath us -- something wrote rgblevel with the same value --
         // and the answer is to put the override back, at most once per REAPPLY_EVERY_MS.
         int[] rb = parseReadback(readback);
-        if (rb != null && !(matches(rb[0], red) && matches(rb[1], other))
-                && nowMs - lastApplyMs >= REAPPLY_EVERY_MS) {
+        if (rb != null && !readbackAgrees(rb, red, other)
+                && (urgent || nowMs - lastApplyMs >= REAPPLY_EVERY_MS)) {
             apply(p, rgblevel, other, red, nowMs);
-            p.note = join(p.note, "leddrive rewrite(read " + rb[1] + "/" + rb[0] + ")");
+            String seen = rb[1] == rb[2] ? Integer.toString(rb[1]) : rb[1] + ".." + rb[2];
+            p.note = join(p.note, "leddrive rewrite(read " + seen + "/" + rb[0] + ")");
         }
         return p;
     }
@@ -609,6 +650,14 @@ public final class LedDrive {
     // ------------------------------------------------------------------ for the screen
 
     /** True while this class believes its values are on the hardware. */
+    /** Does the hardware read back as the level this is trying to hold? */
+    public synchronized boolean confirmed(Config cfg, int rgblevel, String readback) {
+        if (cfg == null || !overriding || rgblevel != appliedRgblevel) {
+            return false;
+        }
+        return readbackAgrees(parseReadback(readback), appliedRed, appliedOther);
+    }
+
     public synchronized boolean overriding() {
         return overriding;
     }
