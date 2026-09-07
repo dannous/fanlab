@@ -3553,7 +3553,7 @@ public final class FanLabTest {
     }
 
     /**
-     * The six columns the field questions needed, and the property that matters more than
+     * The columns the field questions needed, and the property that matters more than
      * any of them: a field nothing could read comes out blank, never as a zero and never
      * as an exception. Then the revision itself, because a header change has already
      * fired unattended once and is about to again.
@@ -3562,12 +3562,12 @@ public final class FanLabTest {
         section("csv: the ambient and provenance columns, blank against zero");
 
         String[] cols = CsvLogger.HEADER.split(",", -1);
-        eq(cols.length, 26, "the schema is twenty-six columns");
+        eq(cols.length, 27, "the schema is twenty-seven columns");
         check(CsvLogger.HEADER.startsWith(OLD_HEADER_20),
                 "the twenty that were there are unchanged and still in that order");
         check(CsvLogger.HEADER.endsWith(
-                        ",session,off_s,room_c,exclusive,catchup,duty_hold_s"),
-                "and the six new ones are on the end, so no existing column index moved");
+                        ",session,off_s,room_c,exclusive,catchup,duty_hold_s,led_drive"),
+                "and the seven new ones are on the end, so no existing column index moved");
         check(SweepReport.TRACE_HEADER.startsWith(CsvLogger.HEADER + ","),
                 "the sweep trace grew with them rather than shifting underneath its reader");
 
@@ -3597,6 +3597,13 @@ public final class FanLabTest {
                 "where exclusive=0 is a real answer and does log as a zero");
         check(f[24].equals("0"), "and so does catchup=0 -- converged, not unknown");
         check(f[25].equals("95"), "duty_hold_s is whole seconds, got '" + f[25] + "'");
+        check(f[26].length() == 0,
+                "led_drive is blank under the stock table, so a row with nothing here was "
+                + "measured under stock LED drive rather than under an unrecorded one");
+
+        s.ledDrive = 90;
+        check(s.toCsv().split(",", -1)[26].equals("90"),
+                "and is the level itself once the override is on the hardware");
 
         s.roomC = 23;
         check(s.toCsv().split(",", -1)[22].equals("23"),
