@@ -15,9 +15,10 @@ import android.view.View;
  * <h3>White, for AUTO</h3>
  * 100 % white for the whole run. Two reasons. It is the worst thermal case, so any curve
  * derived from it is conservative. And it is reproducible - every owner who runs AUTO
- * produces comparable data, whereas a varying picture would not, because the DLPC has
- * content-adaptive dimming (CAIC) that lowers LED current on dark content and would make
- * two runs of the same schedule incomparable.
+ * produces comparable data, whereas a varying picture might not: the DLPC has a
+ * content-adaptive dimming feature (CAIC) whose job is to lower LED current on dark
+ * content. On this board it cannot -- measured, and see {@link PicoReg} -- but a fixed
+ * white field costs nothing and does not rest on that.
  *
  * <h3>A fine pattern, for VERIFY</h3>
  * Philips' own stated reason for raising the Presentation fan speed was that "the metal

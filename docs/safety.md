@@ -128,88 +128,63 @@ adb shell setprop persist.sys.fanctrl.by.temperatue 1
 
 Or reinstall the app, press the takeover control, then press RESTORE.
 
-## The two display switches add no heat, and change the picture
+## The three display-controller features, and why the app no longer offers any
 
-`CAIC` and `LABB` are the only two controls in the app that write to the display controller
-rather than the fan. Both are off by default, both are experiments, and the risk they carry
-is not a thermal one — it is that a bad result is a bad *picture*, and a bad picture can be
-one you cannot see well enough to undo.
+`CAIC`, `LABB` and the Looks were all controls in this app. All three were measured on the
+projector on 2026-09-07 and all three were taken off the screen. This section is here
+because a safety document that only lists live hazards is a document that keeps re-inviting
+the question; the answers are recorded so nobody has to run the experiment again.
 
-**Neither adds heat.** LABB is pure image processing inside the DLPC3436: it gains up the
-darker parts of the frame on the mirrors, and the LED drive is untouched, so the light
-engine draws exactly what it drew before. CAIC's method is the opposite direction — lowering
-LED current on content that does not need full output and opening the mirrors to compensate
-— which is **less** LED power, not more. There is one conditional worth stating rather than
-glossing: CAIC's *maximum lumens gain*, which this app now writes, is a ceiling on how far
-CAIC may lift the image, and if the controller did turn out to have some path to the LED
-drivers nobody has found, that is the direction in which it could raise current. It has no
-such path here — the LED currents are driven by the SoC over SPI to two MAX20096 chips the
-DLPC cannot reach, and its own current registers sit at a nominal 13 and go nowhere. Neither
-switch touches `rgbcurrent`, `redcurrent` or anything else the LED thermistor responds to.
-The 75 °C shutdown and the fan-stall watchdog are as untouched by both as by everything else.
+**None of them was ever a thermal hazard, and none is now.** LABB and the Looks are pure
+image processing inside the DLPC3436 — the LED drive is untouched, so the light engine draws
+what it drew before. CAIC's method is the opposite direction, less LED power rather than
+more. None of the three touches `rgbcurrent`, `redcurrent` or anything else the LED
+thermistor responds to, and the 75 °C shutdown and the fan-stall watchdog were never in
+play. The risk they carried was a bad *picture*, which is why they were behind a
+confirmation window; withdrawing them retires that risk along with the feature.
 
-**LABB is the one with a mechanism here; CAIC may still do nothing.** CAIC saves power by
-lowering LED current through a TI DLPA LED driver, and this board has none. Fixing its gain
-budget — see below — removes one reason it might do nothing; it does not remove that one. So
-the honest range of CAIC outcomes still runs from "saves power as designed" through
-"brightens the image at the same power" to "does nothing" to "visible artefacts from lookup
-tables never calibrated for this engine". LABB needs no LED control at all, so only the last
-of those applies to it. Nothing in the app or these documents claims a saving; the screen
-reports each setting, and separately what the controller itself said when asked, and says
-`unverified` when it has not been asked or could not answer.
+**CAIC: the engine runs, and its output goes nowhere.** A/B with the fan pinned, seven
+minutes a hold, Presentation, video playing — CAIC off **52.33 °C**, CAIC on **52.33 °C**,
+within-hold spread ±0.04 °C. Identical. Raising the gain budget to the maximum 4.0 changed
+nothing either; the write was accepted and `0x85` read back `00 80 60` with the status bit
+clear. The engine is demonstrably alive — the debug gain bars move with the content and
+`0x5F` gives live per-colour currents that vary with the image — but the LED current never
+leaves the kernel's stock per-mode table, because TI routes every LED-current command to a
+DLPA200x PMIC and **this board has none**: the currents are driven by the SoC over SPI to
+two MAX20096 chips the DLPC cannot reach. Structural, not a setting.
 
-**The CAIC gain budget, and why it is written at all.** Selecting CAIC with `0x50` is only
-half of it. A second register, `0x84`, holds the maximum lumens gain, and reading it back on
-this projector gave `00 20 60` — a gain of `0x20`, which in that fixed-point byte is **1.0**,
-the bottom of the legal 1.0–4.0 range. CAIC was permitted to lift the image by nothing. The
-app now writes the budget (default 2.0×) before selecting CAIC and restores it to 1.0 when
-switching CAIC off, so the machine is left as it was found. A value outside 1.0–4.0 is
-refused locally rather than sent, because the controller rejects the whole command on an
-invalid write parameter and the app would otherwise believe it had set a budget it had not.
+**LABB: it works, and the work is unwanted.** `w 80 2 11 80` is accepted, the register reads
+back `11 80`, and the live gain byte tracks the content — `0x20` idle, `0x27` and `0x24` on
+real video. Watched: *"really washed out seeming"*. That is LABB's documented job. Gaining
+up the darker parts of a frame raises the black floor, and a raised black floor is flattened
+contrast.
 
-**Both are runtime only.** CAIC is `w 50 1 1` to `/sys/class/dlpc343x/picoreg`, undone by
-`w 50 1 0`; the gain is `w 84 3 0 40 60`, undone by `w 84 3 0 20 60`; LABB is `w 80 2 14 80`,
-undone by `w 80 2 10 80` — the bytes the machine was found holding, not a cleared row. A
-**power cycle undoes all of it regardless**, because the controller reloads the factory
-settings — which have both off — at every boot. The factory settings partition is
-deliberately never written. The app turns both off itself when it stops, if it was the one
-that turned them on, and RELEASE CONTROL turns them off along with the fan. The one way to
-be left with either on is a process killed with no chance to run code, and then the next
-power cycle clears it.
+**The Looks: brightness and a green cast are the same purchase.** All 19 were swept and read
+via `26h`. Look 0 is 40/40/20 R/G/B and reads white on a white field; every other Look cuts
+red to 25–33 % and gives the time to green, and Looks 1 and 15 both read visibly green.
+It cannot be rebalanced: neutral white on Look 15 needs red flux up 1.97×, so red current up
+about 2.5× to 175 %, against a hard ceiling of 97. Red is the weak primary here and has
+nothing to give. Look 0 — the only one the kernel ever selects, because it zeroes the Look
+table at probe — is optimal by construction.
 
-### If one takes the picture away — three ways out, and none of them needs the screen
+**What is left in the app.** The command encoders and decoders in `PicoReg`, their tests,
+and a read of all three once a minute whose result is printed under **Diagnostics**,
+read-only, beside the finding it supports. That is deliberate: a negative result is only
+worth anything if it can be re-checked, and a firmware that changed one of these answers
+would show up on that screen and nowhere else. **Nothing in the app writes `0x50`, `0x80`,
+`0x84` or `0x22`.**
 
-The bad case is specific: the DLPC lookup tables were never calibrated for this engine, so
-"visible artefacts" includes a picture too broken to read — and then the control that would
-undo it is on a screen you cannot see. So each switch **asks first**, the way a monitor asks
-whether a new resolution worked:
-
-- Turning either on writes the register and starts a **15-second countdown**. Press OK and
-  it stays. Press nothing and the app writes it back off.
-- **The setting is stored only after you confirm it.** An unconfirmed change is held in
-  memory and nowhere else, so it cannot come back after a reboot. That is deliberate and it
-  is the important half: a power cycle is your guaranteed escape, and a setting that
-  survived one would take that escape away.
-- **The countdown belongs to the service, not the screen.** Pressing HOME, force-stopping
-  the app, or the launcher reclaiming it all still leave the revert running.
-- **There is one countdown, not two.** If both are armed at once, one confirmation keeps
-  both and one silence reverts both — two clocks running against one screen could not be
-  told apart by the person looking at it.
-
-So, blind, in order of how little they ask of you:
-
-| escape | what to do | why it works |
-|---|---|---|
-| **wait** | nothing, for 15 seconds | the service reverts it with no input at all |
-| **power cycle** | pull the power | the registers are runtime-only; the factory `picosetting` blob is never touched, and it has both off |
-| **adb** | `adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver -a com.daleygames.fanlab.CONFIG --ez caic false --ez labb false` | clears the stored settings too, for a change that was confirmed and is only now showing a problem |
+**If a previous build left one on.** Every one of these registers is runtime-only and the
+factory `picosetting` blob is never written, so a power cycle clears all of them. This build
+also stores no preference that could turn one back on at boot.
 
 ## The LED drive override runs the light engine harder
 
 Separate from everything above, and off by default. It writes `rgbcurrent` and `redcurrent`
-to drive the four brightness modes at **30/50/70/90 %** instead of the kernel's own
-20/40/55/76 — about 18 % more light in Presentation, and about **+3.4 °C** on the LED
-thermistor for every 10 points at a fixed fan duty.
+to drive the four brightness modes at **35/55/75/95 %** instead of the kernel's own
+20/40/55/76 — 25 % more drive in Presentation, and about **+3.4 °C** on the LED thermistor
+for every 10 points at a fixed fan duty, so roughly **+6.5 °C** for the 76 → 95 step. The
+`Bright` curve preset was drawn against the older 90 and has not been redrawn for 95.
 
 The safety case is one rule, and it is a conjunction: **the override applies only while
 this app is the thing cooling the machine.** CURVE or LINEAR, no AUTO or VERIFY session

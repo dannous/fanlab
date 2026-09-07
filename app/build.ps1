@@ -131,11 +131,6 @@ $PureSources = @(
     # when the stock table has to go back. The coupling rule it enforces is a safety
     # property, so it lives where the host test can walk it through every state.
     'LedDrive.java',
-    # The arm-and-confirm window the two display experiments share. Pure for the same
-    # reason: "an unconfirmed change reverts itself, and is never persisted" is a safety
-    # property, and the host test can walk the whole countdown on a fake clock in
-    # microseconds.
-    'PictureArm.java',
     # Provenance: how long the projector had been off before a reading, and whether
     # anything else was writing the fan while it was taken. Judgements, not plumbing,
     # so they sit on the pure side where the host test can actually check them.

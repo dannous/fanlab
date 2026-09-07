@@ -10,7 +10,6 @@ import com.daleygames.fanlab.LedDrive;
 import com.daleygames.fanlab.LinearConfig;
 import com.daleygames.fanlab.Mode;
 import com.daleygames.fanlab.PicoReg;
-import com.daleygames.fanlab.PictureArm;
 import com.daleygames.fanlab.Provenance;
 import com.daleygames.fanlab.Sample;
 import com.daleygames.fanlab.SweepEngine;
@@ -136,7 +135,7 @@ public final class FanLabTest {
         testPicoReg();
         testCaic();
         testImageProcessing();
-        testPictureArm();
+        testLooks();
         testReportOutput();
 
         System.out.println();
@@ -2534,150 +2533,6 @@ public final class FanLabTest {
         }
     }
 
-    /**
-     * The arm-and-confirm window, which is the only thing standing between "CAIC blanked
-     * the picture" and "CAIC blanked the picture and the owner cannot see the control that
-     * would undo it". LABB rides the same window, and for the same reason.
-     *
-     * Two properties matter more than the arithmetic. An unconfirmed window must revert
-     * itself, once, without anyone doing anything; and it must leave nothing behind, so a
-     * process death is an end rather than a carry-over -- which is what makes a power cycle
-     * a reliable escape rather than a way of booting back into a broken picture.
-     *
-     * Sharing it adds a third: a confirmation must store exactly what was armed. A press
-     * that switched on a feature nobody armed would be the app changing the display without
-     * being asked, which is the thing the window exists to prevent.
-     */
-    private static void testPictureArm() {
-        section("the arm-and-confirm window, and what must not survive it");
-
-        long t = 1000L;
-        eq((int) PictureArm.WINDOW_MS, 15000, "the window is fifteen seconds");
-
-        PictureArm fresh = new PictureArm();
-        check(!fresh.armed(t), "a fresh window is not armed - there is nowhere to store one");
-        check(!fresh.reverting(), "and owes nothing");
-        eq(fresh.secondsLeft(t), 0, "with no countdown to draw");
-        check(!fresh.poll(t), "polling an idle window asks for nothing");
-        eq(fresh.armedWhat(t), PictureArm.NONE, "and covers nothing");
-        fresh.arm(PictureArm.NONE, t);
-        check(!fresh.armed(t), "arming nothing opens no window");
-
-        // ---- unconfirmed: it reverts itself, once ----
-        PictureArm a = new PictureArm();
-        a.arm(PictureArm.CAIC, t);
-        check(a.armed(t), "arming opens the window");
-        check(a.armed(PictureArm.CAIC, t), "  covering what was armed");
-        check(!a.armed(PictureArm.LABB, t), "  and nothing else");
-        eq(a.secondsLeft(t), 15, "which starts at fifteen");
-        eq(a.secondsLeft(t + 14500), 1,
-                "and rounds up, so the last part-second still reads 1 rather than 0");
-        check(!a.poll(t + PictureArm.WINDOW_MS - 1),
-                "a millisecond short of the deadline is still inside the window");
-        check(a.armed(t + PictureArm.WINDOW_MS - 1), "and still armed");
-        check(a.poll(t + PictureArm.WINDOW_MS), "the deadline closes it and asks for the revert");
-        check(!a.armed(t + PictureArm.WINDOW_MS), "it is no longer armed");
-        check(a.reverting(PictureArm.CAIC), "and a revert is owed on what was armed");
-        check(!a.reverting(PictureArm.LABB), "  and on nothing else");
-        check(!a.poll(t + PictureArm.WINDOW_MS + 5000),
-                "which is asked for once, not on every tick that follows");
-        check(a.reverting(),
-                "but stays owed however long the write takes - the display may be asleep");
-        a.reverted(PictureArm.CAIC);
-        check(!a.reverting(), "and is cleared only when the write lands");
-        eq(a.secondsLeft(t + PictureArm.WINDOW_MS), 0, "with no countdown left to draw");
-
-        // ---- confirmed: the caller may persist exactly what was armed, and nothing reverts ----
-        PictureArm b = new PictureArm();
-        b.arm(PictureArm.LABB, t);
-        eq(b.confirm(), PictureArm.LABB,
-                "confirming inside the window returns what was armed, which is the caller's "
-                        + "one permission to store that setting");
-        check(!b.armed(t + 1), "and closes the window");
-        check(!b.reverting(), "owing no revert");
-        check(!b.poll(t + PictureArm.WINDOW_MS * 2),
-                "so the original deadline passing does nothing at all");
-
-        // ---- a late press must not resurrect what has already been reverted ----
-        PictureArm c = new PictureArm();
-        c.arm(PictureArm.CAIC, t);
-        check(c.poll(t + PictureArm.WINDOW_MS), "the window closes unconfirmed");
-        eq(c.confirm(), PictureArm.NONE,
-                "a press after it ran out confirms nothing - the picture being looked at "
-                        + "is the one that already came back");
-        check(c.reverting(PictureArm.CAIC),
-                "and does not cancel the revert it arrived too late to stop");
-
-        // ---- cancel is the third exit ----
-        PictureArm d = new PictureArm();
-        d.arm(PictureArm.CAIC, t);
-        d.cancel();
-        check(!d.armed(t), "cancelling drops the window");
-        check(!d.reverting(),
-                "and owes nothing of its own - the caller is turning it off anyway");
-        check(!d.poll(t + PictureArm.WINDOW_MS), "the cancelled deadline never fires");
-
-        // ---- re-arming restarts rather than stacking ----
-        PictureArm e = new PictureArm();
-        e.arm(PictureArm.CAIC, t);
-        e.arm(PictureArm.CAIC, t + 10000L);
-        eq(e.secondsLeft(t + 10000L), 15, "re-arming restarts the countdown");
-        check(!e.poll(t + PictureArm.WINDOW_MS + 1L),
-                "so the first arm's deadline does not fire under the second");
-        check(e.poll(t + 10000L + PictureArm.WINDOW_MS), "the second one does");
-
-        // ---- two changes, one window ----
-        PictureArm f = new PictureArm();
-        f.arm(PictureArm.CAIC, t);
-        f.arm(PictureArm.LABB, t + 5000L);
-        eq(f.armedWhat(t + 5000L), PictureArm.CAIC | PictureArm.LABB,
-                "arming a second change adds it to the window rather than replacing it");
-        eq(f.secondsLeft(t + 5000L), 15,
-                "and restarts the clock, so the full fifteen seconds runs against what is "
-                        + "on screen now rather than what was five seconds ago");
-        check(f.poll(t + 5000L + PictureArm.WINDOW_MS), "one deadline closes both");
-        check(f.reverting(PictureArm.CAIC) && f.reverting(PictureArm.LABB),
-                "and both are owed a revert");
-        check("CAIC and LABB".equals(PictureArm.name(f.revertingWhat())),
-                "which the note names in full: " + quote(PictureArm.name(f.revertingWhat())));
-        f.reverted(PictureArm.CAIC);
-        check(!f.reverting(PictureArm.CAIC) && f.reverting(PictureArm.LABB),
-                "each write clears its own debt and not the other's");
-
-        // ---- a confirmation stores what was armed, and nothing else ----
-        PictureArm g = new PictureArm();
-        g.arm(PictureArm.LABB, t);
-        eq(g.confirm(), PictureArm.LABB,
-                "confirming a LABB window is not permission to switch CAIC on");
-
-        // ---- a confirmation does not cancel a debt from an earlier window ----
-        PictureArm h = new PictureArm();
-        h.arm(PictureArm.CAIC, t);
-        check(h.poll(t + PictureArm.WINDOW_MS), "CAIC's window closes unconfirmed");
-        h.arm(PictureArm.LABB, t + PictureArm.WINDOW_MS + 1000L);
-        eq(h.confirm(), PictureArm.LABB, "a later LABB window is confirmed");
-        check(h.reverting(PictureArm.CAIC),
-                "and the CAIC revert, which may still be waiting for the display to wake, "
-                        + "is still owed");
-
-        // ---- re-arming supersedes a revert owed on the same change ----
-        PictureArm i = new PictureArm();
-        i.arm(PictureArm.CAIC, t);
-        check(i.poll(t + PictureArm.WINDOW_MS), "the window closes unconfirmed");
-        i.arm(PictureArm.CAIC, t + PictureArm.WINDOW_MS + 100L);
-        check(!i.reverting(PictureArm.CAIC),
-                "arming the same change again withdraws the revert - undoing it now would "
-                        + "be carrying out an instruction that has been replaced");
-
-        // ---- cancelling one change leaves the other counting ----
-        PictureArm j = new PictureArm();
-        j.arm(PictureArm.CAIC | PictureArm.LABB, t);
-        j.cancel(PictureArm.CAIC);
-        check(j.armed(t) && j.armed(PictureArm.LABB, t) && !j.armed(PictureArm.CAIC, t),
-                "cancelling one change leaves the window open on the other");
-        eq(PictureArm.name(PictureArm.NONE).length(), 0, "and nothing armed has no name");
-    }
-
     // ----------------------------------------------------------------- image processing
 
     /**
@@ -2747,12 +2602,14 @@ public final class FanLabTest {
                 "and it parses whether the bytes arrive spaced or packed");
 
         // ---- the LABB control byte, and the sharpness it must not drop ----
-        eq(PicoReg.labbControlByte(1, true), 0x14,
-                "sharpness 1 with LABB enabled is 0x14: b7:4 the sharpness, b3:2 the control");
+        eq(PicoReg.labbControlByte(1, true), 0x11,
+                "sharpness 1 with LABB enabled is 0x11: b7:4 the sharpness, b1:0 the control "
+                        + "- and 0x11 is the byte that was actually written on 2026-09-07, "
+                        + "read back as \"11 80\", with a live gain that then moved");
         eq(PicoReg.labbControlByte(1, false), 0x10, "and disabled is 0x10, which is what the "
                 + "projector was found holding");
-        eq(PicoReg.labbControlByte(0, true), 0x04, "sharpness 0 enabled is 0x04");
-        eq(PicoReg.labbControlByte(15, true), 0xF4, "sharpness 15 enabled is 0xf4");
+        eq(PicoReg.labbControlByte(0, true), 0x01, "sharpness 0 enabled is 0x01");
+        eq(PicoReg.labbControlByte(15, true), 0xF1, "sharpness 15 enabled is 0xf1");
         eq(PicoReg.labbControlByte(15, false), 0xF0, "and disabled 0xf0");
         for (int s = 0; s <= 15; s++) {
             int on = PicoReg.labbControlByte(s, true);
@@ -2767,10 +2624,11 @@ public final class FanLabTest {
         check(true, "and every sharpness 0..15 survives the round trip through either state - "
                 + "which is the point, since the two share a byte and DLPU078A says sharpness "
                 + "does nothing unless LABB is enabled");
-        eq(PicoReg.labbControlByte(99, true), 0xF4, "an over-large sharpness is held to 15");
-        eq(PicoReg.labbControlByte(-3, true), 0x04, "and a negative one to 0");
-        eq(PicoReg.labbControlByte(1, true) & 0x03, 0,
-                "b1:0 are reserved and are left clear");
+        eq(PicoReg.labbControlByte(99, true), 0xF1, "an over-large sharpness is held to 15");
+        eq(PicoReg.labbControlByte(-3, true), 0x01, "and a negative one to 0");
+        eq(PicoReg.labbControlByte(1, true) & 0x0C, 0,
+                "b3:2 are left clear - which is where an earlier version of this put the "
+                        + "control field, on the datasheet alone and before anyone had run it");
 
         // ---- what the projector actually answered ----
         PicoReg.Labb labb = PicoReg.labbFromBytes(new int[]{0x10, 0x80, 0x20, 0x00}, "kernel log");
@@ -2783,10 +2641,11 @@ public final class FanLabTest {
                         + "the range as 1..8 and 32 is not in it, so converting it would be "
                         + "inventing units");
         eq(labb.status, 0x00, "  with byte 4 recorded as it came");
-        PicoReg.Labb on = PicoReg.labbFromBytes(new int[]{0x14, 0x80, 0x20, 0x00}, "kernel log");
+        PicoReg.Labb on = PicoReg.labbFromBytes(new int[]{0x11, 0x80, 0x27, 0x00}, "kernel log");
         check(on.known && on.enabled && on.sharpness == 1,
-                "\"14 80 20 00\" is the same row with LABB enabled");
-        PicoReg.Labb reserved = PicoReg.labbFromBytes(new int[]{0x18, 0x80, 0x20, 0x00}, "x");
+                "\"11 80 27 00\" is the same row with LABB enabled, and the gain off idle");
+        eq(on.gainRaw, 0x27, "  0x27 being what the gain byte read on real video");
+        PicoReg.Labb reserved = PicoReg.labbFromBytes(new int[]{0x12, 0x80, 0x20, 0x00}, "x");
         check(!reserved.known && !reserved.enabled,
                 "a 2h control field is reserved, so it is unknown rather than a third state");
         eq(reserved.strength, 128, "  though the bytes around it are still kept");
@@ -2804,8 +2663,8 @@ public final class FanLabTest {
                         PicoReg.caicImageControlCommand(PicoReg.CAIC_GAIN_STOCK, 0x60)),
                 "and the restore is \"w 84 3 0 20 60\" - the bytes the projector was found "
                         + "holding, so switching CAIC off leaves the machine as it was");
-        check("w 80 2 14 80".equals(PicoReg.labbCommand(true, 128, 1)),
-                "enabling LABB is exactly \"w 80 2 14 80\"");
+        check("w 80 2 11 80".equals(PicoReg.labbCommand(true, 128, 1)),
+                "enabling LABB is exactly \"w 80 2 11 80\"");
         check("w 80 2 10 80".equals(PicoReg.labbCommand(false, 128, 1)),
                 "and the undo is \"w 80 2 10 80\"");
         check("r 85 3".equals(PicoReg.readCommand(PicoReg.OPCODE_CAIC_IMAGE_READ,
@@ -2838,8 +2697,8 @@ public final class FanLabTest {
             check(PicoReg.writeLabb(true, PicoReg.LABB_STRENGTH_STOCK,
                             PicoReg.LABB_SHARPNESS_STOCK),
                     "the LABB write succeeds");
-            check("w 80 2 14 80".equals(slurp(node)),
-                    "and the node holds exactly \"w 80 2 14 80\" - no newline, nothing else");
+            check("w 80 2 11 80".equals(slurp(node)),
+                    "and the node holds exactly \"w 80 2 11 80\" - no newline, nothing else");
             check(PicoReg.writeLabb(false, PicoReg.LABB_STRENGTH_STOCK,
                             PicoReg.LABB_SHARPNESS_STOCK),
                     "the off write succeeds");
@@ -2875,6 +2734,130 @@ public final class FanLabTest {
         }
     }
 
+    // ----------------------------------------------------------------- the Looks
+
+    /**
+     * The colour sequence presets, and the arithmetic that says Look 0 is the end of it.
+     *
+     * A Look divides the frame's time between the three LEDs. The total is fixed, so every
+     * Look is a trade, and the sweep of all 19 on 2026-09-07 says what each one trades:
+     * Look 0 is 40/40/20 and reads white on a white field, and every other Look takes red
+     * down to 25-33 % and gives the time to green. Looks 1 and 15 read visibly green.
+     *
+     * Two things are pinned here. The <b>duty encoding</b>, because UQ8.8 over 256 is where
+     * TI's own guide and TI's own reference Python disagree, and the guide's worked example
+     * settles it -- the three have to sum to 100 and only /256 delivers that. And the
+     * <b>sum check</b> itself, which is what makes the decode self-verifying: get the byte
+     * order or the scale wrong and the three stop adding up, so a wrong reading is refused
+     * rather than reported.
+     */
+    private static void testLooks() {
+        section("the Looks (22h/23h/26h) - the duty split, and why 0 is the only one");
+
+        eq(PicoReg.OPCODE_LOOK_SELECT_WRITE, 0x22, "Write Look Select is 0x22");
+        eq(PicoReg.OPCODE_LOOK_SELECT_READ, 0x23, "Read Look Select is 0x23");
+        eq(PicoReg.OPCODE_SEQUENCE_HEADER_READ, 0x26,
+                "and Read Sequence Header Attributes - the one with the duty cycles - is 0x26");
+        eq(PicoReg.SEQUENCE_HEADER_LEN, 30,
+                "which answers thirty bytes: the Look's fifteen, then the Sequence's fifteen");
+
+        check("w 22 1 0".equals(PicoReg.lookSelectCommand(0)),
+                "selecting Look 0 is exactly \"w 22 1 0\"");
+        check("w 22 1 f".equals(PicoReg.lookSelectCommand(15)),
+                "and Look 15 is \"w 22 1 f\"");
+        check("r 26 1e".equals(PicoReg.readCommand(PicoReg.OPCODE_SEQUENCE_HEADER_READ,
+                        PicoReg.SEQUENCE_HEADER_LEN)),
+                "the split read is \"r 26 1e\" - thirty in hex, which is what the node wants");
+
+        // ---- UQ8.8: high byte whole percent, low byte 256ths ----
+        eq(PicoReg.decodeDuty(0x00, 0x28), 40.0, 1e-9, "00 28 little endian is 40.0 %");
+        eq(PicoReg.decodeDuty(0x00, 0x14), 20.0, 1e-9, "00 14 is 20.0 %");
+        eq(PicoReg.decodeDuty(0x80, 0x1E), 30.5, 1e-9,
+                "and the guide's own 1E80 is 30.5 - exact over 256, which is how the /255 in "
+                        + "TI's reference Python is known to be the wrong one of the two");
+        eq(PicoReg.decodeDuty(0x00, 0x32), 50.0, 1e-9, "with 3200 alongside it at 50.0");
+        eq(PicoReg.decodeDuty(0x80, 0x13), 19.5, 1e-9, "and 1380 at 19.5");
+        check(Math.abs((30.5 + 50.0 + 19.5) - PicoReg.DUTY_SUM) < 1e-9,
+                "  those three summing to exactly 100, as DLPU078A requires");
+
+        // ---- Look 0, as the projector answered it ----
+        PicoReg.Look zero =
+                PicoReg.sequenceHeaderFromBytes(look(0x2800, 0x2800, 0x1400), "kernel log");
+        check(zero.known, "Look 0's own 40/40/20 is a reading");
+        eq(zero.red, 40.0, 1e-9, "  red 40.0 %");
+        eq(zero.green, 40.0, 1e-9, "  green 40.0 %");
+        eq(zero.blue, 20.0, 1e-9, "  and blue 20.0 %");
+        check(zero.blocksAgree, "  with the Sequence block's copy matching the Look's");
+        PicoReg.lookSelectIntoBytes(zero, new int[]{0, 0, 0x10, 0x27, 0, 0});
+        eq(zero.number, 0, "0x23 puts the Look number on it");
+        eq(zero.sequence, 0, "  and the sequence number");
+        check(zero.neutral(), "  and Look 0 is the neutral one");
+        check(zero.summary().indexOf("40.0/40.0/20.0") >= 0,
+                "which the screen prints as the split: " + quote(zero.summary()));
+
+        // ---- and one of the eighteen that are not ----
+        PicoReg.Look fifteen =
+                PicoReg.sequenceHeaderFromBytes(look(0x1900, 0x3700, 0x1400), "kernel log");
+        check(fifteen.known, "a 25/55/20 Look reads too - the fifteen points red lost");
+        eq(fifteen.green, 55.0, 1e-9, "  green up to 55 %");
+        eq(fifteen.red, 25.0, 1e-9,
+                "  with red down to 25 % - and the time it lost went to green, which is what "
+                        + "made Looks 1 and 15 read visibly green on a white field");
+        PicoReg.lookSelectIntoBytes(fifteen, new int[]{15, 0, 0x10, 0x27, 0, 0});
+        check(!fifteen.neutral(), "  and it is not the neutral Look");
+
+        // ---- the sum check is the decode's own proof ----
+        PicoReg.Look bad = PicoReg.sequenceHeaderFromBytes(look(0x2800, 0x2800, 0x2800), "x");
+        check(!bad.known, "three duty cycles summing to 120 are not a reading");
+        check(bad.reason.indexOf("100") >= 0,
+                "  and the reason says what they should have summed to: " + quote(bad.reason));
+        int[] swapped = look(0x2800, 0x2800, 0x1400);
+        int keep = swapped[0];
+        swapped[0] = swapped[1];
+        swapped[1] = keep;
+        check(!PicoReg.sequenceHeaderFromBytes(swapped, "x").known,
+                "and getting the byte order wrong stops the three adding up, which is the "
+                        + "whole point of checking the sum rather than trusting the layout");
+
+        // ---- blocks that disagree are reported, not averaged ----
+        int[] mismatch = look(0x2800, 0x2800, 0x1400);
+        mismatch[15] = 0x01;
+        PicoReg.Look apart = PicoReg.sequenceHeaderFromBytes(mismatch, "x");
+        check(apart.known, "a Look block that disagrees with the Sequence block still decodes");
+        check(!apart.blocksAgree, "  but says the two copies differ, which DLPU078A forbids");
+        check(apart.summary().indexOf("DISAGREE") >= 0,
+                "  and puts it on the screen: " + quote(apart.summary()));
+
+        // ---- nothing short of thirty bytes is a reading ----
+        check(!PicoReg.sequenceHeaderFromBytes(new int[]{0x00, 0x28}, "x").known,
+                "two bytes is not a 0x26 reading");
+        check(!PicoReg.sequenceHeaderFromBytes(null, "x").known, "nor is none");
+        check(!PicoReg.sequenceHeaderFromResponseText("", "x").known, "nor an empty response");
+        check(!PicoReg.sequenceHeaderFromResponseText("zip", "x").known,
+                "nor text with no hex in it");
+        check(new PicoReg.Look().summary() == null && !new PicoReg.Look().known,
+                "and a reading nobody has taken says nothing at all");
+        eq(PicoReg.LOOK_COUNT, 19, "the projector answered for 19 Looks");
+        eq(PicoReg.LOOK_NEUTRAL, 0, "and exactly one of them is neutral");
+    }
+
+    /**
+     * A 0x26 response: three UQ8.8 duty words, little endian, in the Look block, and the
+     * same three again in the Sequence block fifteen bytes later. Everything between is the
+     * frame counts and the vector count, which this app does not read.
+     */
+    private static int[] look(int red, int green, int blue) {
+        int[] b = new int[PicoReg.SEQUENCE_HEADER_LEN];
+        int[] duty = {red, green, blue};
+        for (int i = 0; i < 3; i++) {
+            b[i * 2] = duty[i] & 0xFF;
+            b[i * 2 + 1] = (duty[i] >> 8) & 0xFF;
+            b[15 + i * 2] = b[i * 2];
+            b[15 + i * 2 + 1] = b[i * 2 + 1];
+        }
+        return b;
+    }
+
     // ----------------------------------------------------------------- LED drive
 
     /**
@@ -2901,10 +2884,15 @@ public final class FanLabTest {
 
         LedDrive.Config bright = LedDrive.Config.bright();
         check(!bright.isStock(), "the Bright preset is not");
-        check(bright.encode().equals("d1,30,50,70,90"),
-                "and is 30/50/70/90  (got " + bright.encode() + ")");
-        eq(bright.levelFor(3), 90, "Presentation reads 90");
-        eq(bright.levelFor(4), 30, "Super Eco reads 30");
+        check(bright.encode().equals("d1,35,55,75,95"),
+                "and is 35/55/75/95  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 95, "Presentation reads 95 - 76 stock, so 25 % more drive");
+        eq(bright.levelFor(2), 75, "Normal reads 75");
+        eq(bright.levelFor(1), 55, "Eco reads 55");
+        eq(bright.levelFor(4), 35, "Super Eco reads 35");
+        bright.sanitise();
+        check(bright.encode().equals("d1,35,55,75,95"),
+                "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
         eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
 
         // ---- the clamp, which is the point ----
@@ -2926,7 +2914,8 @@ public final class FanLabTest {
                 "including on a line nobody could have typed by accident");
 
         // ---- channel 1 keeps the stock table's ratio, whatever the level ----
-        eq(LedDrive.redFor(3, 90), 84, "Presentation 90 drives the red die at 84");
+        eq(LedDrive.redFor(3, 95), 89, "Presentation 95 drives the red die at 89");
+        eq(LedDrive.redFor(3, 90), 84, "and the older 90 drove it at 84");
         eq(LedDrive.redFor(3, 97), 91, "and the ceiling level at 91");
         eq(LedDrive.redFor(3, 76), 71, "the stock level reproduces the stock red exactly");
         eq(LedDrive.redFor(2, 70), 61, "Normal keeps 48/55");
@@ -3038,18 +3027,25 @@ public final class FanLabTest {
             File rgbLevel = new File(root, "sys/class/dlpc343x/rgblevel");
 
             LedDrive d = new LedDrive();
-            LedDrive.Config bright = LedDrive.Config.bright();
+            // Pinned at the older 90 rather than taken from Config.bright(), on purpose.
+            // This test drives the state machine against the read-back string the projector
+            // actually printed on 2026-09-07 -- "duty_r=89 duty_g=83", 90 written and one
+            // below on the way back -- so it must not move every time the one-press preset
+            // does. What bright() currently holds is testLedDriveConfig's business.
+            LedDrive.Config raised = new LedDrive.Config();
+            raised.level[2] = 70;
+            raised.level[3] = 90;
             long t = 1000000L;
 
             // ---- not allowed: nothing is written, and nothing is believed ----
-            LedDrive.Plan p = d.decide(bright, 3, false, 45.0, null, t);
+            LedDrive.Plan p = d.decide(raised, 3, false, 45.0, null, t);
             eq(p.action, LedDrive.Plan.NONE, "not allowed writes nothing at all");
             check(!d.overriding(), "and believes nothing is applied");
             eq(d.appliedLevel(), -1, "which is the blank the CSV column carries");
             check("stock".equals(d.state()), "with the screen saying stock");
 
             // ---- the enabling edge applies, immediately ----
-            p = d.decide(bright, 3, true, 45.0, null, t);
+            p = d.decide(raised, 3, true, 45.0, null, t);
             eq(p.action, LedDrive.Plan.APPLY, "the enabling edge applies");
             eq(p.other, 90, "at Presentation's configured level");
             eq(p.red, 84, "with channel 1 held to the stock table's ratio");
@@ -3063,13 +3059,13 @@ public final class FanLabTest {
 
             // ---- steady state: a read-back that agrees writes nothing ----
             t += 1000L;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=89 duty_g=83", t);
+            p = d.decide(raised, 3, true, 45.0, "duty_r=89 duty_g=83", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "a read-back one below what was written is agreement, not a mismatch");
 
             // ---- the glitch is not a mismatch ----
             t += 1000L;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=238 duty_g=241 duty_b=238", t);
+            p = d.decide(raised, 3, true, 45.0, "duty_r=238 duty_g=241 duty_b=238", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "and the 238 glitch is 'could not tell', which also writes nothing");
 
@@ -3079,19 +3075,19 @@ public final class FanLabTest {
             // was shortened, which is the sort of test that only fails once it matters.
             // Start the limit's clock from a known write rather than from whatever the
             // steps above happened to leave behind.
-            p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t, true);
+            p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t, true);
             eq(p.action, LedDrive.Plan.APPLY,
                     "urgent rewrites regardless of the limit -- what a mode change needs");
             check(d.perform(p), "and that write lands");
             long applied = t;
 
             t = applied + LedDrive.REAPPLY_EVERY_MS / 2;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t);
+            p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "the stock table reappearing inside REAPPLY_EVERY_MS waits its turn");
 
             t = applied + LedDrive.REAPPLY_EVERY_MS;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t);
+            p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t);
             eq(p.action, LedDrive.Plan.APPLY, "and is put back once the limit has passed");
             eq(p.other, 90, "at the same level");
             check(d.perform(p), "and the rewrite lands");
@@ -3099,7 +3095,7 @@ public final class FanLabTest {
             // ---- a brightness-mode change is an edge, and ignores the limit ----
             put(root, "sys/class/dlpc343x/rgblevel", "2\n");
             t += 1000L;
-            p = d.decide(bright, 2, true, 45.0, null, t);
+            p = d.decide(raised, 2, true, 45.0, null, t);
             eq(p.action, LedDrive.Plan.APPLY,
                     "a brightness-mode change re-applies at once, rate limit or not");
             eq(p.other, 70, "at Normal's configured level");
@@ -3108,7 +3104,7 @@ public final class FanLabTest {
 
             // ---- losing the coupling puts the stock table back ----
             t += 1000L;
-            p = d.decide(bright, 2, false, 45.0, null, t);
+            p = d.decide(raised, 2, false, 45.0, null, t);
             eq(p.action, LedDrive.Plan.RESTORE,
                     "losing the coupling restores the stock table");
             eq(p.rgblevel, 2, "by rewriting the mode the override was applied under");
@@ -3119,7 +3115,7 @@ public final class FanLabTest {
                     "as a rewrite of rgblevel with the value it already held, which is what "
                             + "makes the kernel reinstate the whole table");
             t += 1000L;
-            p = d.decide(bright, 2, false, 45.0, null, t);
+            p = d.decide(raised, 2, false, 45.0, null, t);
             eq(p.action, LedDrive.Plan.NONE,
                     "and it is done once, not on every tick that follows");
 
@@ -3127,10 +3123,10 @@ public final class FanLabTest {
             put(root, "sys/class/dlpc343x/rgblevel", "3\n");
             LedDrive e = new LedDrive();
             long u = 2000000L;
-            check(e.perform(e.decide(bright, 3, true, 45.0, null, u)),
+            check(e.perform(e.decide(raised, 3, true, 45.0, null, u)),
                     "a fresh override applies while the light engine is cool");
             u += 1000L;
-            p = e.decide(bright, 3, true, LedDrive.DEFAULT_TRIP_C + 0.2, null, u);
+            p = e.decide(raised, 3, true, LedDrive.DEFAULT_TRIP_C + 0.2, null, u);
             eq(p.action, LedDrive.Plan.RESTORE,
                     "above the ceiling the override is dropped");
             check(e.tripped(), "and latched off");
@@ -3140,7 +3136,7 @@ public final class FanLabTest {
                     "and the log gets it as an event  (got " + quote(p.note) + ")");
             e.perform(p);
             u += 30000L;
-            p = e.decide(bright, 3, true, 40.0, null, u);
+            p = e.decide(raised, 3, true, 40.0, null, u);
             eq(p.action, LedDrive.Plan.NONE,
                     "cooling down does not re-arm it - brightness cycling on the wall is "
                             + "more objectionable than a fan swing, so it waits to be asked");
@@ -3148,15 +3144,15 @@ public final class FanLabTest {
 
             // ---- and releases on the two things that make the trip stale ----
             u += 1000L;
-            p = e.decide(bright, 2, true, 40.0, null, u);
+            p = e.decide(raised, 2, true, 40.0, null, u);
             check(!e.tripped(), "a brightness-mode change is a different LED load, so it releases");
             eq(p.action, LedDrive.Plan.APPLY, "and the override goes back on for the new mode");
 
             LedDrive f = new LedDrive();
             long v = 3000000L;
-            f.perform(f.decide(bright, 3, true, 45.0, null, v));
+            f.perform(f.decide(raised, 3, true, 45.0, null, v));
             v += 1000L;
-            f.perform(f.decide(bright, 3, true, LedDrive.DEFAULT_TRIP_C + 1.0, null, v));
+            f.perform(f.decide(raised, 3, true, LedDrive.DEFAULT_TRIP_C + 1.0, null, v));
             check(f.tripped(), "a second override trips the same way");
             v += 1000L;
             LedDrive.Config other = LedDrive.Config.decode("d1,25,45,60,80");
@@ -3171,7 +3167,7 @@ public final class FanLabTest {
             check(g.forceRestore(w).action == LedDrive.Plan.NONE,
                     "forcing a restore with nothing applied writes nothing, so calling it "
                             + "on a machine this app never boosted is free");
-            g.perform(g.decide(bright, 3, true, 45.0, null, w));
+            g.perform(g.decide(raised, 3, true, 45.0, null, w));
             check(g.overriding(), "with an override applied");
             LedDrive.Plan back = g.forceRestore(w);
             eq(back.action, LedDrive.Plan.RESTORE, "forcing a restore asks for the rewrite");

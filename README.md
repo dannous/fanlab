@@ -54,7 +54,7 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 3292**, run on the host as part of every build.
+- **Test count: 3532**, run on the host as part of every build.
 - **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
   fan only above 70 °C on the die and can never subtract any. See
   [The SoC guard](#the-soc-guard).
@@ -63,12 +63,10 @@ continuous curve removes that failure structurally: there is no boundary left to
   re-arms it whenever it stops driving, so the projector cannot be left unmanaged.
 - **Optional CSV telemetry** to internal storage and any mounted USB stick at once,
   size-capped and self-pruning. See [Telemetry](#telemetry).
-- **Two display-controller switches, as experiments.** One write each asks the DLPC3436 to
-  run Content Adaptive Illumination Control or Local Area Brightness Boost; one write, or a
-  power cycle, undoes either. Neither adds heat, both change the picture, and both revert
-  themselves unless confirmed within fifteen seconds. LABB is the one this board has a
-  mechanism for — see
-  [The two display-controller experiments](#the-two-display-controller-experiments).
+- **No display-controller switches.** Three were offered — CAIC, LABB and the Looks — and
+  all three were measured on the projector and taken away. None of them helps, and the
+  numbers are under
+  [The three display-controller features, and why none of them is here](#the-three-display-controller-features-and-why-none-of-them-is-here).
 
 ## Measured results
 
@@ -168,11 +166,8 @@ left/right and pressing a button row with OK.
 | **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
 | **Start automatically after a reboot** | leave this on |
 | **Re-assert every second** | leave this on. The projector's own brightness code slams a fan preset on brightness changes; this puts it back. It is not cosmetic — see [Warnings](#warnings) |
-| **LED drive** | off by default. Raises the light engine above the brightness mode's stock drive — `Bright` is 30/50/70/90 for Super Eco/Eco/Normal/Presentation against a stock 20/40/55/76. It only applies while the app is actually driving the fan, so light output can never outrun cooling. See [The LED drive override](#the-led-drive-override) |
-| **LABB** | off by default, and nothing to do with the fan. Lifts the dark parts of the picture, on the mirrors, without touching the LEDs. Of the two display experiments this is the one to try — read [The LABB experiment](#the-labb-experiment) first. **Strength** 0–255 (128 default) is how hard it pushes; **sharpness** 0–15 (1 default) only does anything while LABB is on |
-| **CAIC** | off by default, and nothing to do with the fan. An experiment on the display controller's own LED-power feature; read [The CAIC experiment](#the-caic-experiment) before pressing it. **CAIC brightness budget** 1.0×–4.0× (2.0 default) is how far it may lift the image — the projector was found at 1.0×, which permits nothing, and is why the first attempt did nothing |
-| both of those | turning either on starts a **15-second countdown that reverts unless you confirm**, because a bad result can be one you cannot see to undo |
-| **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed, the app stops driving, and both display experiments are turned off if they were on |
+| **LED drive** | off by default. Raises the light engine above the brightness mode's stock drive — `Bright` is 35/55/75/95 for Super Eco/Eco/Normal/Presentation against a stock 20/40/55/76. It only applies while the app is actually driving the fan, so light output can never outrun cooling. See [The LED drive override](#the-led-drive-override) |
+| **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed and the app stops driving |
 | **RESTORE STOCK FAN CONTROL** | the permanent undo. Clears the setting that disables the stock controller. **Press this before uninstalling** — see below |
 
 ### Which preset
@@ -184,7 +179,8 @@ about 2 °C at the cost of 5 % more fan.
 
 **Use `Bright` only with the LED drive override on.** It is drawn for a machine running
 Presentation at 90 % drive rather than the stock 76, and on the stock drive it is Quiet to
-within half a duty point — harmless, but pointless.
+within half a duty point — harmless, but pointless. The one-press override now goes to 95
+rather than 90, so Bright covers a little less of the rise than it was drawn to.
 
 ### CURVE or LINEAR
 
@@ -254,23 +250,6 @@ broadcast to the wrong one reports `result=0` and silently does nothing.
 The reply is the resulting state, so diff it against what you sent. It says
 `curve(REPAIRED)` or `linear(REPAIRED)` when a value was clamped rather than accepted.
 
-The two display-controller experiments are `--ez caic true|false` with
-`--ef caicgain <1.0-4.0>`, and `--ez labb true|false` with `--ei labbstrength <0-255>` and
-`--ei labbsharpness <0-15>`. Each number is applied before its switch, so one broadcast can
-set and enable:
-
-```bash
-"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
-    --ei labbstrength 160 --ez labb true
-```
-
-The reply carries `caic=`, `caicgain=`, `labb=`, `labbstrength=` and `labbsharpness=`. The
-first and third give the setting and, on the system build a few seconds later, what the
-display controller itself said (`on (read back: on)`); `caicgain=` adds `(read back: 2.0x)`
-once `0x85` has answered. A gain outside 1.0–4.0 comes back `caicgain(REPAIRED)`, because
-the controller rejects the whole command on one rather than clamping it. See the next two
-sections before sending any of these.
-
 The LED drive override is `--es leddrive stock|bright|<encoded>` followed by
 `--ez leddriveon true|false` — the level is applied before the switch, so both can go in
 one broadcast. The reply carries three fields answering three different questions:
@@ -285,7 +264,7 @@ percentage of the driver's own per-channel maximum — Super Eco 20, Eco 40, Nor
 Presentation 76, with the red channel a few points lower at each. So the light engine
 spends its life at about three-quarters of what the firmware's own scale permits. This
 override writes `rgbcurrent` and `redcurrent` to move those levels up; `Bright` is
-30/50/70/90.
+35/55/75/95 — Presentation from 76 to 95, which is 25 % more drive.
 
 **It is capped at 97, not 100, and that is not caution.** Reading `rgbcurrent` makes the
 driver log the absolute current: at Presentation it reports `current = 5357 ma, percent = 75`,
@@ -296,9 +275,11 @@ the picture goes *dimmer*, not brighter. The app clamps to 97 and a test holds i
 
 **What it costs.** Heat, and it lands on the red die — the lowest-rated part in the light
 path, the one that loses output fastest with temperature, and the one seven owners of this
-model have reported losing. Presentation at 90 runs the light engine roughly 3.5 °C hotter
-at a given fan speed. That is why `Bright` exists: it is the curve that spends fan to put
-that back.
+model have reported losing. From the measured plant each +10 on the Presentation level is
+about +3.4 °C at a fixed fan speed, so 76 → 95 is roughly **6.5 °C**. That is why `Bright`
+exists: it is the curve that spends fan to put some of that back. **Bright was drawn against
+the older 90 and has not been redrawn for 95**, so it now covers rather less of the rise
+than the figures under [The five presets](#the-five-presets) were computed for.
 
 **The rule that makes it safe.** The override is on the hardware *only* while the app is
 genuinely the fan controller — mode `CURVE` or `LINEAR`, no measurement session running, the
@@ -320,161 +301,13 @@ actually has — but its field names lie. The kernel prints the four SPI channel
 order under the labels `duty_r, duty_g, duty_b, duty_b2`, while the real map is
 ch0 green, ch1 red, ch2 b2, ch3 blue. So **`duty_g` is the red channel** and the other
 three all carry the common level. With Bright on in Presentation it reads
-`duty_r=89 duty_g=83 duty_b=89 duty_b2=89` — 90 and 84, each one low, which is how the
-handler reports. Any field above 100 is a failed SPI read, not a level.
+`duty_r=94 duty_g=88 duty_b=94 duty_b2=94` — 95 and 89, each one low, which is how the
+handler reports. (The recorded reading behind that rule was taken at the older 90:
+`duty_r=89 duty_g=83`.) Any field above 100 is a failed SPI read, not a level.
 
-**What is not known.** Whether 90 looks meaningfully brighter, and whether the white point
+**What is not known.** Whether 95 looks meaningfully brighter, and whether the white point
 drifts cool as the red channel droops faster than green and blue. Neither is a temperature
 question and neither can be answered from a log — put up a white field and look.
-
-### The two display-controller experiments
-
-CAIC and LABB are the two halves of TI's *IntelliBright*, and the projector ships with both
-off. Neither is a fan setting; both change the picture, neither adds heat, and each has a
-one-write undo and a fifteen-second confirmation. **Try LABB first.** It is the half this
-board has a mechanism for: it works on the mirrors and needs nothing from an LED driver,
-where CAIC's whole method is lowering LED current through a driver chip this board does not
-have. The reasoning is under *Why LABB and not CAIC* below.
-
-### The LABB experiment
-
-**What it is.** Local Area Brightness Boost. DLPU078A: "The key function of the LABB is to
-adaptively gain up darker parts of the image to achieve an overall brighter image." It is
-supported in TPG, splash and external input mode, and auto-disabled in curtain mode. It is
-pure image processing inside the DLPC3436 — the LED drive is untouched, so the light engine
-draws exactly what it drew before.
-
-**What the projector was holding.** Reading `0x81` back answered `10 80 20 00`: sharpness
-strength 1, **LABB control `0h` = Disabled**, strength already preset to 128, current gain
-`0x20`. So the strength somebody would run it at is already loaded and the feature is simply
-switched off. Enabling it while keeping that sharpness is one write, `w 80 2 14 80`.
-
-**The two numbers.** *Strength* is 0–255; DLPU078A says 0 is no boost and 255 "the maximum
-boost viable in a product", and warns that "the strength is not a direct indication of the
-gain, since the gain varies depending on the image content" — so it is a dial, not a
-multiplier, and this app does not pretend otherwise. Default 128, the value already in the
-register. *Sharpness* is 0–15 in the top nibble of the same byte, and DLPU078A notes "The
-LABB function must be enabled to make use of sharpness" — it does nothing on its own.
-Default 1, again what the hardware had; it is preserved through every write rather than
-zeroed, because it shares a byte with the enable and dropping it would be changing a
-setting nobody asked to change.
-
-**How to try it.** The `LABB` row under *Experiment — display controller*; press it once and
-confirm within fifteen seconds. From a PC, `--ez labb true`. Then look at a dark scene:
-shadow detail should come up while the bright parts stay where they were. If it looks washed
-out, or the dark areas shimmer between frames, turn the strength down or switch it off.
-
-**How to undo it.** Exactly as CAIC below: wait fifteen seconds, power-cycle,
-`--ez labb false`, press the row again, RELEASE CONTROL, or `--ez reset`. Off writes back
-`w 80 2 10 80` — the bytes the machine was found holding, not a cleared row.
-
-**What is not known.** Whether the boost is visible, whether it introduces banding or
-temporal flicker on this engine, and what byte 3 of the read-back actually means: it comes
-back as `0x20` = 32 while Table 3-81 gives the LABB gain range as 1–8, so either the units
-are not whole gain steps or the table does not describe this firmware. The app records the
-raw byte and does not convert it.
-
-### The CAIC experiment
-
-**This is not a fan setting and it is off by default.** It is here because the display
-controller has a feature that, on paper, cuts LED power without dimming the picture, and
-one write turns it on and one write turns it off. It is an experiment with a cheap undo,
-not a recommendation.
-
-**What it is.** CAIC — Content Adaptive Illumination Control, TI's *IntelliBright* — runs
-in the DLPC3436 display controller. Frame by frame, on content that does not need full
-output, it lowers the LED current and raises the mirror duty cycle by the same factor, so
-the white point stays where it was while the LEDs draw less. TI's own example is 27 % LED
-power saved at constant brightness. Less LED power is less heat at the thermistor this
-whole project is built around, which is why it is worth a look.
-
-**Selecting it is not enabling it, and that is why the first attempt did nothing.** `0x50`
-picks the method; a second command, *Write CAIC Image Processing Control* (`0x84`), says how
-far CAIC is allowed to lift the image. Reading it back with `0x85` on this projector
-answered
-
-```
-00 20 60
-```
-
-— gain display off, **maximum lumens gain `0x20`**, clipping threshold 96. The gain is a
-fixed-point byte whose least significant bit is a thirty-second (b7 = 2², b0 = 2⁻⁵), so
-`0x20` is **1.0**, the bottom of the legal 1.0–4.0 range. CAIC had been given permission to
-lift the image by nothing at all. That is the likeliest reason switching `0x50` on by itself
-produced nothing anyone could see: the method was chosen and the budget was zero.
-
-So the app now writes the budget first and selects CAIC second — `w 84 3 0 40 60` then
-`w 50 1 1` for the default 2.0× — and hands the budget back to 1.0 (`w 84 3 0 20 60`)
-whenever CAIC goes off, so the machine is left as it was found. **A gain outside 1.0–4.0 is
-refused locally rather than sent**, because the controller rejects the whole command on an
-invalid write parameter: it would change nothing while the app believed it had set a budget.
-Encodings, if you are reading a log: 1.0 = `0x20`, 1.5 = `0x30`, 2.0 = `0x40`, 4.0 = `0x80`.
-
-**Why LABB and not CAIC.** The projector ships with CAIC **off** — `caic=0x00` in every
-template of the factory settings blob, and nothing in the firmware ever turns it on. And
-there is a specific reason to doubt it can do its job on this board: CAIC saves power by
-having the controller lower LED current through a TI DLPA LED driver, and **this board has
-no TI LED driver**. The LED currents are driven by the SoC, over SPI, to two MAX20096 chips
-the controller cannot reach; the controller's own current registers sit at a nominal 13 and
-go nowhere. Fixing the gain budget removes one reason CAIC might do nothing here; it does
-not remove that one. LABB has no such dependency, which is why it is the one to try first.
-So turning CAIC on may
-
-- save LED power as designed, if the controller has some path to the drivers nobody found;
-- do only the duty-cycle half — a **brighter** image at the same LED power, no saving;
-- do nothing visible at all; or
-- show artefacts (banding, flicker, a shifted white point) if its lookup tables were never
-  calibrated for this engine.
-
-Nothing in the app claims a power saving. The screen says `on (unverified)` until the
-controller itself has been asked, and `on (read back: on)` only once it has answered. Only
-the system build can hear the answer — it arrives in the kernel log, which needs a
-permission the plain build cannot hold — so on the plain build it stays `unverified`
-for ever, which is the truth.
-
-**How to try it.** On the screen, the `CAIC` row under *Experiment — display controller*,
-with the *CAIC brightness budget* row under it; press CAIC once and confirm within fifteen
-seconds. From a PC:
-
-```bash
-"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
-    --ef caicgain 2.0 --ez caic true
-# a few seconds later, to see what the controller said
-"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
-```
-
-Put up a mostly dark frame with a small bright region and watch it; that is the content
-CAIC is designed for. Turn the budget up if nothing changes and down if the picture pumps
-between scenes. The CSV note column records every write (`caic<-on:start gain=2.0`,
-`caic<-on:rgblevel`, `caic<-off:setting`, `caic gain<-1.0`), each change in the read-back,
-and while it reads on, the gain budget the controller says it is actually working within
-(`caic_image=gain 2.0 (0x40), clip 96`) plus the *max available power* word about once a
-minute (`caic_maxpower=0x...`) — that last number moving with the content is the one piece
-of evidence the experiment can produce without a light meter.
-
-**How to undo it — including with no picture.** The first three need nothing on screen,
-which is the point: if CAIC blanks or wrecks the image, you cannot read a menu to escape it.
-
-- **do nothing for fifteen seconds.** Turning it on arms a countdown owned by the service,
-  not the screen; without a confirmation the service writes `w 50 1 0` and reverts. The
-  preference is only saved once you confirm, so an unconfirmed CAIC cannot come back after
-  a reboot either;
-- **power-cycle the projector** (see below);
-- `--ez caic false` from a PC;
-- press the `CAIC` row again — one write, `w 50 1 0`, and the budget back to `w 84 3 0 20 60`;
-- press **RELEASE CONTROL**, which turns it off along with everything else the app drives;
-- `--ez reset`, which turns both experiments off along with the curve;
-- **power-cycle the projector.** The controller reloads the factory settings at boot, and
-  those have it off. Nothing either switch does is written anywhere that survives a reboot;
-  the factory settings partition is deliberately never touched.
-
-The same list is the LABB list, with `--ez labb false` and `w 80 2 10 80` in place of the
-CAIC commands, and the same countdown — the two share one confirmation window, so if both
-are armed together one press covers both and one silence reverts both.
-
-The app also turns them off itself whenever it stops running, if it was the one that turned
-them on, and re-asserts them on brightness-mode changes and after a resume, where the kernel
-re-programs the controller's registers.
 
 ### If something looks wrong
 
@@ -748,7 +581,8 @@ base curve with a constant added to every knee **above the floor**, clipped at 8
 other four are solved against this unit's *measured* thermal plant. Bright is solved against
 that plant scaled up for a raised LED drive — Presentation at 90 % of the driver maximum
 rather than the stock 76 — and **nothing has ever been held at that drive**, so every figure
-in its row is a prediction from a fitted line. One twelve-minute hold at duty 45 confirms or
+in its row is a prediction from a fitted line. The one-press override has since moved to 95,
+which the row has not been redrawn for, so it reads low by roughly another 1.7 °C. One twelve-minute hold at duty 45 confirms or
 corrects it; the derivation, the fit, and what happens if it reads high are all in
 [docs/curve.md](docs/curve.md#the-bright-preset).
 
@@ -935,6 +769,59 @@ Summarised; the detail is in [docs/findings.md](docs/findings.md).
 - **Philips shipped this same trade themselves** on the sibling PicoPix Max in 2020 —
   raising the target temperature in exchange for 7 dB less fan noise, landing at 50 °C
   steady and 53 °C worst case, and never rolling it back.
+
+### The three display-controller features, and why none of them is here
+
+Each of these was a control on the main screen. All three were tried on the projector on
+2026-09-07, all three were withdrawn, and this is the record of what each one did. The
+command encoders and decoders are still in `PicoReg`, with tests, and the app still reads
+all three once a minute and prints them under **Diagnostics** — a firmware that changed one
+of these answers would show up there. Nothing writes them any more.
+
+**CAIC does nothing here, and it cannot.** Content Adaptive Illumination Control lowers LED
+current on frames that do not need full output and opens the mirrors to compensate. A/B with
+the fan pinned, seven minutes a hold, Presentation, video playing:
+
+| | LED temperature |
+|---|---|
+| CAIC off | **52.33 °C** |
+| CAIC on | **52.33 °C** |
+
+Identical, with a within-hold spread of ±0.04 °C. Raising the gain budget from the 1.0 the
+projector was found holding to the maximum 4.0 changed nothing either — the write was
+accepted, `0x85` read back `00 80 60`, status bit clear.
+
+The engine is demonstrably running. The debug gain bars move with the content, and `0x5F`
+(*Read CAIC RGB LED Current*) gives live per-colour values that vary with the image:
+`13 00 14 00 12 00` on one frame, `11 00 17 00 11 00` later. But the LED current never
+leaves the kernel's stock per-mode table, because **TI defines every LED-current command as
+going to a DLPA200x PMIC and this board has none** — the currents are driven by the SoC over
+SPI to two MAX20096 chips the display controller cannot reach. CAIC computes correctly and
+its output is stranded. That is a wiring fact, not a setting, so no firmware update fixes it.
+
+**LABB works, and what it does is make the picture worse.** Local Area Brightness Boost is
+pure image processing inside the DLPC3436 — it needs no LED driver, which is exactly why it
+runs here where CAIC cannot. Enabling it (`w 80 2 11 80`) is accepted, the register reads
+back `11 80`, and the live gain byte tracks the content: `0x20` idle, moving to `0x27` and
+`0x24` on real video. The verdict from watching it was *"really washed out seeming"*. That
+is not a fault — it is LABB doing its documented job. Adaptively gaining up the darker parts
+of a frame raises the black floor, and a raised black floor is flattened contrast.
+
+**The Looks trade red for green, and red has nothing to trade.** A Look is a colour-sequence
+preset: how the frame's time is divided between the three LEDs. All 19 were swept and their
+duty splits read via `26h`:
+
+| Look | red | green | blue | on a white field |
+|---|---|---|---|---|
+| **0** | 40 % | 40 % | 20 % | white |
+| 1–18 | 25–33 % | the rest | 20 % | 1 and 15 visibly green |
+
+Look 0 is the only one this projector has ever used — the kernel zeroes its Look table at
+probe — and it is also optimal by construction. The gain the others offer cannot be
+rebalanced back to neutral: restoring white on Look 15 needs red flux up **1.97×**, which is
+red current up about **2.5× to 175 %**, against a hard ceiling of 97. Red is the weak
+primary on this engine and has no headroom to give, so the extra brightness is inseparable
+from the green cast that pays for it.
 
 ## How the tests work
 

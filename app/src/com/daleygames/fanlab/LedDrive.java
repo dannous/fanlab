@@ -167,13 +167,13 @@ public final class LedDrive {
             }
         }
 
-        /** The one-press preset the main screen offers: +10, +10, +15, +14 over stock. */
+        /** The one-press preset the main screen offers: +15, +15, +20, +19 over stock. */
         public static Config bright() {
             Config c = new Config();
-            c.level[0] = 30;
-            c.level[1] = 50;
-            c.level[2] = 70;
-            c.level[3] = 90;
+            c.level[0] = 35;
+            c.level[1] = 55;
+            c.level[2] = 75;
+            c.level[3] = 95;
             return c;
         }
 
@@ -241,7 +241,7 @@ public final class LedDrive {
             return c;
         }
 
-        /** {@code 30·50·70·90}, for the screen. */
+        /** {@code 35·55·75·95}, for the screen. */
         public String summary() {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < TIERS; i++) {
@@ -266,7 +266,7 @@ public final class LedDrive {
 
     /**
      * Channel 1's drive for a given "other" level, keeping the stock table's ratio for
-     * that mode: {@code round(level * stockRed / stockOther)}. Presentation 90 gives 84;
+     * that mode: {@code round(level * stockRed / stockOther)}. Presentation 95 gives 89;
      * Super Eco is 1:1. An unknown mode gets the level unchanged, which is the only ratio
      * there is any evidence for.
      */
@@ -673,7 +673,7 @@ public final class LedDrive {
     }
 
     /**
-     * One phrase for the status area: {@code stock}, {@code applied 90/84},
+     * One phrase for the status area: {@code stock}, {@code applied 95/89},
      * or {@code held off: tripped at 57.2 C}.
      */
     public synchronized String state() {

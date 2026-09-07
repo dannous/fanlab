@@ -47,10 +47,24 @@ import java.io.InputStreamReader;
  * tenths, or the sign bit sits elsewhere, the trace can be reinterpreted offline without
  * re-running the sweep. Every decoded value is flagged {@code provisional} for that reason.
  *
- * <h3>Also here: the CAIC toggle</h3>
- * The same node carries the one write this app makes to the display controller, the LED
- * output control method (0x50), and its read-back (0x51). It is the same channel with
- * the same write-only problem, so it lives in the same class; see the CAIC section.
+ * <h3>Also here: three display features, and why the app no longer offers any of them</h3>
+ * The same node carries CAIC (0x50/0x51) with its gain budget (0x84/0x85), LABB
+ * (0x80/0x81), and the Looks (0x22/0x26). All three were controls on the main screen once.
+ * All three were measured on the projector on 2026-09-07 and all three were withdrawn:
+ * <ul>
+ *   <li><b>CAIC does nothing and cannot.</b> Pinned-fan A/B, seven minutes a hold,
+ *       Presentation, video playing: CAIC off <b>52.33 C</b>, CAIC on <b>52.33 C</b>,
+ *       within-hold spread 0.04 C. See the CAIC section for why the engine can run
+ *       correctly and still change nothing.</li>
+ *   <li><b>LABB works and makes the picture worse.</b> "really washed out seeming" -- which
+ *       is LABB doing its documented job. See the image-processing section.</li>
+ *   <li><b>The Looks trade red for green.</b> Look 0 is the only neutral one. See the
+ *       Looks section for the duty splits and the arithmetic that closes the door.</li>
+ * </ul>
+ * The encoders, decoders and reads all stay. They are how each negative was established,
+ * they are how it could be re-checked on a firmware that changes one of the answers, and
+ * {@link DiagActivity} prints what they read beside the finding it supports. <b>Nothing in
+ * the app writes any of them any more.</b>
  *
  * Pure Java (Sysfs + java.lang only), so the headless test drives it against a stub tree.
  */
@@ -485,16 +499,26 @@ public final class PicoReg {
      * brightness. Stock has it OFF: caic=0x00 in every template of the factory picosetting
      * blob, and no Java caller of Pico.setProjectorCaic anywhere in the firmware.
      *
-     * What is NOT known, and why this is an experiment rather than a feature:
+     * IT DOES NOTHING HERE, AND IT CANNOT. Measured on 2026-09-07: fan pinned, Presentation,
+     * video playing, seven minutes a hold.
      *
-     *   This board has no TI DLPA LED driver. The LED currents are set by the kernel over
-     *   SPI to two MAX20096 drivers, and the DLPC's own RGB current registers hold a
-     *   nominal 13. CAIC's power saving comes from the DLPC lowering LED current itself,
-     *   through a DLPA it does not have here. So it may be unable to lower real LED current
-     *   at all, in which case it does only the duty-cycle half -- a brighter image at the
-     *   same LED power -- or nothing, or shows artefacts if its LUTs were never calibrated
-     *   for this engine. Nothing in this class claims a power saving, and nothing in the
-     *   documentation should either.
+     *   CAIC off   52.33 C          within-hold spread 0.04 C
+     *   CAIC on    52.33 C          identical, to two decimals
+     *
+     * Raising the gain budget to 4.0 changed nothing either -- verified accepted, 0x85 read
+     * back 00 80 60, status bit clear.
+     *
+     * The engine demonstrably runs. The debug gain bars move with the content, and 0x5F
+     * (Read CAIC RGB LED Current) gives live per-colour values that vary with the image:
+     * 13 00 14 00 12 00 on one frame, 11 00 17 00 11 00 later. CAIC computes correctly and
+     * its output is stranded, because TI defines every LED-current command as going to a
+     * DLPA200x PMIC and this board has none: the currents are driven by the SoC over SPI to
+     * two MAX20096 chips the DLPC cannot reach, and the DLPC's own current registers sit at
+     * a nominal 13 and go nowhere.
+     *
+     * So the failure is structural, not a setting. A firmware update cannot route the DLPC
+     * to a chip that is not on the board. What is left below is the read path, because a
+     * measurement this specific is worth being able to repeat rather than re-argue.
      *
      * The write is runtime only: "w 50 1 1" turns it on, "w 50 1 0" turns it off, and a
      * power cycle turns it off regardless because the DLPC re-loads picosetting at boot.
@@ -854,8 +878,8 @@ public final class PicoReg {
     // ------------------------------------------------------------------ image processing
 
     /*
-     * The two IntelliBright image-processing controls, and which half of it this board can
-     * actually run.
+     * The two IntelliBright image-processing controls. Both were tried on the hardware, and
+     * this is the record of what each one did.
      *
      * CAIC (above, 0x50) selects the method. What it is *allowed to do* once selected lives
      * in a second command, Write CAIC Image Processing Control (0x84), and reading it back
@@ -865,9 +889,10 @@ public final class PicoReg {
      *
      * -- gain display off, maximum lumens gain 0x20, clipping threshold 96. And 0x20 in
      * that fixed-point byte is 1.0, which is the bottom of the legal range: CAIC was being
-     * selected with permission to raise the image by nothing at all. That is the most
-     * likely reason switching 0x50 on alone produced nothing measurable on the hardware --
-     * the method was chosen and the budget was zero.
+     * selected with permission to raise the image by nothing at all. That looked like the
+     * reason switching 0x50 on alone changed nothing measurable. It was not: giving CAIC a
+     * budget of 4.0 -- accepted, 0x85 reading back 00 80 60 -- changed nothing either. The
+     * CAIC section above has the A/B and the structural reason.
      *
      * LABB (0x80/0x81) is the other half of IntelliBright, and DLPU078A describes it as
      * adaptively gaining up darker parts of the image to achieve an overall brighter one.
@@ -880,14 +905,17 @@ public final class PicoReg {
      * current gain 0x20. So the strength this board would run at has been chosen by
      * somebody; the feature is simply switched off.
      *
-     * Why LABB is the one that can work here. CAIC's mechanism is the controller lowering
-     * LED current, and this board has no TI DLPA LED driver for it to lower current
-     * through: the LED currents are driven by the SoC over SPI to two MAX20096 chips the
-     * DLPC cannot reach, and the DLPC's own current registers sit at a nominal 13 and go
-     * nowhere. So even with the gain budget fixed, CAIC may still achieve nothing here.
-     * LABB is pure DMD-side image processing and needs no LED control at all. Neither is
-     * claimed to work; only one of them has a mechanism that does not depend on hardware
-     * this board does not have.
+     * LABB WORKS, AND THAT IS THE PROBLEM. Enabling it (w 80 2 11 80) is accepted, the
+     * register reads back 11 80, and the live gain byte tracks the content -- 0x20 idle,
+     * 0x27 and 0x24 on real video. The owner watched it and the verdict was "really washed
+     * out seeming". That is not a fault: it is LABB doing exactly its documented job.
+     * Gaining up the darker parts of a frame raises the black floor, and a raised black
+     * floor is flattened contrast. The mechanism works on this board precisely because it
+     * needs no LED driver, and the thing it does is a thing nobody wants.
+     *
+     * So of the two: one computes correctly and cannot reach the hardware, the other reaches
+     * the hardware and makes the picture worse. Neither is offered as a control. Both decode
+     * paths stay, because that is how each was established.
      */
 
     /** DLPU078A Write / Read Local Area Brightness Boost Control. */
@@ -992,17 +1020,25 @@ public final class PicoReg {
     }
 
     /**
-     * The LABB control byte: sharpness strength in b7:4, the control field in b3:2, b1:0
-     * reserved and left clear.
+     * The LABB control byte: sharpness strength in b7:4, the control field in <b>b1:0</b>.
+     *
+     * <b>b1:0, not b3:2</b>, and the hardware is what settled it. An earlier version of this
+     * put the control field in b3:2 and enabled LABB with {@code 0x14}. Nobody had run it.
+     * When it was run, on 2026-09-07, the byte that actually turned LABB on was {@code 0x11}
+     * -- written, read back as {@code 11 80}, and with a live gain byte that then moved off
+     * its idle {@code 0x20} to {@code 0x27} and {@code 0x24} on video. Under the b3:2
+     * reading, {@code 0x11} is LABB <i>disabled</i>, which is not something a disabled
+     * feature's gain does. The found-state read {@code 10 80 20 00} is consistent with
+     * either layout and so decided nothing; the enable is the measurement that did.
      *
      * Sharpness is carried through rather than owned by the enable, because DLPU078A ties
      * the two together -- "The LABB function must be enabled to make use of sharpness" --
      * so turning LABB on with sharpness zeroed would quietly drop a setting the machine
-     * already had. Enabling what the projector was found holding is {@code 0x14}.
+     * already had. Enabling what the projector was found holding is {@code 0x11}.
      */
     public static int labbControlByte(int sharpness, boolean enabled) {
         int s = sharpness < 0 ? 0 : (sharpness > LABB_SHARPNESS_MAX ? LABB_SHARPNESS_MAX : sharpness);
-        return (s << 4) | ((enabled ? LABB_CONTROL_ENABLED : LABB_CONTROL_DISABLED) << 2);
+        return (s << 4) | (enabled ? LABB_CONTROL_ENABLED : LABB_CONTROL_DISABLED);
     }
 
     /** The sharpness strength out of a control byte, 0..15. */
@@ -1012,12 +1048,13 @@ public final class PicoReg {
 
     /** The raw control field out of a control byte: 0 disabled, 1 enabled, 2 and 3 reserved. */
     public static int labbControlOf(int controlByte) {
-        return (controlByte >> 2) & 0x03;
+        return controlByte & 0x03;
     }
 
     /**
-     * The 0x80 command string, e.g. {@code w 80 2 14 80} to enable LABB at the strength and
-     * sharpness the projector was already holding.
+     * The 0x80 command string, e.g. {@code w 80 2 11 80} to enable LABB at the strength and
+     * sharpness the projector was already holding -- the write that was actually made, and
+     * the one whose result was "really washed out seeming".
      *
      * Strength is 0..255 where DLPU078A says 0 is no boost and 255 "the maximum boost
      * viable in a product" -- and that "the strength is not a direct indication of the
@@ -1278,6 +1315,255 @@ public final class PicoReg {
             return r;
         } catch (Throwable e) {
             Labb r = new Labb();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    // ------------------------------------------------------------------ the Looks
+
+    /*
+     * A Look is a colour-sequence preset: how the frame's time is divided between the red,
+     * green and blue LEDs. Shifting time towards a primary makes that primary brighter, and
+     * the total is fixed, so every Look is a trade rather than a gain.
+     *
+     * All 19 were swept on 2026-09-07 -- selected with 0x22, split read with 0x26 -- and the
+     * result closes the question:
+     *
+     *   Look 0                40 / 40 / 20   R/G/B, and reads white on a white field
+     *   Looks 1..18           red 25..33 %, the time taken off red given to green
+     *   Looks 1 and 15        visibly green on the same white field
+     *
+     * Look 0 is the only one this projector has ever used, because the kernel zeroes its
+     * Look table at probe. It is also optimal by construction, and that is arithmetic rather
+     * than preference: restoring neutral white on Look 15 needs red flux up 1.97x, which is
+     * red current up about 2.5x to 175 %, against {@link LedDrive#MAX_LEVEL} of 97. Red is
+     * the weak primary on this engine and has no headroom to give, so the brightness the
+     * other Looks offer is inseparable from a green cast.
+     *
+     * Nothing in the app writes 0x22. The encoder is here because writing it is how the
+     * sweep was done, and a firmware that reshuffled the table would have to be swept again.
+     */
+
+    /** DLPU078A SS 3.1.16 Write Look Select: one byte, the Look number. */
+    public static final int OPCODE_LOOK_SELECT_WRITE = 0x22;
+    /** DLPU078A SS 3.1.17 Read Look Select: Look number, sequence number, frame rate. */
+    public static final int OPCODE_LOOK_SELECT_READ = 0x23;
+    public static final int LOOK_SELECT_LEN = 6;
+
+    /**
+     * DLPU078A SS 3.1.18 Read Sequence Header Attributes: thirty bytes, two identical
+     * fifteen-byte blocks -- the Look's copy first, then the Sequence's. Only the six duty
+     * bytes at the head of each are read here; the frame counts and vector count behind them
+     * are not what the Looks question turned on.
+     */
+    public static final int OPCODE_SEQUENCE_HEADER_READ = 0x26;
+    public static final int SEQUENCE_HEADER_LEN = 30;
+    /** Where the Sequence block's copy of the same three duty cycles starts. */
+    private static final int SEQUENCE_BLOCK_AT = 15;
+
+    /**
+     * Duty cycle is UQ8.8: a little-endian sixteen-bit word whose high byte is the whole
+     * percent and whose low byte is 256ths. 40 % is {@code 00 28}.
+     *
+     * <b>256, not 255</b>, and the two disagree in TI's own material: the reference Python
+     * (dlpc343x_xpr4.py) divides by 255, and the guide's own worked example -- 30.5 / 50.0 /
+     * 19.5 as {@code 1E80 3200 1380} -- comes out exact under 256 and sums to 100.0, while
+     * under 255 it gives 30.62 / 50.20 / 19.58, summing to 100.39, which matches neither the
+     * decimals TI printed nor the sum TI requires. The datasheet settles its own conflict.
+     */
+    public static final int DUTY_SCALE = 256;
+
+    /** DLPU078A: "The sum of the three duty cycles must add up to 100." */
+    public static final double DUTY_SUM = 100.0;
+
+    /**
+     * How far the three may miss 100 before the reading is refused, in percent.
+     *
+     * Half a percent is above any UQ8.8 rounding -- one LSB is 1/256 of a percent -- and far
+     * below what a misread would produce. This is the check that makes the decode
+     * self-verifying: get the byte order or the scale wrong and the sum stops being 100.
+     */
+    public static final double DUTY_SUM_TOLERANCE = 0.5;
+
+    /** How many Looks this projector answered for, 0..18. */
+    public static final int LOOK_COUNT = 19;
+
+    /** The one Look with a neutral split, and the only one the kernel ever selects. */
+    public static final int LOOK_NEUTRAL = 0;
+
+    /** The command string for 0x22, e.g. {@code w 22 1 f} to select Look 15. */
+    public static String lookSelectCommand(int number) {
+        return writeCommand(OPCODE_LOOK_SELECT_WRITE, new int[]{number & 0xFF});
+    }
+
+    /** One UQ8.8 duty word as a percentage. NaN for a word that is not there. */
+    public static double decodeDuty(int lo, int hi) {
+        if (lo < 0 || hi < 0) {
+            return Double.NaN;
+        }
+        return (((hi & 0xFF) << 8) | (lo & 0xFF)) / (double) DUTY_SCALE;
+    }
+
+    /** What the display controller says the current Look is, and how it splits the frame. */
+    public static final class Look {
+
+        /**
+         * True only when the three duty cycles arrived <i>and</i> summed to 100.
+         *
+         * The Look number is a separate read on a separate opcode, so it is separately
+         * absent: a split with no number is still a reading, and says so.
+         */
+        public boolean known;
+
+        /** The Look number from 0x23, or -1 if that read did not land. */
+        public int number = -1;
+        /** The sequence number from 0x23, or -1. */
+        public int sequence = -1;
+
+        /** The three duty cycles as percentages of frame time, or NaN. */
+        public double red = Double.NaN;
+        public double green = Double.NaN;
+        public double blue = Double.NaN;
+
+        /**
+         * Whether the Sequence block's copy of the three matched the Look block's.
+         *
+         * DLPU078A says the two must match. False is not a decode failure -- the numbers are
+         * still the numbers -- it is the flash data disagreeing with itself, which is worth
+         * seeing rather than averaging away.
+         */
+        public boolean blocksAgree;
+
+        /** Where the bytes came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        /** Is this the neutral Look -- the only one that reads white on a white field? */
+        public boolean neutral() {
+            return number == LOOK_NEUTRAL;
+        }
+
+        /** "Look 0 (seq 0), 40.0/40.0/20.0 R/G/B", or null when nothing was read. */
+        public String summary() {
+            if (!known) {
+                return null;
+            }
+            return "Look " + (number < 0 ? "?" : Integer.toString(number))
+                    + (sequence < 0 ? "" : " (seq " + sequence + ")")
+                    + ", " + fmtGain(red) + "/" + fmtGain(green) + "/" + fmtGain(blue)
+                    + " R/G/B" + (blocksAgree ? "" : " [blocks DISAGREE]");
+        }
+    }
+
+    /** Decode a 0x23 response into an existing reading: byte 0 the Look, byte 1 the sequence. */
+    public static void lookSelectIntoBytes(Look r, int[] bytes) {
+        if (r == null || bytes == null || bytes.length < LOOK_SELECT_LEN) {
+            return;
+        }
+        r.number = bytes[0] & 0xFF;
+        r.sequence = bytes[1] & 0xFF;
+    }
+
+    /**
+     * Decode a 0x26 response: the Look block's three duty cycles, checked against the
+     * Sequence block's copy and against the sum TI requires.
+     */
+    public static Look sequenceHeaderFromBytes(int[] bytes, String source) {
+        Look r = new Look();
+        if (bytes == null || bytes.length < SEQUENCE_HEADER_LEN) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        r.red = decodeDuty(bytes[0], bytes[1]);
+        r.green = decodeDuty(bytes[2], bytes[3]);
+        r.blue = decodeDuty(bytes[4], bytes[5]);
+        r.blocksAgree = bytes[0] == bytes[SEQUENCE_BLOCK_AT]
+                && bytes[1] == bytes[SEQUENCE_BLOCK_AT + 1]
+                && bytes[2] == bytes[SEQUENCE_BLOCK_AT + 2]
+                && bytes[3] == bytes[SEQUENCE_BLOCK_AT + 3]
+                && bytes[4] == bytes[SEQUENCE_BLOCK_AT + 4]
+                && bytes[5] == bytes[SEQUENCE_BLOCK_AT + 5];
+        double sum = r.red + r.green + r.blue;
+        if (Math.abs(sum - DUTY_SUM) > DUTY_SUM_TOLERANCE) {
+            r.reason = "the three duty cycles summed to " + fmtGain(sum)
+                    + ", and DLPU078A requires 100. Treating the reading as unread rather "
+                    + "than reporting a split the controller did not give.";
+            return r;
+        }
+        r.known = true;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /** As {@link #sequenceHeaderFromBytes}, from arbitrary response text. For the host test. */
+    public static Look sequenceHeaderFromResponseText(String text, String source) {
+        Look r = new Look();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, SEQUENCE_HEADER_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + SEQUENCE_HEADER_LEN
+                    + " hex bytes; treating it as unread rather than guessing";
+            return r;
+        }
+        return sequenceHeaderFromBytes(bytes, source);
+    }
+
+    /**
+     * Ask the DLPC which Look is selected and how it splits the frame: 0x26 for the split,
+     * then 0x23 for the number.
+     *
+     * That order, because the split is the finding and the number is the label on it. A 0x23
+     * that does not answer leaves a reading that still says 40/40/20; a 0x26 that does not
+     * answer leaves nothing worth labelling.
+     */
+    public static Look readLook() {
+        try {
+            RoundTrip split = roundTrip(OPCODE_SEQUENCE_HEADER_READ, SEQUENCE_HEADER_LEN);
+            if (split.bytes == null) {
+                Look r = new Look();
+                r.reason = split.reason;
+                return r;
+            }
+            Look r = sequenceHeaderFromBytes(split.bytes, split.source);
+            RoundTrip which = roundTrip(OPCODE_LOOK_SELECT_READ, LOOK_SELECT_LEN);
+            if (which.bytes != null) {
+                lookSelectIntoBytes(r, which.bytes);
+            }
+            return r;
+        } catch (Throwable e) {
+            Look r = new Look();
+            r.reason = "exception while reading: " + e;
+            return r;
+        }
+    }
+
+    /** As {@link #readLook()}, bounded, on a thread of its own. */
+    public static Look readLook(long timeoutMs) {
+        final Look[] slot = new Look[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readLook();
+                }
+            }, "fanlab-picoreg-look");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            Look r = new Look();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            Look r = new Look();
             r.reason = "could not run the picoreg read: " + e;
             return r;
         }

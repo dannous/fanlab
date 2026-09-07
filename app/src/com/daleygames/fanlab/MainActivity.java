@@ -50,11 +50,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow ceilingRow;
     private StepRow ledDriveRow;
     private StepRow reassertRow;
-    private StepRow caicRow;
-    private StepRow caicGainRow;
-    private StepRow labbRow;
-    private StepRow labbStrengthRow;
-    private StepRow labbSharpnessRow;
     private StepRow loggingRow;
     private StepRow autostartRow;
     private StepRow takeoverRow;
@@ -64,16 +59,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow roomRow;
     private SeekBar slider;
     private TextView sliderValue;
-
-    /**
-     * The picture-change confirmation dialog, while one is up.
-     *
-     * Held so the 250 ms poll can redraw the countdown in it and take it away when the
-     * window closes. It is a <i>view</i> of a countdown the service owns, never the
-     * countdown itself -- dismissing it, or this activity going away under it, changes
-     * nothing about whether the change reverts.
-     */
-    private AlertDialog pictureDialog;
 
     private boolean systemVariant;
 
@@ -119,10 +104,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
     @Override
     protected void onPause() {
         ui.removeCallbacks(poll);
-        // The dialog goes; the countdown does not. It lives in the service precisely so
-        // that walking away from this screen is one of the ways a display change gets
-        // reverted rather than one of the ways it gets stuck on.
-        dismissPictureDialog();
         super.onPause();
     }
 
@@ -258,11 +239,13 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 .tag("leddrive", 0));
         root.addView(Ui.body(c,
                 "Runs the LEDs harder than the projector normally does. Presentation "
-                        + "goes from 76 % to 90 % of maximum — roughly 18 % more "
-                        + "light. Press to cycle Stock → Bright → Stock.\n"
+                        + "goes from 76 % to 95 % of maximum — 25 % more drive. "
+                        + "Press to cycle Stock → Bright → Stock.\n"
                         + "\nSwitch the curve preset to Bright as well. The light "
-                        + "engine runs about 4 °C hotter on this setting, and Bright "
-                        + "is the curve that spends a little more fan to cover it.\n"
+                        + "engine runs about 6 °C hotter on this setting, and Bright "
+                        + "is the curve that spends a little more fan to cover it — "
+                        + "though Bright was drawn for the older 90 and covers rather "
+                        + "less of 95 than it did of that.\n"
                         + "\nThen put up a white image and check two things: it should "
                         + "look brighter, and white should still look white. If it looks "
                         + "dimmer instead, switch it off — that means the drive was set "
@@ -277,68 +260,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 "Re-assert every second (beat the stock controller)").button()
                 .tag("reassert", 0));
         addRow(root, new StepRow(c, "Curve settings…").button().tag("curve", 0));
-
-        root.addView(Ui.heading(c, "Experiment — display controller"), Ui.wrap());
-        root.addView(Ui.body(c,
-                "The two settings below change the picture, not the fan. Neither raises how "
-                        + "hard the LEDs are driven, so neither makes the projector hotter. "
-                        + "Both ask you to confirm within "
-                        + (PictureArm.WINDOW_MS / 1000) + " seconds, because a display "
-                        + "setting that goes wrong can take away the screen you would need "
-                        + "to undo it — do nothing and it puts itself back.\n"
-                        + "\nIf the picture goes and you cannot read this: wait "
-                        + (PictureArm.WINDOW_MS / 1000) + " seconds, or pull the power. "
-                        + "Neither setting is saved until you confirm it, and neither is "
-                        + "written anywhere that survives a reboot."), Ui.wrap());
-
-        labbRow = addRow(root, new StepRow(c,
-                "LABB (BETA) — lift the dark parts of the picture").button()
-                .tag("labb", 0));
-        labbStrengthRow = addRow(root, new StepRow(c, "    LABB strength")
-                .range(0, PicoReg.LABB_STRENGTH_MAX).steps(8, 32).tag("labbstrength", 0));
-        labbSharpnessRow = addRow(root, new StepRow(c, "    LABB sharpness")
-                .range(0, PicoReg.LABB_SHARPNESS_MAX).steps(1, 4).tag("labbsharp", 0));
-        root.addView(Ui.body(c,
-                "Brightens dark areas of the image without touching the LEDs, frame by "
-                        + "frame. Press to turn it on, then look at a dark scene — shadow "
-                        + "detail should come up while the bright parts stay where they "
-                        + "were. If it looks washed out or the dark areas shimmer, turn the "
-                        + "strength down or switch it off.\n"
-                        + "\nStrength is 0–255 and starts at 128, which is the value the "
-                        + "projector already had loaded. It is a dial, not a multiplier: "
-                        + "how much lift you get depends on the picture. Sharpness 0–15 "
-                        + "only does anything while LABB is on.\n"
-                        + "\nThis is the one of the two that has a mechanism this "
-                        + "projector can actually run — it works on the mirrors, and needs "
-                        + "nothing from the LED driver. Try it before CAIC.\n"
-                        + "\nBETA — nobody has run it on this model."), Ui.wrap());
-
-        caicRow = addRow(root, new StepRow(c,
-                "CAIC (BETA) — content-adaptive LED power").button().tag("caic", 0));
-        caicGainRow = addRow(root, new StepRow(c, "    CAIC brightness budget")
-                .range(Prefs.CAIC_GAIN_MIN_TENTHS, Prefs.CAIC_GAIN_MAX_TENTHS)
-                .steps(1, 5).scaled(10).suffix("×").tag("caicgain", 0));
-        root.addView(Ui.body(c,
-                "Asks the display controller to dim the LEDs on frames that do not need "
-                        + "full output and open the mirrors to compensate. If it works, the "
-                        + "picture looks the same and the projector draws less power.\n"
-                        + "\nThe budget above is how far it is allowed to lift the image, "
-                        + "1.0× to 4.0×. The projector was found set to 1.0×, which is no "
-                        + "lift at all — that is why switching CAIC on by itself did "
-                        + "nothing you could see. 2.0× is the starting point; turn it up if "
-                        + "nothing changes, down if the picture pumps or flickers between "
-                        + "scenes.\n"
-                        + "\nTo judge it, put up a mostly dark frame with one small bright "
-                        + "region and watch it for a few seconds — that is the content it "
-                        + "is designed for. Then check a normal scene still looks right.\n"
-                        + "\nBETA — and this one may do nothing whatever the budget "
-                        + "says. It saves power by lowering LED current through a driver "
-                        + "chip this board does not have.\n"
-                        + (systemVariant
-                        ? "\n\"read back\" is what the controller itself reported, "
-                          + "checked about once a minute."
-                        : "\nOnly the system build can read the controller's answer "
-                          + "back, so this build says \"unverified\".")), Ui.wrap());
 
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
         StepRow auto = new StepRow(c,
@@ -508,8 +429,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
             reassertRow.display(r ? "ON" : "OFF");
             reassertRow.valueColour(r ? Ui.GOOD : Ui.DIM);
         }
-        syncCaicRow();
-        syncLabbRow();
         if (loggingRow != null) {
             boolean l = Prefs.logging(this);
             loggingRow.display(l ? "ON" : "OFF");
@@ -546,8 +465,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
     }
 
     /**
-     * The LED drive row. Like the CAIC row it is driven from the poll as well as from the
-     * preference sync, because what it reports is not the setting: the service holds the
+     * The LED drive row. Driven from the 1 s poll as well as from the preference sync,
+     * because what it reports is not the setting: the service holds the
      * override off in half a dozen states the setting knows nothing about, and the trip
      * latch drops it without anyone pressing anything.
      *
@@ -585,108 +504,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 : "LED drive (BETA) — a brighter picture");
     }
 
-    /**
-     * The CAIC row. Called from the preference sync and from the 1 s poll, because two of
-     * its states arrive asynchronously: the service's write happens on the next tick, and
-     * the read-back lands seconds later on a thread of its own.
-     *
-     * Green only when the DLPC itself has said on. Amber for on-but-unverified, which is
-     * what the plain build shows for ever and the system build shows for a few seconds;
-     * red when the register disagrees with the setting or the write failed.
-     */
-    private void syncCaicRow() {
-        if (caicRow == null) {
-            return;
-        }
-        boolean want = Prefs.caic(this);
-        String text = FanService.caicSummary(want);
-        caicRow.display(text);
-        PicoReg.CaicReading rb = FanService.caicReadback;
-        boolean saysOn = rb != null && PicoReg.CAIC_ON.equals(rb.state);
-        boolean saysOff = rb != null && PicoReg.CAIC_OFF.equals(rb.state);
-        int colour;
-        if (FanService.pictureArmed(PictureArm.CAIC)) {
-            // Amber, and not green: an armed CAIC is a thing that is about to be undone
-            // unless someone acts, which is the opposite of a settled state.
-            colour = Ui.WARN;
-        } else if (!want) {
-            colour = text.indexOf("still ON") >= 0 ? Ui.DANGER : Ui.DIM;
-        } else if (FanService.caicWriteFailed) {
-            colour = Ui.DANGER;
-        } else if (FanService.caicWritten == 1 && saysOn) {
-            colour = Ui.GOOD;
-        } else if (FanService.caicWritten == 1 && saysOff) {
-            colour = Ui.DANGER;
-        } else {
-            colour = Ui.WARN;
-        }
-        caicRow.valueColour(colour);
-        if (caicGainRow != null) {
-            // The setting, and beside it what the controller said its budget actually is --
-            // which is the number that was wrong, so it is worth showing rather than
-            // trusting the write. Dim while CAIC is off: a budget nothing is spending is
-            // not a value the machine is using.
-            int tenths = Prefs.caicGainTenths(this);
-            caicGainRow.set(tenths);
-            PicoReg.CaicImage img = FanService.caicImageReadback;
-            if (want && img != null && img.known) {
-                caicGainRow.display(Sample.fmt1(tenths / 10.0) + "× (read back: "
-                        + PicoReg.fmtGain(img.gain) + "×)");
-            } else {
-                caicGainRow.display(Sample.fmt1(tenths / 10.0) + "×");
-            }
-            caicGainRow.valueColour(!want ? Ui.DIM
-                    : (img != null && img.known
-                            && Math.abs(img.gain - tenths / 10.0) > 0.05) ? Ui.DANGER
-                    : Ui.ACCENT);
-        }
-    }
-
-    /**
-     * The LABB row and its two numbers. Same shape as the CAIC row and for the same reason:
-     * what it reports is not the setting but what the service has managed to put on the
-     * hardware, and on the system build what the hardware said back.
-     */
-    private void syncLabbRow() {
-        if (labbRow == null) {
-            return;
-        }
-        boolean want = Prefs.labb(this);
-        String text = FanService.labbSummary(want);
-        labbRow.display(text);
-        PicoReg.Labb rb = FanService.labbReadback;
-        int colour;
-        if (FanService.pictureArmed(PictureArm.LABB)) {
-            colour = Ui.WARN;
-        } else if (!want) {
-            colour = text.indexOf("still ON") >= 0 ? Ui.DANGER : Ui.DIM;
-        } else if (FanService.labbWriteFailed) {
-            colour = Ui.DANGER;
-        } else if (FanService.labbWritten == 1 && rb != null && rb.known) {
-            colour = rb.enabled ? Ui.GOOD : Ui.DANGER;
-        } else {
-            colour = Ui.WARN;
-        }
-        labbRow.valueColour(colour);
-        if (labbStrengthRow != null) {
-            int v = Prefs.labbStrength(this);
-            labbStrengthRow.set(v);
-            labbStrengthRow.display(Integer.toString(v));
-            labbStrengthRow.valueColour(want ? Ui.ACCENT : Ui.DIM);
-        }
-        if (labbSharpnessRow != null) {
-            int v = Prefs.labbSharpness(this);
-            labbSharpnessRow.set(v);
-            labbSharpnessRow.display(v == 0 ? "off" : Integer.toString(v));
-            labbSharpnessRow.valueColour(want ? Ui.ACCENT : Ui.DIM);
-        }
-    }
-
     private void refresh() {
-        syncCaicRow();
-        syncLabbRow();
         syncLedDriveRow();
-        syncPictureDialog();
         Sample s = FanService.lastSample;
         if (s == null) {
             statusView.setText("waiting for the first sample…  " + FanService.statusLine);
@@ -873,31 +692,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
             } else if ("reassert".equals(row.tagName)) {
                 Prefs.setReassert(this, !Prefs.reassert(this));
                 syncControlsFromPrefs();
-            } else if ("caic".equals(row.tagName)) {
-                // Three states, not two: off, armed-and-counting, and confirmed on.
-                //
-                // Nothing here writes the preference. Arming asks the service to write the
-                // register and start its own countdown; only FanService.confirmPicture
-                // stores anything, and only after someone has said the picture survived.
-                // That is what stops an unconfirmed CAIC coming back after a reboot, which
-                // would take away the power cycle that is the owner's guaranteed escape.
-                pressPicture(PictureArm.CAIC, Prefs.caic(this));
-            } else if ("labb".equals(row.tagName)) {
-                pressPicture(PictureArm.LABB, Prefs.labb(this));
-            } else if ("caicgain".equals(row.tagName)) {
-                // Poked: with CAIC already on, the tick has to see the new budget as an edge
-                // and re-send 0x84. Nothing on the hardware changes on its own to tell it.
-                Prefs.setCaicGainTenths(this, row.get());
-                FanService.poke(this, FanService.ACTION_REFRESH);
-                syncCaicRow();
-            } else if ("labbstrength".equals(row.tagName)) {
-                Prefs.setLabbStrength(this, row.get());
-                FanService.poke(this, FanService.ACTION_REFRESH);
-                syncLabbRow();
-            } else if ("labbsharp".equals(row.tagName)) {
-                Prefs.setLabbSharpness(this, row.get());
-                FanService.poke(this, FanService.ACTION_REFRESH);
-                syncLabbRow();
             } else if ("logging".equals(row.tagName)) {
                 Prefs.setLogging(this, !Prefs.logging(this));
                 syncControlsFromPrefs();
@@ -937,109 +731,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-
-    /**
-     * One press on a display-experiment row: cancel a countdown, switch a confirmed one
-     * off, or arm it and put the dialog up. Shared by both rows, because the three states
-     * and the reasoning behind them are identical -- only the register differs.
-     */
-    private void pressPicture(int what, boolean alreadyOn) {
-        if (FanService.pictureArmed(what)) {
-            FanService.cancelPictureArm(this, what);
-            syncControlsFromPrefs();
-        } else if (alreadyOn) {
-            if (what == PictureArm.CAIC) {
-                Prefs.setCaic(this, false);
-            } else {
-                Prefs.setLabb(this, false);
-            }
-            FanService.poke(this, FanService.ACTION_REFRESH);
-            syncControlsFromPrefs();
-        } else {
-            FanService.armPicture(this, what);
-            syncControlsFromPrefs();
-            showPictureConfirm();
-        }
-    }
-
-    /**
-     * The confirmation, the same shape as a monitor asking whether a new resolution
-     * worked — and for the same reason: the change can take away the screen you would need
-     * in order to undo it.
-     *
-     * <b>This dialog is not the countdown.</b> {@link FanService} owns that, and it reverts
-     * whether or not anything is on screen; killing the app, pressing HOME or the launcher
-     * reclaiming this activity all leave the revert running. All this does is draw the
-     * remaining seconds and offer the one button that stops it.
-     */
-    private void showPictureConfirm() {
-        dismissPictureDialog();
-        pictureDialog = new AlertDialog.Builder(this)
-                .setTitle("Keep " + PictureArm.name(FanService.pictureArmedWhat()) + " on?")
-                .setMessage(pictureConfirmText())
-                .setCancelable(false)
-                .setPositiveButton("Keep it", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int w) {
-                        if (!FanService.confirmPicture(MainActivity.this)) {
-                            // The window closed between the press and the dispatch. Say so
-                            // rather than storing it late: the picture the owner is looking
-                            // at is already the reverted one.
-                            toastLike("Too late — the countdown had already run out and "
-                                    + "the setting has been turned back off. Press the row "
-                                    + "again to retry.");
-                        }
-                        syncControlsFromPrefs();
-                    }
-                })
-                .setNegativeButton("Revert now", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int w) {
-                        FanService.cancelPictureArm(MainActivity.this,
-                                PictureArm.CAIC | PictureArm.LABB);
-                        syncControlsFromPrefs();
-                    }
-                })
-                .show();
-    }
-
-    private String pictureConfirmText() {
-        int left = FanService.pictureCountdownSec();
-        String what = PictureArm.name(FanService.pictureArmedWhat());
-        return what + " is on. Look at the picture.\n\n"
-                + "If it is still readable, press Keep it.\n"
-                + "If it is blank, wrong or full of artefacts, press nothing: it turns "
-                + "itself back off in " + left + " s.\n\n"
-                + "Nothing has been saved yet, so a power cycle also clears it — the "
-                + "factory display settings are never written.";
-    }
-
-    /** Redraw the countdown, and take the dialog away when the service's window closes. */
-    private void syncPictureDialog() {
-        if (pictureDialog == null) {
-            return;
-        }
-        if (FanService.pictureCountdownSec() <= 0) {
-            dismissPictureDialog();
-            return;
-        }
-        try {
-            pictureDialog.setMessage(pictureConfirmText());
-        } catch (Throwable ignored) {
-            // a dialog that will not redraw is still a dialog with a working button
-        }
-    }
-
-    private void dismissPictureDialog() {
-        try {
-            if (pictureDialog != null) {
-                pictureDialog.dismiss();
-            }
-        } catch (Throwable ignored) {
-            // already gone
-        }
-        pictureDialog = null;
-    }
 
     /**
      * Copy the backlog now, whether or not this boot already did.
