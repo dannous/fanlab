@@ -406,14 +406,39 @@ little over instead. Holding a *temperature* rather than a fan speed is what LIN
 
 ## LINEAR mode
 
-An alternative controller, installed but not the default. Where the curve holds a fan speed
-and lets the temperature float, LINEAR holds a temperature and lets the fan float: it steps
-the duty one point at a time until the light engine sits at a ceiling, and never stops
-stepping. It has no plant model, so a hotter room, a hotter unit or a brighter picture is
-not a case it has to have been measured in. The cost is fan speed in a hot room.
+An alternative controller, installed but **not the default**. Where the curve holds a fan
+speed and lets the temperature float, LINEAR holds a temperature and lets the fan float: it
+steps the duty one point at a time until the light engine sits at a ceiling, and never stops
+stepping. It has no plant model, so a hotter room, a hotter unit or a brighter picture is not
+a case it has to have been measured in.
 
-Its critical parameter is how fast it steps, and that is measured rather than chosen.
-Settled swing scales as step rate times plant lag:
+### Read this before choosing it
+
+**LINEAR is not simply louder — it trades noise against temperature in opposite directions
+either side of about 24 °C**, which is where its default 52 °C ceiling was chosen to meet the
+curve. Presentation, both controllers solved against the measured plant:
+
+| room | CURVE Quiet | LINEAR @ 52 °C | LINEAR costs | and buys |
+|---|---|---|---|---|
+| 22 °C | 37.2 % / 50.6 °C | 34.9 % / 52.0 °C | **−2.3 % fan** | −1.4 °C |
+| 24 °C | 38.4 % / 51.9 °C | 38.2 % / 52.0 °C | ±0 | ±0 |
+| 26 °C | 39.2 % / 53.4 °C | 42.3 % / 52.0 °C | +3.1 % fan | +1.4 °C |
+| 28 °C | 40.0 % / 54.9 °C | 48.8 % / 52.0 °C | +8.8 % fan | +2.9 °C |
+| 30 °C | 42.1 % / 56.1 °C | 56.9 % / 52.0 °C | **+14.8 % fan** | +4.1 °C |
+| 32 °C | 44.3 % / 57.2 °C | 73.3 % / 52.0 °C | **+29.0 % fan** | +5.2 °C |
+
+In a **cool** room LINEAR is quieter, because it only cools to its ceiling where the curve's
+fixed shelf overcools past it. In a **warm** room it is much louder, because holding a
+temperature against a plant whose authority collapses above duty 45 costs whatever it costs.
+Above a **32.5 °C** room it cannot hold 52 °C at all, and says so rather than pretending.
+
+**So: choose the curve for quiet, and LINEAR when the ceiling matters more than the noise.**
+The curve cannot hold a ceiling at all — it is a function of temperature, so it cannot
+command two different duties at the same reading — and that is the one thing LINEAR is for.
+
+### How it steps
+
+The step rate is measured, not chosen. Settled swing scales as step rate times plant lag:
 
 | decay interval | measured swing | verdict |
 |---|---|---|
@@ -422,11 +447,59 @@ Settled swing scales as step rate times plant lag:
 | 60 s | **3 points** | not noticed by ear |
 
 A 3-point swing needs a 60 s decay; giving back a 6-point overshoot at that rate takes six
-minutes. No single rate satisfies both, so there are three: attack 5 s while above the
-ceiling, decay 60 s within 1 °C of it, and decay 10 s with more headroom than that — fast
-where dropping is free, slow where it costs an audible swing.
+minutes. No single rate satisfies both, so there are three: **attack 5 s** while above the
+ceiling, **decay 60 s** within 1 °C of it, and **decay 10 s** with more headroom — fast where
+dropping is free, slow where it costs an audible swing.
 
-**LINEAR has not been exercised in the field.** The curve has; this has not.
+### The trend gate, and why it exists
+
+Direction alone is blind to whether the fan it already has is working. Watched on hardware on
+2026-09-07: the walk kept adding fan for 36 seconds *after* the light engine had started
+falling, purely because the absolute reading had not crossed back below the ceiling yet — and
+sailed eight duty points past its equilibrium. On a plant with a 120 s lag that is textbook
+integral windup.
+
+So a second test gates the first: **do not add fan while the temperature is already coming
+down, and do not give it back while it is still climbing.** It fits a least-squares slope over
+the last 90 seconds and acts only when the slope is at least three standard errors clear of
+sensor noise. It delays action; it never caps it — where the ceiling genuinely needs 83 %, the
+walk still gets there.
+
+Measured against the ungated walk:
+
+| | ungated | gated |
+|---|---|---|
+| hardware, overshoot past equilibrium | 5+ duty points | **2 duty points** |
+| simulated, peak of the approach at 30 °C | 83 % | **62 %** |
+| simulated, settled swing at 24 °C | 3.8 points | **2.7 points** |
+| time to reach the ceiling from 83 %, 24 °C | 66 minutes | **2 minutes** |
+
+That last row is the seed: the walk starts from `curve(degC)` rather than from whatever duty
+happened to be on the node. Without it LINEAR can spend an hour failing to reach the ceiling
+it exists to hold.
+
+The window is settable with `--ei lintrend`; **0 turns the gate off** and restores the
+pre-2026-09-07 behaviour, which is there so the two can be compared by ear.
+
+Designs that were built and **rejected on evidence**, so nobody rebuilds them:
+
+- **Curve feedforward plus a clamped integral trim.** At 33 °C the ±20 clamp stalls it at
+  60 % and lets the light engine reach 54.5 °C, where the plain walk goes to 83 % and holds
+  52.4. A clamp that blocks authority in a hot room is the worst available failure. It also
+  steps more than one duty point per tick, because the feedforward term moves with
+  temperature.
+- **A trend gate built on the difference of the two end samples.** Its noise is three times
+  worse than a least-squares slope, so the gate fires at random — and random skipping also
+  suppresses windup, which made the broken version look like it worked.
+- **A rule that steps the fan on temperature *rate* alone**, with no ceiling. It has no set
+  point, so it holds whatever temperature it happens to arrive at; and at the thresholds that
+  beat sensor noise it never fires anyway. Measured: the most violent event ever induced on
+  this unit — both vents covered, then uncovered — peaked at 1.7 °C/minute, where a 1 °C-in-5 s
+  trigger needs 12 °C/minute.
+
+**LINEAR has one settled hardware run behind it**, on 2026-09-07: seeded from 30 %, peaked at
+44, settled at 42 holding 51.6 °C in a 25.5 °C room, every change a single duty point. The
+curve has thirty-six hours. Treat the two accordingly.
 
 ## What the reverse-engineering established
 

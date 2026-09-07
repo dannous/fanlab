@@ -49,8 +49,13 @@ import android.util.Log;
  *       {@code linnear} of headroom, 1000..120000. Sanitised to be no slower than
  *       {@code lindown}</td></tr>
  *   <tr><td>{@code --ef linnear <f>}</td><td>how close to the ceiling counts as close, in
- *       C, 0..10. {@code --ei linstep} is the superseded spelling of {@code linup} and is
- *       still accepted</td></tr>
+ *       C, 0..10</td></tr>
+ *   <tr><td>{@code --ei lintrend <n>}</td><td>seconds of history LINEAR's trend gate fits a
+ *       slope over, 0..300. <b>0 turns the gate off</b>, which restores the walk that was
+ *       measured overshooting its equilibrium by eight duty points -- it is there so the two
+ *       can be compared by ear, not as a setting to leave. See
+ *       {@link LinearConfig#trendWindowS}. {@code --ei linstep} is the superseded spelling
+ *       of {@code linup} and is still accepted</td></tr>
  *   <tr><td>{@code --ei manual <n>}</td><td>MANUAL duty, 1..100</td></tr>
  *   <tr><td>{@code --ez autostart <b>}</td><td>come back after a reboot</td></tr>
  *   <tr><td>{@code --ez reassert <b>}</td><td>defend the node against other writers</td></tr>
@@ -176,7 +181,8 @@ public class ConfigReceiver extends BroadcastReceiver {
         // and that spelling is in the notes.
         if (intent.hasExtra("ceiling") || intent.hasExtra("linstep")
                 || intent.hasExtra("linup") || intent.hasExtra("lindown")
-                || intent.hasExtra("linfast") || intent.hasExtra("linnear")) {
+                || intent.hasExtra("linfast") || intent.hasExtra("linnear")
+                || intent.hasExtra("lintrend")) {
             LinearConfig lin = Prefs.linear(context);
             if (intent.hasExtra("ceiling")) {
                 lin.ceilingC = intent.getFloatExtra("ceiling", (float) lin.ceilingC);
@@ -196,6 +202,9 @@ public class ConfigReceiver extends BroadcastReceiver {
             if (intent.hasExtra("linnear")) {
                 lin.nearC = intent.getFloatExtra("linnear", (float) lin.nearC);
             }
+            if (intent.hasExtra("lintrend")) {
+                lin.trendWindowS = intent.getIntExtra("lintrend", lin.trendWindowS);
+            }
             // Say so when a value was clamped, the same way the curve does: a caller who
             // sent 300 ms needs to be told it became 1000 rather than left to assume the
             // fan is now walking three times a second.
@@ -211,8 +220,10 @@ public class ConfigReceiver extends BroadcastReceiver {
             long askedUp = lin.upStepMs;
             long askedDown = lin.downStepMs;
             long askedFast = lin.downFastMs;
+            int askedTrend = lin.trendWindowS;
             lin.sanitise();
-            boolean repaired = lin.upStepMs != askedUp
+            boolean repaired = lin.trendWindowS != askedTrend
+                    || lin.upStepMs != askedUp
                     || lin.downStepMs != askedDown
                     || lin.downFastMs != askedFast
                     || Math.abs(lin.nearC - askedNear) > 0.05
@@ -298,6 +309,7 @@ public class ConfigReceiver extends BroadcastReceiver {
                 + " lindown=" + l.downStepMs + "ms"
                 + " linfast=" + l.downFastMs + "ms"
                 + " linnear=" + Sample.fmt1(l.nearC) + "C"
+                + " lintrend=" + (l.trendWindowS == 0 ? "off" : l.trendWindowS + "s")
                 + " socguard=" + (c.socGuardEnabled
                         ? c.socGuardStartC + "C+" + c.socGuardGainPerC + "/C<=" + c.socGuardMaxDuty
                         : "off")

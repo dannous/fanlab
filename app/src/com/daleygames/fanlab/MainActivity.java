@@ -206,27 +206,28 @@ public class MainActivity extends Activity implements StepRow.Listener {
         presetRow = addRow(root, new StepRow(c, "Curve preset — CURVE mode").button()
                 .tag("preset", 0));
         root.addView(Ui.body(c,
-                "Four curves: the shipped one, then the same curve with 5, 10 and 15 duty "
-                        + "points added at every knee and clipped at 83 %. At 24 °C in "
-                        + "Presentation they settle at 38 % and 51.9 °C, 42 % and 50.3 °C, "
-                        + "44 % and 49.2 °C, and 48 % and 48.3 °C — so Balanced, Cool and "
-                        + "Cold buy 1.6, 2.7 and 3.6 °C against Quiet. Each cools by less "
-                        + "than was added to it: the extra fan drops the light engine onto "
-                        + "the rise below Quiet's shelf, where the loop asks for less "
-                        + "again."),
+                "Fan speed in Presentation, and where the light engine settles at "
+                        + "24 °C:"
+                        + "\n    Quiet       38–40 %    51.9 °C"
+                        + "\n    Balanced    43–45 %    50.3 °C"
+                        + "\n    Cool        48–50 %    49.2 °C"
+                        + "\n    Cold        53–55 %    48.3 °C"
+                        + "\nAll four idle at 30 % in Normal, Eco and Super Eco."),
                 Ui.wrap());
         ceilingRow = addRow(root, new StepRow(c, "Temperature ceiling — LINEAR mode")
                 .range((int) LinearConfig.MIN_CEILING_C, (int) LinearConfig.MAX_CEILING_C)
                 .steps(1, 5).tag("ceiling", 0));
         root.addView(Ui.body(c,
                 "CURVE holds a fan speed and lets the temperature float; LINEAR holds the "
-                        + "temperature and lets the fan float. At 52 °C the two land on the "
-                        + "same point in a 24 °C room — 38 % — and diverge either side of "
-                        + "it: CURVE lets the light engine reach 54.1 °C at 26 °C ambient "
-                        + "and 56.6 °C at 30 °C, where LINEAR holds 52 °C and pays 42 % for "
-                        + "it at 26 °C and 57 % at 30 °C. LINEAR never stops adjusting, by "
-                        + "design: that is how it keeps testing whether one point less would "
-                        + "do."),
+                        + "temperature and lets the fan float. They meet at 24 °C and "
+                        + "diverge either side of it — LINEAR is quieter in a cool room and "
+                        + "louder in a warm one:"
+                        + "\n    room   CURVE        LINEAR @ 52 °C"
+                        + "\n    22 °C   37 % / 50.6   35 % / 52.0"
+                        + "\n    26 °C   39 % / 53.4   42 % / 52.0"
+                        + "\n    30 °C   42 % / 56.1   57 % / 52.0"
+                        + "\nAbove a 32.5 °C room LINEAR cannot hold 52 °C and says so. "
+                        + "Choose CURVE for quiet, LINEAR when the ceiling matters more."),
                 Ui.wrap());
         reassertRow = addRow(root, new StepRow(c,
                 "Re-assert every second (beat the stock controller)").button()

@@ -50,10 +50,13 @@ public final class LinearConfig {
      * {@code l1} lines carried a single step interval and are still parsed -- see
      * {@link #decode} -- because that format existed while this mode was being built.
      */
-    public static final int FIELDS = 9;
+    public static final int FIELDS = 10;
 
     /** Fields in the superseded single-interval {@code l1} line. */
     public static final int FIELDS_L1 = 6;
+
+    /** Fields in the {@code l2} line, which had the three intervals but no trend gate. */
+    public static final int FIELDS_L2 = 9;
 
     /**
      * Bounds on {@link #ceilingC}, degrees C.
@@ -74,6 +77,24 @@ public final class LinearConfig {
     /** Bounds on {@link #nearC}. Zero would disable the schedule; 10 C is the whole range. */
     public static final double MIN_NEAR_C = 0.0;
     public static final double MAX_NEAR_C = 10.0;
+
+    /**
+     * Bounds on {@link #trendWindowS}. Zero switches the trend gate off entirely, which is
+     * the pre-2026-09-07 behaviour and is kept so the two can be compared by ear.
+     */
+    public static final int MIN_TREND_S = 0;
+    public static final int MAX_TREND_S = 300;
+
+    /**
+     * Sample-to-sample standard deviation of the LED thermistor, degrees C.
+     *
+     * Measured from a flat stretch of the field log, not assumed. It is here because the
+     * trend gate has to know its own noise floor: a slope threshold set below it makes the
+     * gate fire at random, which suppresses windup by accident and flatters itself in
+     * simulation. That happened during the search and is the reason this number is a named
+     * constant rather than a literal.
+     */
+    public static final double SENSOR_NOISE_SD_C = 0.078;
 
     /**
      * The temperature the light engine is held at, degrees C.
@@ -157,6 +178,36 @@ public final class LinearConfig {
      */
     public double nearC;
 
+    /**
+     * Seconds of temperature history the trend gate fits a slope over. 0 disables it.
+     *
+     * <h3>What the gate does</h3>
+     * The walk steps on whether the light engine is above or below the ceiling. That alone
+     * is blind to whether the fan it already has is working: it keeps adding fan while the
+     * temperature is falling, purely because the absolute reading has not crossed back yet.
+     * On a plant with a 120 s lag that is textbook integral windup, and it was watched
+     * happening on hardware on 2026-09-07 -- seeded to 38, the walk climbed to 53 while the
+     * thermistor had been falling for 36 seconds, overshooting an equilibrium of 45.
+     *
+     * So: <b>do not add fan while the temperature is already coming down, and do not remove
+     * it while the temperature is still climbing.</b> The ceiling still decides direction;
+     * the trend only decides whether to act now or wait and see.
+     *
+     * <h3>Why 90 seconds</h3>
+     * The window has to beat its own noise. A least-squares slope over N points spanning T
+     * seconds has a standard error of {@link #SENSOR_NOISE_SD_C}*sqrt(12/(N*T*T)); the gate
+     * uses three of those, so it cannot be tripped by sensor noise. A shorter window is
+     * noisier and a longer one is slower to notice a real turn.
+     *
+     * 90 s was chosen by sweeping 15, 30, 60 and 90 against the measured two-pole plant over
+     * twelve noise seeds each, in {@code tools/LinearSim.java}. Against the ungated walk it
+     * takes the settled swing at 24 C ambient from 3.83 duty points to <b>0.25</b>, at 27 C
+     * from 4.08 to 2.08, and at 30 C it cuts the peak of the approach from <b>83 % to
+     * 62 %</b> while also reducing the swing. At 33 C, where the ceiling needs the full 83 %,
+     * it still goes there -- the gate delays action, it never caps authority.
+     */
+    public int trendWindowS;
+
     /** Duty commanded while the light engine is off (led_status == 0). Stock uses 10. */
     public int idleDuty;
 
@@ -177,6 +228,7 @@ public final class LinearConfig {
         downStepMs = 60000L;
         downFastMs = 10000L;
         nearC = 1.0;
+        trendWindowS = 90;
         idleDuty = 10;
         minDuty = 30;
         maxDuty = 83;
@@ -215,6 +267,12 @@ public final class LinearConfig {
         }
         if (nearC > MAX_NEAR_C) {
             nearC = MAX_NEAR_C;
+        }
+        if (trendWindowS < MIN_TREND_S) {
+            trendWindowS = MIN_TREND_S;
+        }
+        if (trendWindowS > MAX_TREND_S) {
+            trendWindowS = MAX_TREND_S;
         }
         if (minDuty < FanIo.MIN_DUTY) {
             minDuty = FanIo.MIN_DUTY;
@@ -258,12 +316,13 @@ public final class LinearConfig {
     /** Serialise to a single line, for SharedPreferences. */
     public String encode() {
         StringBuilder sb = new StringBuilder();
-        sb.append("l2");
+        sb.append("l3");
         sb.append(',').append(ceilingC);
         sb.append(',').append(upStepMs);
         sb.append(',').append(downStepMs);
         sb.append(',').append(downFastMs);
         sb.append(',').append(nearC);
+        sb.append(',').append(trendWindowS);
         sb.append(',').append(idleDuty);
         sb.append(',').append(minDuty);
         sb.append(',').append(maxDuty);
@@ -287,7 +346,18 @@ public final class LinearConfig {
         }
         try {
             String[] f = s.split(",");
-            if (f.length >= FIELDS && "l2".equals(f[0])) {
+            if (f.length >= FIELDS && "l3".equals(f[0])) {
+                int k = 1;
+                c.ceilingC = Double.parseDouble(f[k++].trim());
+                c.upStepMs = Long.parseLong(f[k++].trim());
+                c.downStepMs = Long.parseLong(f[k++].trim());
+                c.downFastMs = Long.parseLong(f[k++].trim());
+                c.nearC = Double.parseDouble(f[k++].trim());
+                c.trendWindowS = Integer.parseInt(f[k++].trim());
+                c.idleDuty = Integer.parseInt(f[k++].trim());
+                c.minDuty = Integer.parseInt(f[k++].trim());
+                c.maxDuty = Integer.parseInt(f[k].trim());
+            } else if (f.length >= FIELDS_L2 && "l2".equals(f[0])) {
                 int k = 1;
                 c.ceilingC = Double.parseDouble(f[k++].trim());
                 c.upStepMs = Long.parseLong(f[k++].trim());
@@ -297,6 +367,9 @@ public final class LinearConfig {
                 c.idleDuty = Integer.parseInt(f[k++].trim());
                 c.minDuty = Integer.parseInt(f[k++].trim());
                 c.maxDuty = Integer.parseInt(f[k].trim());
+                // l2 predates the trend gate. Take the default rather than 0: the ungated
+                // walk is the version measured winding to 83 % on the approach, and a
+                // stored config should not quietly reinstate that.
             } else if (f.length >= FIELDS_L1 && "l1".equals(f[0])) {
                 int k = 1;
                 c.ceilingC = Double.parseDouble(f[k++].trim());

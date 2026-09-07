@@ -27,11 +27,21 @@ public final class Mode {
      *
      * The two are opposites in what they let move, which is the whole reason to have both.
      * CURVE holds a fan speed and lets the temperature float, so the light engine tracks
-     * the room: across the shelf the duty is pinned at 38 % while the light engine runs
-     * 50.1 C at 22 C ambient, 52.1 C at 24 and 54.1 C at 26, reaching 56.6 C at 30 once it
-     * has left the shelf. LINEAR holds the temperature and lets the fan float, so it keeps
-     * 52 C in a hot room and pays for it in duty: 42 % at 26 C and 57 % at 30 C. See
-     * {@link FanLinear}.
+     * the room: across the shelf the duty stays within a point or two of 38 % while the
+     * light engine runs 50.6 C at 22 C ambient, 51.9 C at 24 and 53.4 C at 26. LINEAR holds
+     * the temperature and lets the fan float, so it keeps 52 C and pays for it in duty.
+     *
+     * They meet at 24 C, where LINEAR's default ceiling was chosen to match the curve, and
+     * diverge in <i>both</i> directions from there -- which is worth stating because
+     * "LINEAR is louder" is only half true:
+     * <pre>
+     *   room    CURVE           LINEAR @ 52 C
+     *   22 C    37 % / 50.6     35 % / 52.0     LINEAR quieter, and warmer
+     *   26 C    39 % / 53.4     42 % / 52.0     LINEAR louder, and cooler
+     *   30 C    42 % / 56.1     57 % / 52.0     LINEAR much louder, much cooler
+     * </pre>
+     * Above a 32.5 C room LINEAR cannot hold 52 C at all and reports it rather than
+     * pretending. See {@link FanLinear}.
      */
     public static final int LINEAR = 3;
 

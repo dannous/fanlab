@@ -997,8 +997,8 @@ public class FanService extends Service {
                 failSafeLatched = false;
                 boolean engineOn = s.ledStatus != 0;
                 LinearConfig lin = Prefs.linear(this);
-                desired = linear.step(lin, Prefs.curve(this), s.degC, s.socC[0],
-                        engineOn, mono);
+                desired = linear.step(lin, Prefs.curve(this), s.profile, s.degC,
+                        s.socC[0], engineOn, mono);
                 guardBoost = linear.guardBoost();
                 boolean biting = guardBoost > 0;
                 if (biting != guardWasBiting) {

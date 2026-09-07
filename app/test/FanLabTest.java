@@ -2532,6 +2532,7 @@ public final class FanLabTest {
         eq((int) cfg.downStepMs, 60000, "falling near the ceiling, every 60 s");
         eq((int) cfg.downFastMs, 10000, "falling with headroom, every 10 s");
         eq((int) Math.round(cfg.nearC * 10), 10, "and near means within 1.0 C");
+        eq(cfg.trendWindowS, 90, "and the trend gate fits a slope over 90 s");
         check(cfg.downStepMs > cfg.upStepMs, "the decay is slower than the attack, which "
                 + "is the asymmetry the 3-point swing was measured on");
         check(cfg.downFastMs <= cfg.downStepMs, "and the headroom clock is the fast one");
@@ -2715,14 +2716,21 @@ public final class FanLabTest {
                 "the first good reading afterwards steps once, from where it was");
 
         // ---- the SoC guard is additive on top, and can only raise ----
+        //
+        // Passing the curve now also seeds the walk, so the first tick adopts curve(52.0)
+        // rather than the 40 resync handed it. That is the point of seeding and it is
+        // asserted on its own below; here it only means the expected duties come from the
+        // curve, so they are read off it rather than written as literals.
         CurveConfig guard = new CurveConfig();
+        int seedAt52 = guard.dutyAt(CurveConfig.PROFILE_HIGH, 52.0);
         FanLinear sg = new FanLinear();
         sg.resync(40);
-        sg.step(cfg, guard, 52.0, 60.0, true, 10000L);
-        eq(sg.step(cfg, guard, 52.0, 60.0, true, 15000L), 41,
-                "a cool die adds nothing");
+        sg.step(cfg, guard, CurveConfig.PROFILE_HIGH, 52.0, 60.0, true, 10000L);
+        eq(sg.baseDuty(), seedAt52, "the first tick seeds from the curve, not from resync");
+        eq(sg.step(cfg, guard, CurveConfig.PROFILE_HIGH, 52.0, 60.0, true, 15000L),
+                seedAt52 + 1, "a cool die adds nothing");
         eq(sg.guardBoost(), 0, "and reports no boost");
-        int guarded = sg.step(cfg, guard, 52.0, 74.0, true, 20000L);
+        int guarded = sg.step(cfg, guard, CurveConfig.PROFILE_HIGH, 52.0, 74.0, true, 20000L);
         check(guarded > sg.baseDuty(), "a hot die raises the duty above the walk's own");
         check(sg.guardBoost() > 0, "and says by how much");
         // Never downward. A monitoring sensor must not be able to argue down the sensor the
@@ -2731,15 +2739,160 @@ public final class FanLabTest {
         FanLinear mono = new FanLinear();
         mono.resync(50);
         long q = 10000L;
-        mono.step(cfg, guard, 52.0, 50.0, true, q);
+        mono.step(cfg, guard, CurveConfig.PROFILE_HIGH, 52.0, 50.0, true, q);
         for (int soc = 40; soc <= 100; soc++) {
             q += cfg.downStepMs;
-            int withGuard = mono.step(cfg, guard, 52.0, soc, true, q);
+            int withGuard = mono.step(cfg, guard, CurveConfig.PROFILE_HIGH, 52.0, soc, true, q);
             if (withGuard < mono.baseDuty()) {
                 everLower = true;
             }
         }
         check(!everLower, "at no SoC temperature does the guard lower the commanded duty");
+
+        // ---- seeded from the curve, which is where the walk should start ----
+        //
+        // Measured justification, not taste: over thirty-six hours of field log the curve
+        // predicted the settled operating point to within 0.39 duty points. Starting the
+        // integrator there starts it at the answer, which deletes the multi-minute descent
+        // that was the worst thing about this mode -- on hardware the accepted 60 s decay
+        // took about seven minutes to come down from 48 to 42 and had not finished.
+        CurveConfig seedCurve = new CurveConfig();
+        for (int seedC = 46; seedC <= 60; seedC++) {
+            FanLinear sd = new FanLinear();
+            sd.resync(83);                       // handed the fail-safe duty, the worst case
+            sd.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, seedC, Double.NaN, true, 10000L);
+            eq(sd.baseDuty(), seedCurve.dutyAt(CurveConfig.PROFILE_HIGH, seedC),
+                    "seeded to the curve's answer at " + seedC + " C, not the 83 it was given");
+        }
+
+        // It seeds once, not on every tick: after the first, the walk is the walk. If this
+        // regressed the mode would silently become the curve with extra steps.
+        FanLinear once = new FanLinear();
+        once.resync(83);
+        long sq = 10000L;
+        once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, sq);
+        int afterSeed = once.baseDuty();
+        eq(afterSeed, seedCurve.dutyAt(CurveConfig.PROFILE_HIGH, 60.0), "seeded at 60 C");
+        sq += cfg.upStepMs;
+        once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, sq);
+        eq(once.baseDuty(), afterSeed + 1,
+                "and thereafter walks by one, rather than re-seeding to the same value");
+        // Walking AWAY from the curve is the whole reason the mode exists: a unit or a room
+        // the plant table is wrong about must be able to pull it off the curve's answer.
+        sq += cfg.upStepMs;
+        once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, sq);
+        check(once.baseDuty() > seedCurve.dutyAt(CurveConfig.PROFILE_HIGH, 60.0),
+                "and is free to leave the curve's answer behind");
+
+        // A resync re-arms the seed, because a resync means something else moved the fan.
+        once.resync(83);
+        once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 52.0, Double.NaN, true, sq + 99999L);
+        eq(once.baseDuty(), seedCurve.dutyAt(CurveConfig.PROFILE_HIGH, 52.0),
+                "a later resync seeds again, at the temperature current then");
+
+        // With no curve to read there is nothing to seed from, so the adopted duty stands.
+        FanLinear noCurve = new FanLinear();
+        noCurve.resync(46);
+        noCurve.step(cfg, 52.0, true, 10000L);
+        eq(noCurve.baseDuty(), 46, "with no curve passed, the resync value is kept");
+
+        // The seed is clamped by the config's own limits, like every other duty here.
+        LinearConfig tight = new LinearConfig();
+        tight.minDuty = 44;
+        tight.maxDuty = 46;
+        tight.sanitise();
+        FanLinear clamped = new FanLinear();
+        clamped.resync(83);
+        clamped.step(tight, seedCurve, CurveConfig.PROFILE_HIGH, 30.0, Double.NaN, true, 10000L);
+        check(clamped.baseDuty() >= tight.minDuty && clamped.baseDuty() <= tight.maxDuty,
+                "a seed below the floor is clamped up to it, not obeyed");
+
+        // ---- the trend gate: do not push while it is already coming down ----
+        //
+        // This is the fix for windup, and it is the difference between settling and sailing
+        // past. Measured on hardware 2026-09-07: seeded to 38 with the ceiling at 52, the
+        // ungated walk climbed to 53 while the thermistor had been falling for 36 seconds,
+        // overshooting an equilibrium of 45. Swept against the two-pole plant over twelve
+        // noise seeds in tools/LinearSim.java, the gate takes the peak of the approach at
+        // 30 C ambient from 83 % to 62 % and cuts the settled swing at every ambient.
+        LinearConfig gated = new LinearConfig();     // 90 s window by default
+        LinearConfig ungated = new LinearConfig();
+        ungated.trendWindowS = 0;
+        ungated.sanitise();
+
+        // Above the ceiling but falling steadily: the ungated walk keeps adding fan, the
+        // gated one waits. Feed a clean ramp down, well clear of the noise floor.
+        FanLinear gOn = new FanLinear();
+        FanLinear gOff = new FanLinear();
+        gOn.resync(50);
+        gOff.resync(50);
+        long gt = 10000L;
+        double falling = 56.0;
+        boolean everHeld = false;
+        for (int i = 0; i < 200; i++) {
+            gOn.step(gated, null, CurveConfig.PROFILE_HIGH, falling, Double.NaN, true, gt);
+            gOff.step(ungated, null, CurveConfig.PROFILE_HIGH, falling, Double.NaN, true, gt);
+            // trendHeld() reports the most recent DECISION, and decisions are five seconds
+            // apart, so it has to be sampled every tick rather than read at the end.
+            everHeld = everHeld || gOn.trendHeld();
+            gt += 1000L;
+            falling -= 0.01;                          // 0.01 C/s, far above the noise floor
+        }
+        check(gOff.baseDuty() > gOn.baseDuty(),
+                "ungated keeps climbing while it cools (" + gOff.baseDuty()
+                        + ") where gated holds off (" + gOn.baseDuty() + ")");
+        check(everHeld, "and the gated one held steps back along the way");
+        check(gOn.trendPerSec() < 0, "because it measured the temperature falling");
+
+        // Symmetrically: below the ceiling but still climbing, do not give fan back.
+        // The gate needs history before it can say anything -- fitTrend wants at least
+        // half the window -- so the duty does drop for the first ~45 s. What must hold is
+        // that it STOPS dropping once the trend is measurable, which is the property under
+        // test. Measured from there, not from the cold start.
+        // The ramp has to stay below the ceiling for the whole run, or the walk correctly
+        // switches to attacking and the test measures the wrong thing. 0.005 C/s over 420 s
+        // climbs 2.1 C from 45, so it never reaches 52 -- and it is still five times the
+        // gate's own noise floor, so the trend is unambiguous.
+        FanLinear rising2 = new FanLinear();
+        rising2.resync(50);
+        long rt = 10000L;
+        double climbing = 45.0;
+        for (int i = 0; i < 120; i++) {              // fill the window
+            rising2.step(gated, null, CurveConfig.PROFILE_HIGH, climbing, Double.NaN, true, rt);
+            rt += 1000L;
+            climbing += 0.005;
+        }
+        int settled2 = rising2.baseDuty();
+        for (int i = 0; i < 300; i++) {              // and now it must stop giving fan back
+            rising2.step(gated, null, CurveConfig.PROFILE_HIGH, climbing, Double.NaN, true, rt);
+            rt += 1000L;
+            climbing += 0.005;
+        }
+        check(climbing < gated.ceilingC, "the ramp stayed below the ceiling throughout");
+        eq(rising2.baseDuty(), settled2,
+                "below the ceiling but warming, the gate holds the duty rather than dropping it");
+        check(settled2 < 50, "having dropped only while it had no trend to go on");
+
+        // The gate delays; it must never cap. A genuine sustained climb has to reach the
+        // maximum, or an unreachable ceiling would silently under-cool.
+        FanLinear hot2 = new FanLinear();
+        hot2.resync(50);
+        long ht = 10000L;
+        for (int i = 0; i < 4000; i++) {
+            hot2.step(gated, null, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, ht);
+            ht += 1000L;
+        }
+        eq(hot2.baseDuty(), gated.maxDuty,
+                "a sustained overshoot still reaches full authority: the gate waits, never caps");
+
+        // With the gate off, behaviour is exactly the pre-gate controller.
+        FanLinear plain2 = new FanLinear();
+        plain2.resync(40);
+        long pt = 10000L;
+        plain2.step(ungated, null, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, pt);
+        pt += ungated.upStepMs;
+        eq(plain2.step(ungated, null, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, pt), 41,
+                "trendWindowS 0 restores the ungated walk exactly");
 
         // ---- the mode plumbing ----
         check(Mode.writes(Mode.LINEAR), "LINEAR writes fan_ctrl");
@@ -2759,12 +2912,12 @@ public final class FanLabTest {
     private static void testLinearConfigRoundTrip() {
         section("linear: config survives the trip, and repairs what it cannot accept");
         LinearConfig d = new LinearConfig();
-        check(d.encode().equals("l2,52.0,5000,60000,10000,1.0,10,30,83"),
+        check(d.encode().equals("l3,52.0,5000,60000,10000,1.0,90,10,30,83"),
                 "the defaults encode to the line the reply quotes  (got " + d.encode() + ")");
         check(LinearConfig.decode(d.encode()).encode().equals(d.encode()),
                 "encode/decode round trips byte for byte");
         d.sanitise();
-        check(d.encode().equals("l2,52.0,5000,60000,10000,1.0,10,30,83"),
+        check(d.encode().equals("l3,52.0,5000,60000,10000,1.0,90,10,30,83"),
                 "and sanitise() is a no-op on them");
 
         LinearConfig e = new LinearConfig();
@@ -2773,6 +2926,7 @@ public final class FanLabTest {
         e.downStepMs = 30000L;
         e.downFastMs = 6000L;
         e.nearC = 2.5;
+        e.trendWindowS = 45;
         e.idleDuty = 12;
         e.minDuty = 35;
         e.maxDuty = 80;
@@ -2784,6 +2938,7 @@ public final class FanLabTest {
         eq((int) back.downStepMs, 30000, "the decay interval survives");
         eq((int) back.downFastMs, 6000, "the headroom interval survives");
         eq((int) Math.round(back.nearC * 10), 25, "and the band survives");
+        eq(back.trendWindowS, 45, "and so does the trend window");
         eq(back.minDuty, 35, "the floor survives");
         eq(back.maxDuty, 80, "the ceiling survives");
 
@@ -2791,15 +2946,27 @@ public final class FanLabTest {
                 "a missing config falls back to the defaults");
         check(LinearConfig.decode("").encode().equals(new LinearConfig().encode()),
                 "an empty config falls back to the defaults");
-        check(LinearConfig.decode("l2,not,a,number,x,y,z,p,q").encode()
+        check(LinearConfig.decode("l3,not,a,number,x,y,z,p,q,r").encode()
                         .equals(new LinearConfig().encode()),
                 "an unparseable config falls back to the defaults");
-        check(LinearConfig.decode("z9,1,2,3,4,5,6,7,8").encode()
+        check(LinearConfig.decode("z9,1,2,3,4,5,6,7,8,9").encode()
                         .equals(new LinearConfig().encode()),
                 "an unknown version falls back to the defaults");
-        check(LinearConfig.decode("l2,52.0,5000").encode()
+        check(LinearConfig.decode("l3,52.0,5000").encode()
                         .equals(new LinearConfig().encode()),
                 "a truncated line falls back to the defaults");
+
+        // ---- l2 is still read, and does not silently reinstate the ungated walk ----
+        // l2 predates the trend gate. The ungated walk was measured winding to 83 % on the
+        // approach at 30 C ambient where the answer is 58, so a stored l2 must not quietly
+        // turn the gate off -- it takes the default instead.
+        LinearConfig l2 = LinearConfig.decode("l2,47.5,3000,30000,6000,2.5,12,35,80");
+        eq((int) Math.round(l2.ceilingC * 10), 475, "an l2 ceiling is read");
+        eq((int) l2.upStepMs, 3000, "and its three intervals");
+        eq((int) l2.downStepMs, 30000, "all");
+        eq((int) l2.downFastMs, 6000, "three");
+        eq(l2.trendWindowS, 90, "but the trend gate takes the default rather than 0");
+        check(l2.encode().startsWith("l3,"), "and it is re-encoded in the new format");
 
         // ---- the superseded single-interval line is still read, and read SAFELY ----
         // l1 existed while this mode was being tuned, and its one interval applied in both
@@ -2814,7 +2981,7 @@ public final class FanLabTest {
         eq((int) legacy.downFastMs, 10000, "as does the headroom interval");
         eq(legacy.minDuty, 35, "the rest of the l1 line is read normally");
         eq(legacy.maxDuty, 80, "all of it");
-        check(legacy.encode().startsWith("l2,"), "and it is re-encoded in the new format");
+        check(legacy.encode().startsWith("l3,"), "and it is re-encoded in the new format");
 
         // ---- the step interval is repaired, not accepted ----
         // This is the parameter the plant's measured lag bounds, so a value from outside
@@ -2875,6 +3042,16 @@ public final class FanLabTest {
         nanb.sanitise();
         eq((int) Math.round(nanb.nearC * 10), 10, "NaN restores the default band");
 
+        // ---- the trend window is repaired ----
+        LinearConfig tw = new LinearConfig();
+        tw.trendWindowS = 9999;
+        tw.sanitise();
+        eq(tw.trendWindowS, LinearConfig.MAX_TREND_S, "an absurd trend window is clamped");
+        tw.trendWindowS = -5;
+        tw.sanitise();
+        eq(tw.trendWindowS, LinearConfig.MIN_TREND_S,
+                "and a negative one becomes zero, which simply turns the gate off");
+
         // ---- the ceiling is repaired ----
         LinearConfig low = new LinearConfig();
         low.ceilingC = 5.0;
@@ -2897,7 +3074,7 @@ public final class FanLabTest {
         LinearConfig snap = new LinearConfig();
         snap.ceilingC = (double) 52.3f;
         snap.sanitise();
-        check(snap.encode().equals("l2,52.3,5000,60000,10000,1.0,10,30,83"),
+        check(snap.encode().equals("l3,52.3,5000,60000,10000,1.0,90,10,30,83"),
                 "a float ceiling snaps to a tenth  (got " + snap.encode() + ")");
         check(LinearConfig.decode(snap.encode()).encode().equals(snap.encode()),
                 "and then round trips");
