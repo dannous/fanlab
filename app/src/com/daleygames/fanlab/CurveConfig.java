@@ -193,10 +193,16 @@ public final class CurveConfig {
             // early, at 66 C.
             //
             // Its floor edge is 43 C, not the 47 C the other three share. With the floor
-            // pinned at 30 and the shelf at 53, a rise over 47-51 is 5.75 duty/C and the
-            // 0.8 C deadband spans 4.6 duty points -- no single duty can rest inside it, and
-            // at 17 C ambient the controller hunted by four. Starting the rise at 43 halves
-            // the slope to 2.87 duty/C and the hunt is gone at every ambient tried. The
+            // pinned at 30 and the shelf at 53, a rise over 47-51 is 5.75 duty/C, and at
+            // 17 C ambient the controller hunted by four duty points there. Starting the
+            // rise at 43 drops the slope to 2.87 duty/C and the hunt is gone at every
+            // ambient tried.
+            //
+            // Note this is NOT a slope threshold, tempting as it looks: Cool's 47-51 rise is
+            // 4.5 duty/C and is steady, while a 2.67 duty/C rise tried during the shelf work
+            // hunted. Whether a curve hunts turns on where its equilibrium lands relative to
+            // the integer duty boundaries, which no static rule has yet predicted -- see
+            // testCurvePresetsDoNotHunt, which is why that test exists. The
             // cost is Normal-on-Cold: its settled reading of 46.5 C now sits on the rise,
             // so above about a 23 C room Normal runs 32-36 % on this preset instead of 30.
             // Eco and Super Eco are unaffected. Nobody choosing the coldest preset is
@@ -358,10 +364,12 @@ public final class CurveConfig {
      *       reaches 47.1 C, so the floor cannot end below 47. Presentation's settled reading
      *       starts at 50.8 C, so a shelf covering all of it cannot start above 50.8. That
      *       leaves 3.7 C for the rise between them, and <b>a rising segment needs 4 C</b> --
-     *       at 3 C the slope is 2.7 duty/C, the 0.8 C deadband then spans 2.1 duty points,
-     *       and no single duty can rest inside it. That was not reasoned: the 3 C version
-     *       was built, and {@code tools/CurveSim.java} found it hunting by 2 points at 18
-     *       and 21 C ambient where the 4 C version is steady at every pole. So the 4 C rise
+     *       at 3 C the slope is 2.7 duty/C and it hunts. That was not reasoned but
+     *       measured: the 3 C version was built, and {@code tools/CurveSim.java} found it
+     *       hunting by 2 points at 18 and 21 C ambient where the 4 C version is steady at
+     *       every pole. (Do not read 4 C as a threshold -- Cool's rise is steeper and
+     *       steady. Nothing static predicts this; the dynamic test is the check.) So the
+     *       4 C rise
      *       is kept and the shelf starts at 51, which spends the coldest 1 C of the room's
      *       range to buy stability everywhere. The alternative -- floor at 46, shelf at
      *       50 -- pins 100 % of Presentation but lifts Normal off duty 30 for 96 % of its
