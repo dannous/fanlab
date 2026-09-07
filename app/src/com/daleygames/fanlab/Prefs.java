@@ -18,6 +18,8 @@ public final class Prefs {
     private static final String K_REASSERT = "reassert";
     private static final String K_CURVE = "curve";
     private static final String K_LINEAR = "linear";
+    private static final String K_LEDDRIVE = "leddrive";
+    private static final String K_LEDDRIVE_ON = "leddrive_on";
     private static final String K_LOGGING = "logging";
     private static final String K_LOG_EVERY = "log_every_sec";
     private static final String K_AUTOSTART = "autostart";
@@ -163,6 +165,41 @@ public final class Prefs {
     public static void setLinear(Context c, LinearConfig cfg) {
         cfg.sanitise();
         get(c).edit().putString(K_LINEAR, cfg.encode()).apply();
+    }
+
+    // ---- the LED drive override ----
+
+    /**
+     * The four LED drive levels, Super Eco / Eco / Normal / Presentation. Stock by default,
+     * and a stored line that does not parse is stock too, for the reason
+     * {@link LedDrive.Config#decode} gives.
+     */
+    public static LedDrive.Config ledDrive(Context c) {
+        return LedDrive.Config.decode(get(c).getString(K_LEDDRIVE, null));
+    }
+
+    public static void setLedDrive(Context c, LedDrive.Config cfg) {
+        cfg.sanitise();
+        get(c).edit().putString(K_LEDDRIVE, cfg.encode()).apply();
+    }
+
+    /**
+     * Whether the override is switched on at all. Default false: driving the LEDs above
+     * what the brightness mode asks for is something to do deliberately, not something an
+     * install does. On with a stock table is the same as off -- there is nothing to apply
+     * -- and the loop treats it that way.
+     */
+    public static boolean ledDriveOn(Context c) {
+        return get(c).getBoolean(K_LEDDRIVE_ON, false);
+    }
+
+    public static void setLedDriveOn(Context c, boolean v) {
+        get(c).edit().putBoolean(K_LEDDRIVE_ON, v).apply();
+    }
+
+    /** Back to stock and off, as {@code --ez reset} does alongside the curve. */
+    public static void resetLedDrive(Context c) {
+        get(c).edit().remove(K_LEDDRIVE).remove(K_LEDDRIVE_ON).apply();
     }
 
     // ---- stated room temperature ----
