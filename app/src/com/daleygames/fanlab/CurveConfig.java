@@ -102,8 +102,10 @@ public final class CurveConfig {
 
     /**
      * The presets, encoded. All four are the shipped curve with a constant added to every
-     * knee duty, clipped at the 83 ceiling. Nothing else about them differs: same knee
-     * temperatures, same hysteresis, same slew, same guard.
+     * knee duty above the floor, clipped at the 83 ceiling. Nothing else about them differs
+     * -- same hysteresis, same slew, same guard, same knee temperatures -- with one
+     * exception: Cold's floor edge is 43 C where the others' is 47, for the reason given
+     * against its line below.
      *
      * <h3>Why an offset rather than four drawn curves</h3>
      * Adding a constant to the knees above the floor leaves the <i>differences</i> between
@@ -121,22 +123,20 @@ public final class CurveConfig {
      * {@code tools/CurveSim.java} against the two-pole plant across 15-35 C ambient at four
      * slow poles: <b>334 of 336 runs are steady at one duty point per tick</b>.
      *
-     * <b>The two that are not, stated plainly rather than rounded away.</b> Quiet at 16 C
+     * <b>The one that is not, stated plainly rather than rounded away.</b> Quiet at 16 C
      * hunts by two duty points, which predates the pinned floor and predates the shelf --
      * it is a rounding knife-edge where the operating point lands almost exactly between
-     * two integers on the rise, and 14, 15, 17 and 18 C are all steady. <b>Cold at 17 C
-     * hunts by four</b>, duty 31 to 35, and that one <i>is</i> caused by pinning the floor:
-     * 5.75 duty/C is steep enough that the 0.8 C deadband spans 4.6 duty points, so no
-     * single duty rests inside it. 15, 16, 18, 19 and 20 C are steady, so it is one degree
-     * wide.
+     * two integers on the rise, and 14, 15, 17 and 18 C are all steady. Two points at duty
+     * 32 is inside what the owner calls inaudible, six degrees below the coldest room this
+     * unit has seen, and moving a flat region off a measured operating point to remove it
+     * would cost more than it saves. It is the accepted state, and the host test that
+     * drives every preset against the plant is bounded at two for exactly that reason:
+     * three is a regression.
      *
-     * It is accepted rather than fixed, for a reason worth writing down: Cold in a 17 C room
-     * is the coldest preset in a cold room, which is the one combination nobody has a use
-     * for -- the presets exist to defend a ceiling in a <i>hot</i> room. Removing it means
-     * either un-pinning the floor, which costs real noise in the three brightness modes that
-     * live there for no cooling worth having, or pulling Cold's floor edge earlier, which
-     * puts Normal back on a rise and breaks the requirement this pinning exists to satisfy.
-     * Neither trade is worth a one-degree corner in a configuration that makes no sense.
+     * Cold at 17 C used to hunt by four, from the 5.75 duty/C rise the pinned floor forced
+     * on it. That was fixed by moving Cold's floor edge to 43 C -- see its line -- and the
+     * fix was chosen over leaving it because the host test could then be bounded at the
+     * accepted two rather than carrying an exception for a known four.
      *
      * Away from those two the steep rise is harmless because nothing rests on it: each
      * preset's own operating point sits on its shelf or above, and the rise is only ever
@@ -191,7 +191,17 @@ public final class CurveConfig {
             // Cold: Quiet + 15 above the floor. Its fourth knee lands exactly on 83 and the
             // top one's 98 clips to it, so this is the one preset whose ceiling arrives
             // early, at 66 C.
-            "v1,47,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,55,65,83,83,"
+            //
+            // Its floor edge is 43 C, not the 47 C the other three share. With the floor
+            // pinned at 30 and the shelf at 53, a rise over 47-51 is 5.75 duty/C and the
+            // 0.8 C deadband spans 4.6 duty points -- no single duty can rest inside it, and
+            // at 17 C ambient the controller hunted by four. Starting the rise at 43 halves
+            // the slope to 2.87 duty/C and the hunt is gone at every ambient tried. The
+            // cost is Normal-on-Cold: its settled reading of 46.5 C now sits on the rise,
+            // so above about a 23 C room Normal runs 32-36 % on this preset instead of 30.
+            // Eco and Super Eco are unaffected. Nobody choosing the coldest preset is
+            // asking for the quietest fan, so the trade was taken.
+            "v1,43,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,55,65,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
     };
 

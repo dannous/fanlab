@@ -51,7 +51,7 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 2329**, run on the host as part of every build.
+- **Test count: 2989**, run on the host as part of every build.
 - **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
   fan only above 70 °C on the die and can never subtract any. See
   [The SoC guard](#the-soc-guard).
@@ -242,6 +242,7 @@ The reply is the resulting state, so diff it against what you sent. It says
 | symptom | what it is |
 |---|---|
 | fan cycles slowly between two speeds | something else is writing the fan node. Check `Mode` is `CURVE` and `Re-assert` is on. MANUAL leaves the stock controller armed by design, so it is not usable for a quiet run |
+| on Cold, Normal is louder than 30 % | expected above a 23 °C room. Cold starts its rise at 43 °C rather than 47 so that it does not hunt, which puts Normal's operating point on the rise. Quiet, Balanced and Cool all keep Normal at 30 % |
 | fan jumps to 83 % and stays | a fail-safe. Every error path writes 83 rather than a low value. Check the Diagnostics screen |
 | fan loud for ~15 s after changing mode | expected. Changing away from CURVE hands back at 83 %, and coming back is a slew-limited ramp down |
 | a setting did not take, over adb | wrong component name — see above |
@@ -496,20 +497,32 @@ Full derivation, the measured thermal plant, and the stability analysis:
 The curve ships as four, selectable on the main screen or by broadcast. Each is the base
 curve with a constant added to every knee **above the floor**, clipped at 83 %:
 
-| preset | fan on the shelf | LED at 24 °C | holds ≤54 °C to | holds ≤55 °C to |
+| preset | fan at 24 °C | LED at 24 °C | holds ≤54 °C to | holds ≤55 °C to |
 |---|---|---|---|---|
-| **Quiet** (default) | 38–40 % | 51.9 °C | 26.7 °C room | 28.0 °C room |
-| Balanced | 43–45 % | 50.3 °C | 28.8 °C room | 30.0 °C room |
-| Cool | 48–50 % | 49.2 °C | 30.1 °C room | 31.2 °C room |
-| Cold | 53–55 % | 48.3 °C | 31.5 °C room | 32.6 °C room |
+| **Quiet** (default) | 38 % | 51.9 °C | 26.7 °C room | 28.0 °C room |
+| Balanced | 41 % | 50.4 °C | 28.8 °C room | 30.0 °C room |
+| Cool | 43 % | 49.8 °C | 30.1 °C room | 31.2 °C room |
+| Cold | 46 % | 48.6 °C | 31.5 °C room | 32.6 °C room |
 
 Two design points worth stating, because both were arrived at the hard way:
 
-**The floor is not offset.** All four presets idle at 30 %. Below 47 °C the light engine is
-cool enough that extra fan buys almost nothing — measured, Cold's +15 bought 3.4 °C in Super
-Eco on a thermistor already sitting at 35 °C. Since Normal, Eco and Super Eco spend their
-whole lives on the floor, offsetting it would make them louder for no useful cooling. The
-offset applies only where the ceiling is actually in question.
+**The floor is not offset.** All four presets idle at 30 %. Below the floor edge the light
+engine is cool enough that extra fan buys almost nothing — measured, Cold's +15 bought 3.4 °C
+in Super Eco on a thermistor already sitting at 35 °C. Since Normal, Eco and Super Eco spend
+their whole lives on the floor, offsetting it would make them louder for no useful cooling.
+The offset applies only where the ceiling is actually in question.
+
+**Cold's floor edge is 43 °C, where the other three share 47 °C**, and that is the one place
+the presets are not congruent. With the floor pinned at 30 and Cold's shelf at 53, a rise
+over 47–51 °C would be **5.75 duty/°C** — steep enough that the 0.8 °C deadband spans 4.6 duty
+points, so no fan speed can rest inside it. It hunted by four points at a 17 °C room. Starting
+Cold's rise at 43 halves the slope to 2.87 duty/°C and removes it.
+
+The cost falls on Normal, and only on Cold: its settled 46.5 °C reading now sits on the rise,
+so above about a 23 °C room Normal runs 32–39 % on this preset rather than 30. Eco and Super
+Eco are untouched to 26 °C. Anyone choosing the coldest preset is not asking for the quietest
+fan, so the trade was taken — and it let the host test be bounded at the accepted two duty
+points rather than carry an exception for a known four.
 
 **A uniform offset above the floor keeps the geometry.** Adding a constant leaves every
 segment's width and slope untouched, so the shelf and everything above it inherit the base

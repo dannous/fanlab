@@ -108,6 +108,7 @@ public final class FanLabTest {
         testLinearController();
         testLinearConfigRoundTrip();
         testLinearConvergence();
+        testCurvePresetsDoNotHunt();
         testOffDuration();
         testExclusiveControl();
         testCsvLogger();
@@ -436,8 +437,14 @@ public final class FanLabTest {
                             + " matches Presentation at knee " + k);
                 }
             }
-            // The stability criterion is geometric: a rising segment several times the
-            // deadband cannot be a boundary the machine parks on. 4 C is five deadbands.
+            // A rising segment several times the deadband cannot be a boundary the machine
+            // parks on. 4 C is five deadbands. This is NECESSARY, NOT SUFFICIENT, and it was
+            // found out the hard way: Cold's rise from the pinned floor was 4 C wide and
+            // still hunted by four duty points at 17 C ambient, because it climbed 23 duty
+            // points in those 4 C and the deadband then spanned 4.6 of them. Width bounds the
+            // slope only if the rise is bounded too. The check that actually decides is
+            // dynamic -- testCurvePresetsDoNotHunt below drives the real controller against
+            // the plant -- and tools/CurveSim.java is the fuller version of it.
             //
             // This bound was relaxed to 3 C while placing the shelf, because Normal's
             // settled reading (47.1 C) and Presentation's (50.8 C) leave only 3.7 C
@@ -488,8 +495,20 @@ public final class FanLabTest {
                         + "first");
             }
             for (int k = 0; k < CurveConfig.POINTS; k++) {
+                if (k == 0) {
+                    // The floor edge is the one knee a preset may move, and only downward:
+                    // with the floor pinned at 30, a preset whose shelf sits 15 points above
+                    // Quiet's has to climb 23 points where Quiet climbs 8, and over the same
+                    // 4 C that is 5.75 duty/C -- steep enough to hunt, and Cold did, by four
+                    // points at 17 C. Starting its rise earlier is the only fix that keeps
+                    // both the pinned floor and the shelf. It must never move UP: that would
+                    // narrow the rise and steepen it further.
+                    check(p.tempC[0] <= knees[0], name + ": floor edge " + p.tempC[0]
+                            + " C is at or before Quiet's " + knees[0]);
+                    continue;
+                }
                 eq(p.tempC[k], knees[k], name + ": knee " + k + " is at Quiet's "
-                        + knees[k] + " C, so the segment widths are Quiet's too");
+                        + knees[k] + " C, so the segment widths above the floor are Quiet's");
                 // Knee 0 is the floor and is never offset. Above it, 83 is the ceiling, so
                 // the offset clips there rather than running past it.
                 int want = (k == 0) ? quiet[0] : Math.min(83, quiet[k] + offsets[i]);
@@ -3105,6 +3124,81 @@ public final class FanLabTest {
             }
         }
         check(allValid, "and the controller running on it only ever commands a legal duty");
+    }
+
+    /**
+     * Every preset, driven through the real {@link FanCurve} against the plant, at every
+     * room temperature from 14 to 34 C. None may hunt.
+     *
+     * This is the check the static rules above cannot make. A segment can be four degrees
+     * wide, monotone, identical across profiles and clipped correctly, and still leave the
+     * controller with nowhere to rest: Cold's rise from the pinned floor passed every static
+     * assertion in this file and hunted by four duty points at 17 C ambient, because 23 duty
+     * points in 4 C is a slope of 5.75 duty/C and the 0.8 C deadband then spans 4.6 duty
+     * points. The width test never saw it. This one does.
+     *
+     * One pole rather than two, for the same reason {@link #testLinearConvergence} uses one:
+     * it runs on every build in a few seconds, and {@code tools/CurveSim.java} -- two poles,
+     * four slow-pole values, the SoC guard -- is the fuller gate to run before shipping a
+     * curve. But the single-pole run reproduces both hunts CurveSim found on the presets
+     * that shipped on 2026-09-07, so it is a real regression guard and not a formality.
+     *
+     * The bound is two duty points. That is not zero, and it is worth saying why: Quiet at
+     * 16 C ambient wobbles by two, on a rounding knife-edge where the operating point lands
+     * almost exactly between integers on the rise below the shelf. 15, 17 and 18 C are all
+     * still. That was accepted as a known corner rather than moved, because moving a flat
+     * region off a measured operating point costs more than a two-point wobble six degrees
+     * below the coldest room this unit has seen. Two is therefore the accepted state; three
+     * is a regression.
+     */
+    private static void testCurvePresetsDoNotHunt() {
+        section("curve: no preset hunts against the plant, 14 to 34 C ambient");
+        // This mirrors tools/CurveSim.java's pole sweep on purpose, detail for detail,
+        // because a first version of this test -- one pole at 120 s, no noise, started at
+        // duty 40 -- PASSED the Cold preset that CurveSim had already caught hunting by four
+        // points at 17 C. A hunt on a rounding knife-edge is decided by exactly the details
+        // a tidy model leaves out: the 70/30 split between the fast pole and the chassis,
+        // the slow pole's value, and 0.03 C of seeded sensor noise. So they are all here.
+        final double tauFast = 230.0;
+        final double[] tauSlow = {0.0, 900.0, 1500.0, 3000.0};
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            String name = CurveConfig.PRESET_NAMES[i];
+            CurveConfig cfg = CurveConfig.preset(i);
+            for (int ambient = 14; ambient <= 34; ambient++) {
+                for (int k = 0; k < tauSlow.length; k++) {
+                    java.util.Random rng = new java.util.Random(1);
+                    double fast = 0.0, slow = 0.0;
+                    FanCurve f = new FanCurve();
+                    f.resync(cfg.dutyAt(CurveConfig.PROFILE_HIGH,
+                            ambient + presentationRise(40)));
+                    int lo = 200, hi = 0, prev = -1, maxTick = 0;
+                    for (int t = 0; t <= 12000; t++) {
+                        double measured = ambient + fast + slow + rng.nextGaussian() * 0.03;
+                        int d = f.step(cfg, CurveConfig.PROFILE_HIGH, measured, true,
+                                t * 1000L);
+                        double total = presentationRise(d);
+                        fast += (total * 0.70 - fast) * (1.0 - Math.exp(-1.0 / tauFast));
+                        slow += (total * 0.30 - slow)
+                                * (tauSlow[k] == 0.0 ? 1.0 : (1.0 - Math.exp(-1.0 / tauSlow[k])));
+                        // The last fifty minutes only, as CurveSim judges it.
+                        if (t > 9000) {
+                            lo = Math.min(lo, d);
+                            hi = Math.max(hi, d);
+                            if (prev >= 0) {
+                                maxTick = Math.max(maxTick, Math.abs(d - prev));
+                            }
+                            prev = d;
+                        }
+                    }
+                    String where = name + " at " + ambient + " C, slow pole "
+                            + (tauSlow[k] == 0.0 ? "none" : ((int) tauSlow[k] + " s"));
+                    check(hi - lo <= 2, where + ": settled within two duty points (was "
+                            + lo + ".." + hi + ")");
+                    check(maxTick <= 1, where + ": one point per tick once settled (worst "
+                            + maxTick + ")");
+                }
+            }
+        }
     }
 
     /**

@@ -230,12 +230,12 @@ modes are on the floor and read 30 throughout the room's real range.
 
 **How far each preset holds a ceiling**, which is the number to choose a preset by:
 
-| preset | fan on the shelf | holds LED ≤ 54 °C to | holds LED ≤ 55 °C to |
+| preset | fan at 24 °C | holds LED ≤ 54 °C to | holds LED ≤ 55 °C to |
 |---|---|---|---|
-| Quiet | 38–40 % | 26.7 °C room | 28.0 °C room |
-| Balanced | 43–45 % | 28.8 °C room | 30.0 °C room |
-| Cool | 48–50 % | 30.1 °C room | 31.2 °C room |
-| Cold | 53–55 % | 31.5 °C room | 32.6 °C room |
+| Quiet | 38 % | 26.7 °C room | 28.0 °C room |
+| Balanced | 41 % | 28.8 °C room | 30.0 °C room |
+| Cool | 43 % | 30.1 °C room | 31.2 °C room |
+| Cold | 46 % | 31.5 °C room | 32.6 °C room |
 
 Those are `equilibria.py` fixed points, solved in floating point. The shipping controller
 writes whole duty points and therefore does slightly better — `CurveSim` has Quiet holding
@@ -355,6 +355,24 @@ backstop.
 no hunting below about 19 duty points per °C". That is wrong, and the way it was found to be
 wrong is worth recording: a 3 °C-wide rise at **2.7 duty/°C** — nowhere near 19 — hunted by
 two duty points at 18 and 21 °C ambient when run through `CurveSim.java`.
+
+**And a correction to the correction.** "Every rising segment at least 4 °C wide" was then
+adopted as the design rule, and it is necessary but *not sufficient*: Cold's rise from the
+pinned floor was exactly 4 °C wide, passed every static check, and hunted by four duty points
+at a 17 °C room — because it climbed 23 duty points across those 4 °C, a slope of 5.75 duty/°C,
+against which the 0.8 °C deadband spans 4.6 duty points. Width bounds the slope only when the
+*rise* is bounded too. The rule that survives is the product:
+
+```
+slope (duty/°C)  ×  hysteresisC  <  1 duty point
+```
+
+with the measured caveat above that the true boundary sits somewhere between 1.6 and 2.1 duty
+points rather than exactly at 1. Since no static rule has yet survived contact with this
+plant, the host test now drives every preset through the real `FanCurve` against it at every
+ambient from 14 to 34 °C, mirroring this file's own pole sweep — noise, 70/30 split and all,
+because a first version without those details passed the Cold curve that `CurveSim` had
+already caught.
 
 The mechanism is that hysteresis is applied to the input temperature, so a segment's
 deadband spans `slope × hysteresisC` duty points; when that exceeds one, no single duty can
