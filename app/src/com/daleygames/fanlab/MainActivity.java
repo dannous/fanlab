@@ -48,6 +48,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow modeRow;
     private StepRow presetRow;
     private StepRow ceilingRow;
+    private StepRow ledDriveRow;
     private StepRow reassertRow;
     private StepRow caicRow;
     private StepRow loggingRow;
@@ -59,6 +60,16 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow roomRow;
     private SeekBar slider;
     private TextView sliderValue;
+
+    /**
+     * The CAIC confirmation dialog, while one is up.
+     *
+     * Held so the 250 ms poll can redraw the countdown in it and take it away when the
+     * window closes. It is a <i>view</i> of a countdown the service owns, never the
+     * countdown itself -- dismissing it, or this activity going away under it, changes
+     * nothing about whether CAIC reverts.
+     */
+    private AlertDialog caicDialog;
 
     private boolean systemVariant;
 
@@ -104,6 +115,10 @@ public class MainActivity extends Activity implements StepRow.Listener {
     @Override
     protected void onPause() {
         ui.removeCallbacks(poll);
+        // The dialog goes; the countdown does not. It lives in the service precisely so
+        // that walking away from this screen is one of the ways CAIC gets reverted rather
+        // than one of the ways it gets stuck on.
+        dismissCaicDialog();
         super.onPause();
     }
 
@@ -233,6 +248,29 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "\nAbove a 32.5 °C room LINEAR cannot hold 52 °C and says so. "
                         + "Choose CURVE for quiet, LINEAR when the ceiling matters more."),
                 Ui.wrap());
+        ledDriveRow = addRow(root, new StepRow(c,
+                "LED drive — run the light engine above the brightness mode").button()
+                .tag("leddrive", 0));
+        root.addView(Ui.body(c,
+                "Stock → Bright → Stock. Bright drives the four brightness modes at "
+                        + "30/50/70/90 % instead of 20/40/55/76 — about 18 % more light in "
+                        + "Presentation, and about 3.4 °C more on the LED thermistor for "
+                        + "every 10 points.\n"
+                        + "It only ever applies while this app is the one cooling the "
+                        + "machine: CURVE or LINEAR, no AUTO or VERIFY session, the light "
+                        + "engine on, the fail-safe clear. Anywhere else the kernel's own "
+                        + "table goes straight back — running Presentation-class LED heat "
+                        + "under the Eco fan ladder is the one thing this app must not do. "
+                        + "Above " + Sample.fmt1(LedDrive.DEFAULT_TRIP_C) + " °C it drops "
+                        + "the override and stays off until the brightness mode or the "
+                        + "setting changes.\n"
+                        + "It starts only when you switch it on or change mode, never part "
+                        + "way through a run: switching it on under LINEAR mid-session "
+                        + "would walk the fan about 12 points, which is audible.\n"
+                        + "Switching it on also raises LINEAR's ceiling from "
+                        + Sample.fmt1(LinearConfig.DEFAULT_CEILING_C) + " to "
+                        + Sample.fmt1(LinearConfig.BOOST_CEILING_C) + " °C, unless you have "
+                        + "set the ceiling yourself. Predicted, not measured."), Ui.wrap());
         reassertRow = addRow(root, new StepRow(c,
                 "Re-assert every second (beat the stock controller)").button()
                 .tag("reassert", 0));
@@ -247,8 +285,16 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "that do not need full output. Stock ships with it off. This board "
                         + "has no TI LED driver for it to lower current through, so it may "
                         + "save power, may only brighten the image, may do nothing, or may "
-                        + "show artefacts. Undo: press again, or power-cycle the projector — "
-                        + "nothing is written anywhere that survives a reboot. "
+                        + "show artefacts — including a picture you cannot read.\n"
+                        + "So it asks first: switching it on gives you "
+                        + (CaicArm.WINDOW_MS / 1000) + " seconds to press OK. Do nothing "
+                        + "and it turns itself back off, and it is never remembered until "
+                        + "you confirm it — so it cannot come back after a reboot leaving "
+                        + "you with no picture and no way in. If the screen is unreadable: "
+                        + "wait " + (CaicArm.WINDOW_MS / 1000) + " seconds, or pull the "
+                        + "power (the register is runtime-only; the factory settings are "
+                        + "never written), or from a shell "
+                        + "\"--ez caic false\". "
                         + (systemVariant
                         ? "\"read back\" is what the controller itself reported, refreshed "
                           + "about once a minute."
@@ -405,13 +451,19 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
         if (ceilingRow != null) {
             LinearConfig lin = Prefs.linear(this);
+            // The ceiling the controller will actually hold, promotion included. Showing
+            // the stored 52 while the loop held 54 would make the one row on this screen
+            // whose whole job is to state a temperature the one that does not.
+            boolean raised = LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(this));
             ceilingRow.set((int) Math.round(lin.ceilingC));
-            ceilingRow.display(Sample.fmt1(lin.ceilingC) + " °C");
+            ceilingRow.display(Sample.fmt1(lin.ceilingC) + " °C"
+                    + (raised ? " (LED drive)" : ""));
             // Dim unless LINEAR is the thing running, for the same reason the preset row
             // dims outside CURVE: a value the loop is not currently using should not look
             // like one it is.
             ceilingRow.valueColour(mode == Mode.LINEAR ? Ui.ACCENT : Ui.DIM);
         }
+        syncLedDriveRow();
         if (reassertRow != null) {
             boolean r = Prefs.reassert(this);
             reassertRow.display(r ? "ON" : "OFF");
@@ -454,6 +506,46 @@ public class MainActivity extends Activity implements StepRow.Listener {
     }
 
     /**
+     * The LED drive row. Like the CAIC row it is driven from the poll as well as from the
+     * preference sync, because what it reports is not the setting: the service holds the
+     * override off in half a dozen states the setting knows nothing about, and the trip
+     * latch drops it without anyone pressing anything.
+     *
+     * Dimmed outside CURVE and LINEAR for the same reason the preset and ceiling rows are
+     * dimmed outside their own modes -- and here it is more than a convention, because
+     * outside those two modes the override genuinely is not applied.
+     */
+    private void syncLedDriveRow() {
+        if (ledDriveRow == null) {
+            return;
+        }
+        boolean on = Prefs.ledBoostOn(this);
+        boolean controls = Mode.controls(Prefs.mode(this));
+        // The service's live word for it while there is a service; the setting otherwise,
+        // which is all a cold app can honestly say.
+        String state = FanService.instance == null
+                ? (on ? "on (service not running)" : "off")
+                : FanService.ledDriveStatus;
+        ledDriveRow.display(state);
+        int colour;
+        if (!on) {
+            colour = Ui.DIM;
+        } else if (!controls) {
+            colour = Ui.DIM;
+        } else if (state.startsWith("held off")) {
+            colour = Ui.DANGER;
+        } else if (state.startsWith("applied")) {
+            colour = Ui.WARN;
+        } else {
+            colour = Ui.ACCENT;
+        }
+        ledDriveRow.valueColour(colour);
+        ledDriveRow.label(on
+                ? "LED drive — Bright (" + Prefs.ledDrive(this).summary() + ")"
+                : "LED drive — run the light engine above the brightness mode");
+    }
+
+    /**
      * The CAIC row. Called from the preference sync and from the 1 s poll, because two of
      * its states arrive asynchronously: the service's write happens on the next tick, and
      * the read-back lands seconds later on a thread of its own.
@@ -473,7 +565,11 @@ public class MainActivity extends Activity implements StepRow.Listener {
         boolean saysOn = rb != null && PicoReg.CAIC_ON.equals(rb.state);
         boolean saysOff = rb != null && PicoReg.CAIC_OFF.equals(rb.state);
         int colour;
-        if (!want) {
+        if (FanService.caicCountdownSec() > 0) {
+            // Amber, and not green: an armed CAIC is a thing that is about to be undone
+            // unless someone acts, which is the opposite of a settled state.
+            colour = Ui.WARN;
+        } else if (!want) {
             colour = text.indexOf("still ON") >= 0 ? Ui.DANGER : Ui.DIM;
         } else if (FanService.caicWriteFailed) {
             colour = Ui.DANGER;
@@ -489,6 +585,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
 
     private void refresh() {
         syncCaicRow();
+        syncLedDriveRow();
+        syncCaicDialog();
         Sample s = FanService.lastSample;
         if (s == null) {
             statusView.setText("waiting for the first sample…  " + FanService.statusLine);
@@ -544,10 +642,18 @@ public class MainActivity extends Activity implements StepRow.Listener {
         } else if (FanService.throttledSec > 0) {
             sb.append("   throttled ").append(FanService.throttledSec).append("s so far");
         }
+        // The override's own line, because the row alone cannot say why it is not applied
+        // and "the LED drive says Bright but the picture is not" is a question the screen
+        // has to answer without a shell.
+        if (Prefs.ledBoostOn(this)) {
+            sb.append("\nLED drive  ").append(FanService.ledDriveStatus);
+        }
         if (Prefs.mode(this) == Mode.LINEAR) {
             LinearConfig lin = Prefs.linear(this);
+            boolean raised = LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(this));
             sb.append("\nLINEAR  ceiling ").append(Sample.fmt1(lin.ceilingC))
-                    .append(" C   ").append(lin.upStepMs / 1000).append(" s up, ")
+                    .append(raised ? " C (raised for the LED drive; predicted)   " : " C   ")
+                    .append(lin.upStepMs / 1000).append(" s up, ")
                     .append(lin.downStepMs / 1000).append(" s down within ")
                     .append(Sample.fmt1(lin.nearC)).append(" C, ")
                     .append(lin.downFastMs / 1000).append(" s below that");
@@ -651,21 +757,41 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 Prefs.setLinear(this, lin);
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
+            } else if ("leddrive".equals(row.tagName)) {
+                // Stock -> Bright -> Stock. Poked, like the ceiling and unlike the room
+                // temperature, because it is an input to the controller: the loop has to
+                // see it as a settings change, which is also the edge that lets the
+                // override start at all.
+                if (Prefs.ledBoostOn(this)) {
+                    Prefs.resetLedDrive(this);
+                } else {
+                    Prefs.setLedDrive(this, LedDrive.Config.bright());
+                    Prefs.setLedDriveOn(this, true);
+                }
+                FanService.poke(this, FanService.ACTION_REFRESH);
+                syncControlsFromPrefs();
             } else if ("reassert".equals(row.tagName)) {
                 Prefs.setReassert(this, !Prefs.reassert(this));
                 syncControlsFromPrefs();
             } else if ("caic".equals(row.tagName)) {
-                // Poked: the write to the display controller happens on the loop thread,
-                // on the tick that sees the setting change, never from here.
-                boolean next = !Prefs.caic(this);
-                Prefs.setCaic(this, next);
-                FanService.poke(this, FanService.ACTION_REFRESH);
-                syncControlsFromPrefs();
-                if (next) {
-                    toastLike("CAIC requested. The controller is written on the next tick; "
-                            + "watch the picture for a change in brightness or for "
-                            + "artefacts. Press again to turn it off, or power-cycle the "
-                            + "projector — nothing persistent has been changed.");
+                // Three states, not two: off, armed-and-counting, and confirmed on.
+                //
+                // Nothing here writes the preference. Arming asks the service to write the
+                // register and start its own countdown; only FanService.confirmCaic stores
+                // anything, and only after someone has said the picture survived. That is
+                // what stops an unconfirmed CAIC coming back after a reboot, which would
+                // take away the power cycle that is the owner's guaranteed escape.
+                if (FanService.caicCountdownSec() > 0) {
+                    FanService.cancelCaicArm(this);
+                    syncControlsFromPrefs();
+                } else if (Prefs.caic(this)) {
+                    Prefs.setCaic(this, false);
+                    FanService.poke(this, FanService.ACTION_REFRESH);
+                    syncControlsFromPrefs();
+                } else {
+                    FanService.armCaic(this);
+                    syncControlsFromPrefs();
+                    showCaicConfirm();
                 }
             } else if ("logging".equals(row.tagName)) {
                 Prefs.setLogging(this, !Prefs.logging(this));
@@ -706,6 +832,83 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
+
+    /**
+     * The CAIC confirmation, the same shape as a monitor asking whether a new resolution
+     * worked — and for the same reason: the change can take away the screen you would need
+     * in order to undo it.
+     *
+     * <b>This dialog is not the countdown.</b> {@link FanService} owns that, and it reverts
+     * whether or not anything is on screen; killing the app, pressing HOME or the launcher
+     * reclaiming this activity all leave the revert running. All this does is draw the
+     * remaining seconds and offer the one button that stops it.
+     */
+    private void showCaicConfirm() {
+        dismissCaicDialog();
+        caicDialog = new AlertDialog.Builder(this)
+                .setTitle("Keep CAIC on?")
+                .setMessage(caicConfirmText())
+                .setCancelable(false)
+                .setPositiveButton("Keep it", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        if (!FanService.confirmCaic(MainActivity.this)) {
+                            // The window closed between the press and the dispatch. Say so
+                            // rather than storing it late: the picture the owner is looking
+                            // at is already the reverted one.
+                            toastLike("Too late — the countdown had already run out and "
+                                    + "CAIC has been turned back off. Press the row again "
+                                    + "to retry.");
+                        }
+                        syncControlsFromPrefs();
+                    }
+                })
+                .setNegativeButton("Revert now", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        FanService.cancelCaicArm(MainActivity.this);
+                        syncControlsFromPrefs();
+                    }
+                })
+                .show();
+    }
+
+    private String caicConfirmText() {
+        int left = FanService.caicCountdownSec();
+        return "CAIC is on. Look at the picture.\n\n"
+                + "If it is still readable, press Keep it.\n"
+                + "If it is blank, wrong or full of artefacts, press nothing: it turns "
+                + "itself back off in " + left + " s.\n\n"
+                + "Nothing has been saved yet, so a power cycle also clears it — the "
+                + "factory display settings are never written.";
+    }
+
+    /** Redraw the countdown, and take the dialog away when the service's window closes. */
+    private void syncCaicDialog() {
+        if (caicDialog == null) {
+            return;
+        }
+        if (FanService.caicCountdownSec() <= 0) {
+            dismissCaicDialog();
+            return;
+        }
+        try {
+            caicDialog.setMessage(caicConfirmText());
+        } catch (Throwable ignored) {
+            // a dialog that will not redraw is still a dialog with a working button
+        }
+    }
+
+    private void dismissCaicDialog() {
+        try {
+            if (caicDialog != null) {
+                caicDialog.dismiss();
+            }
+        } catch (Throwable ignored) {
+            // already gone
+        }
+        caicDialog = null;
+    }
 
     /**
      * Copy the backlog now, whether or not this boot already did.

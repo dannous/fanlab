@@ -154,6 +154,67 @@ that turned it on, and RELEASE CONTROL turns it off along with the fan. The one 
 left with it on is a process killed with no chance to run code, and then the next power
 cycle clears it.
 
+### If it takes the picture away — three ways out, and none of them needs the screen
+
+The bad case is specific: the DLPC lookup tables were never calibrated for this engine, so
+"visible artefacts" includes a picture too broken to read — and then the control that would
+undo it is on a screen you cannot see. So the switch **asks first**, the way a monitor asks
+whether a new resolution worked:
+
+- Turning CAIC on writes the register and starts a **15-second countdown**. Press OK and it
+  stays. Press nothing and the app writes `w 50 1 0` and puts it back.
+- **The setting is stored only after you confirm it.** An unconfirmed CAIC is held in
+  memory and nowhere else, so it cannot come back after a reboot. That is deliberate and it
+  is the important half: a power cycle is your guaranteed escape, and a setting that
+  survived one would take that escape away.
+- **The countdown belongs to the service, not the screen.** Pressing HOME, force-stopping
+  the app, or the launcher reclaiming it all still leave the revert running.
+
+So, blind, in order of how little they ask of you:
+
+| escape | what to do | why it works |
+|---|---|---|
+| **wait** | nothing, for 15 seconds | the service reverts it with no input at all |
+| **power cycle** | pull the power | the register is runtime-only; the factory `picosetting` blob is never touched, and it has CAIC off |
+| **adb** | `adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver -a com.daleygames.fanlab.CONFIG --ez caic false` | clears the stored setting too, for a CAIC that was confirmed and is only now showing a problem |
+
+## The LED drive override runs the light engine harder
+
+Separate from everything above, and off by default. It writes `rgbcurrent` and `redcurrent`
+to drive the four brightness modes at **30/50/70/90 %** instead of the kernel's own
+20/40/55/76 — about 18 % more light in Presentation, and about **+3.4 °C** on the LED
+thermistor for every 10 points at a fixed fan duty.
+
+The safety case is one rule, and it is a conjunction: **the override applies only while
+this app is the thing cooling the machine.** CURVE or LINEAR, no AUTO or VERIFY session
+running, the light engine on, the fail-safe clear, the display awake. Anywhere else the
+kernel's own table goes straight back, within a second, because the alternative is
+Presentation-class LED heat under whatever fan ladder `rgblevel` happens to select — which
+is precisely the hazard the rest of this document exists to avoid. Any doubt, including an
+unreadable `led_status`, resolves to *not* applied.
+
+On top of that it has a ceiling of its own: above **57 °C** on the LED thermistor the
+override is dropped and **latched off** until the brightness mode or the setting changes.
+57 is two degrees above the 55 at which the stock controller commands maximum fan. There is
+no automatic re-arm, because brightness cycling on the wall is more objectionable than a
+fan swing.
+
+It also starts only at a service start, a settings change, or a mode change — never part
+way through a run. That is not tidiness: switching it on under LINEAR mid-session makes the
+fan walk about 12 duty points at one per five seconds, and a 14-point cumulative walk is the
+one thing on this machine the owner has actually heard and objected to.
+
+**What it costs.** Under CURVE the extra heat is paid in temperature: the Bright preset
+rests around 53.8 °C rather than 51.9. Under LINEAR it is paid in fan, so the default
+ceiling moves from 52.0 to **54.0 °C** while the override is on — matching where the Bright
+curve rests, so the two controllers can still be compared by ear. A ceiling you set by hand
+is never moved, and nothing is written to the stored setting: switching the override off
+puts the ceiling back. **Every number in this paragraph is inferred from scaling the
+measured plant by 1.18, not measured**, and the two-degrees-over-50 caveat above applies
+with two more degrees on top.
+
+The 75 °C shutdown and the fan-stall watchdog are untouched by it, like everything else here.
+
 ## The controller cannot see SoC temperature
 
 The fan is driven by the LED thermistor, and nothing in the loop reads the SoC. Switching

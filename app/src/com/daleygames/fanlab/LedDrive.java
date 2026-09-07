@@ -59,13 +59,37 @@ package com.daleygames.fanlab;
  * LED thermistor at a fixed fan duty. Under CURVE that is paid in temperature, under
  * LINEAR in fan. The 75 C shutdown and the fan-stall watchdog are untouched either way.
  *
+ * <h3>Why the ceiling is 97 and not 100 -- and why overflowing goes <i>dim</i></h3>
+ * The percent this class writes is not the hardware's unit. The driver converts it to a
+ * 7-bit DAC code, and the conversion and its clamp were read off the live device:
+ * <pre>
+ *   code = (30 * mA + 40000) / 1968          integer division
+ *   if (code &gt; 0x7F) code = 0x3F;            NOT a saturation -- a drop to 63
+ * </pre>
+ * The kernel logs the absolute current on every {@code rgbcurrent} read, which is what
+ * makes the scale measurable rather than assumed:
+ * <pre>
+ *   dlp_spi_get_current reg(0x4) = 0x8066, current = 5357 ma, percent = 75
+ *   dlp_spi_get_current reg(0x3) = 0x8060, current = 4964 ma, percent = 70
+ * </pre>
+ * So 100 % is about <b>7.1 A</b> per channel and Presentation's 76/71 runs at about
+ * 5.4 A / 5.0 A. Putting 7.1 A through the formula gives a code of 129, and the clamp then
+ * writes <b>0x3F -- about 2.8 A, roughly 40 %</b>. An overflow does not peg the channel at
+ * maximum; it makes the picture suddenly go <i>dim</i>, which is the failure that looks
+ * like a fault rather than like an over-request. The code crosses 127 at about 99 %, so
+ * {@link #MAX_LEVEL} is <b>97</b>: three points of margin below a cliff, at a level whose
+ * own code is 125.
+ *
  * <h3>Reading back</h3>
  * {@code rgbcurrent} has a show handler whose text looks like
  * {@code red_current=13 green_current=13 blue_current=13 duty_r=75 duty_g=70 duty_b=75
  * duty_b2=75}. {@code duty_b} (channel 3) reflects the "other" value and {@code duty_r}
  * (channel 1) the red one, each <b>one below what was written</b> -- the table's 76 reads
- * 75. The handler is also racy: it sometimes returns 238 or 241 in one field. A field
- * above 100 therefore makes the whole reading unreadable, never a mismatch.
+ * 75. The handler is also racy, and the glitch is now explained rather than merely
+ * tolerated: a failed SPI read hands the driver {@code 0x8080}, from which it computes
+ * {@code current = -1333 ma, percent = -18}, and sysfs prints that percent as an unsigned
+ * byte -- which is exactly where the observed 238 and 241 come from. <b>Any field above
+ * 100 is a failed read</b>, so it makes the whole reading unreadable, never a mismatch.
  * {@link #parseReadback} is that rule, and {@link #matches} is the off-by-one.
  *
  * Pure Java. The decision ({@link #decide}) has no side effects beyond its own memory,
@@ -84,10 +108,17 @@ public final class LedDrive {
      * Bounds on a configured level, percent.
      *
      * 20 is Super Eco's stock drive and there is no reason to go below it: dimmer than the
-     * dimmest mode is a fan setting looking for a purpose. 100 is the driver's own clamp.
+     * dimmest mode is a fan setting looking for a purpose.
+     *
+     * <b>97, not 100.</b> The driver's clamp is {@code if (code > 0x7F) code = 0x3F} -- an
+     * over-request drops the channel to about 40 % instead of pegging it at maximum -- and
+     * the code crosses 127 at about 99 %. The class comment has the arithmetic and the
+     * measured currents it was derived from. 97 is the highest level with margin below
+     * that cliff, and {@link Config#sanitise()} holds every stored and broadcast level to
+     * it, so a request for 100 becomes 97 rather than a dim picture.
      */
     public static final int MIN_LEVEL = 20;
-    public static final int MAX_LEVEL = 100;
+    public static final int MAX_LEVEL = 97;
 
     /** The four tiers in the order the config stores them. */
     public static final int TIERS = 4;
@@ -252,8 +283,10 @@ public final class LedDrive {
      * Pull {@code duty_r} and {@code duty_b} out of the {@code rgbcurrent} show text.
      *
      * @return {@code {red, other}}, or null if either field is missing, unparseable, or
-     *         above 100 -- the handler's 238/241 glitch, which must read as "could not
-     *         tell" rather than as the kernel having overwritten the drive.
+     *         above 100. Above 100 is the handler's failed-SPI glitch -- {@code 0x8080}
+     *         read back, {@code percent = -18} computed, printed as an unsigned byte, which
+     *         is the 238 and 241 seen in the field -- and it must read as "could not tell"
+     *         rather than as the kernel having overwritten the drive.
      */
     public static int[] parseReadback(String text) {
         if (text == null) {

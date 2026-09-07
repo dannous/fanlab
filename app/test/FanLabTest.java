@@ -1,3 +1,4 @@
+import com.daleygames.fanlab.CaicArm;
 import com.daleygames.fanlab.CsvLogger;
 import com.daleygames.fanlab.CurveConfig;
 import com.daleygames.fanlab.ExpFit;
@@ -6,6 +7,7 @@ import com.daleygames.fanlab.FanIo;
 import com.daleygames.fanlab.FanLinear;
 import com.daleygames.fanlab.HoldSession;
 import com.daleygames.fanlab.Json;
+import com.daleygames.fanlab.LedDrive;
 import com.daleygames.fanlab.LinearConfig;
 import com.daleygames.fanlab.Mode;
 import com.daleygames.fanlab.PicoReg;
@@ -108,6 +110,12 @@ public final class FanLabTest {
         testLinearController();
         testLinearConfigRoundTrip();
         testLinearConvergence();
+        testLinearCeilingPromotion();
+
+        // ---- the LED drive override ----
+        testLedDriveConfig();
+        testLedDriveReadback();
+        testLedDriveDecide();
         testCurvePresetsDoNotHunt();
         testOffDuration();
         testExclusiveControl();
@@ -127,6 +135,7 @@ public final class FanLabTest {
         testHoldSession();
         testPicoReg();
         testCaic();
+        testCaicArm();
         testReportOutput();
 
         System.out.println();
@@ -2398,6 +2407,426 @@ public final class FanLabTest {
             Sysfs.root = oldRoot;
             rmrf(tmp);
         }
+    }
+
+    /**
+     * The arm-and-confirm window, which is the only thing standing between "CAIC blanked
+     * the picture" and "CAIC blanked the picture and the owner cannot see the control that
+     * would undo it".
+     *
+     * Two properties matter more than the arithmetic. An unconfirmed window must revert
+     * itself, once, without anyone doing anything; and it must leave nothing behind, so a
+     * process death is an end rather than a carry-over -- which is what makes a power cycle
+     * a reliable escape rather than a way of booting back into a broken picture.
+     */
+    private static void testCaicArm() {
+        section("CAIC: the arm-and-confirm window, and what must not survive it");
+
+        long t = 1000L;
+        eq((int) CaicArm.WINDOW_MS, 15000, "the window is fifteen seconds");
+
+        CaicArm fresh = new CaicArm();
+        check(!fresh.armed(t), "a fresh window is not armed - there is nowhere to store one");
+        check(!fresh.reverting(), "and owes nothing");
+        eq(fresh.secondsLeft(t), 0, "with no countdown to draw");
+        check(!fresh.poll(t), "polling an idle window asks for nothing");
+
+        // ---- unconfirmed: it reverts itself, once ----
+        CaicArm a = new CaicArm();
+        a.arm(t);
+        check(a.armed(t), "arming opens the window");
+        eq(a.secondsLeft(t), 15, "which starts at fifteen");
+        eq(a.secondsLeft(t + 14500), 1,
+                "and rounds up, so the last part-second still reads 1 rather than 0");
+        check(!a.poll(t + CaicArm.WINDOW_MS - 1),
+                "a millisecond short of the deadline is still inside the window");
+        check(a.armed(t + CaicArm.WINDOW_MS - 1), "and still armed");
+        check(a.poll(t + CaicArm.WINDOW_MS), "the deadline closes it and asks for the revert");
+        check(!a.armed(t + CaicArm.WINDOW_MS), "it is no longer armed");
+        check(a.reverting(), "and a revert is owed");
+        check(!a.poll(t + CaicArm.WINDOW_MS + 5000),
+                "which is asked for once, not on every tick that follows");
+        check(a.reverting(),
+                "but stays owed however long the write takes - the display may be asleep");
+        a.reverted();
+        check(!a.reverting(), "and is cleared only when the write lands");
+        eq(a.secondsLeft(t + CaicArm.WINDOW_MS), 0, "with no countdown left to draw");
+
+        // ---- confirmed: the caller may persist, and nothing reverts ----
+        CaicArm b = new CaicArm();
+        b.arm(t);
+        check(b.confirm(),
+                "confirming inside the window succeeds, which is the caller's one "
+                        + "permission to store the setting");
+        check(!b.armed(t + 1), "and closes the window");
+        check(!b.reverting(), "owing no revert");
+        check(!b.poll(t + CaicArm.WINDOW_MS * 2),
+                "so the original deadline passing does nothing at all");
+
+        // ---- a late press must not resurrect what has already been reverted ----
+        CaicArm c = new CaicArm();
+        c.arm(t);
+        check(c.poll(t + CaicArm.WINDOW_MS), "the window closes unconfirmed");
+        check(!c.confirm(),
+                "a press after it ran out confirms nothing - the picture being looked at "
+                        + "is the one that already came back");
+        check(c.reverting(), "and does not cancel the revert it arrived too late to stop");
+
+        // ---- cancel is the third exit ----
+        CaicArm d = new CaicArm();
+        d.arm(t);
+        d.cancel();
+        check(!d.armed(t), "cancelling drops the window");
+        check(!d.reverting(),
+                "and owes nothing of its own - the caller is turning it off anyway");
+        check(!d.poll(t + CaicArm.WINDOW_MS), "the cancelled deadline never fires");
+
+        // ---- re-arming restarts rather than stacking ----
+        CaicArm e = new CaicArm();
+        e.arm(t);
+        e.arm(t + 10000L);
+        eq(e.secondsLeft(t + 10000L), 15, "re-arming restarts the countdown");
+        check(!e.poll(t + CaicArm.WINDOW_MS + 1L),
+                "so the first arm's deadline does not fire under the second");
+        check(e.poll(t + 10000L + CaicArm.WINDOW_MS), "the second one does");
+    }
+
+    // ----------------------------------------------------------------- LED drive
+
+    /**
+     * The configured levels, and the clamp that is the whole reason this class has an upper
+     * bound at all.
+     *
+     * 97 is not a round number and not a preference. The driver turns a percent into a
+     * 7-bit DAC code, {@code code = (30*mA + 40000) / 1968}, and clamps it with
+     * {@code if (code > 0x7F) code = 0x3F} -- so an over-request does not saturate the
+     * channel, it drops it to about 40 % and the picture goes <i>dim</i>. The code crosses
+     * 127 at about 99 % of the measured 7.1 A per-channel maximum, so anything that could
+     * store 100 would be storing a dim picture.
+     */
+    private static void testLedDriveConfig() {
+        section("LED drive: the four levels, and the 97 that is not a round number");
+
+        eq(LedDrive.MAX_LEVEL, 97, "the ceiling is 97, three points below the DAC cliff");
+        eq(LedDrive.MIN_LEVEL, 20, "and the floor is Super Eco's own stock drive");
+
+        LedDrive.Config stock = new LedDrive.Config();
+        check(stock.isStock(), "a fresh config is the kernel's own table");
+        check(stock.encode().equals("d1,20,40,55,76"),
+                "which encodes as the table itself  (got " + stock.encode() + ")");
+
+        LedDrive.Config bright = LedDrive.Config.bright();
+        check(!bright.isStock(), "the Bright preset is not");
+        check(bright.encode().equals("d1,30,50,70,90"),
+                "and is 30/50/70/90  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 90, "Presentation reads 90");
+        eq(bright.levelFor(4), 30, "Super Eco reads 30");
+        eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
+
+        // ---- the clamp, which is the point ----
+        LedDrive.Config hot = new LedDrive.Config();
+        for (int i = 0; i < LedDrive.TIERS; i++) {
+            hot.level[i] = 100;
+        }
+        hot.sanitise();
+        eq(hot.level[3], 97,
+                "a requested 100 is stored as 97 - at 100 the DAC code passes 127 and the "
+                        + "driver answers by dropping the channel to about 40 %");
+        check(hot.encode().equals("d1,97,97,97,97"),
+                "on every tier  (got " + hot.encode() + ")");
+        check(LedDrive.Config.decode("d1,100,100,100,100").encode().equals("d1,97,97,97,97"),
+                "and a stored line asking for 100 is repaired on the way in, not obeyed");
+        check(LedDrive.Config.decode("d1,5,5,5,5").encode().equals("d1,20,20,20,20"),
+                "the floor is enforced the same way");
+        check(LedDrive.Config.decode("d1,-40,0,255,9999").encode().equals("d1,20,20,97,97"),
+                "including on a line nobody could have typed by accident");
+
+        // ---- channel 1 keeps the stock table's ratio, whatever the level ----
+        eq(LedDrive.redFor(3, 90), 84, "Presentation 90 drives the red die at 84");
+        eq(LedDrive.redFor(3, 97), 91, "and the ceiling level at 91");
+        eq(LedDrive.redFor(3, 76), 71, "the stock level reproduces the stock red exactly");
+        eq(LedDrive.redFor(2, 70), 61, "Normal keeps 48/55");
+        eq(LedDrive.redFor(1, 50), 45, "Eco keeps 36/40");
+        eq(LedDrive.redFor(4, 30), 30, "and Super Eco is 1:1, as the table has it");
+        eq(LedDrive.redFor(0, 50), 50, "an unknown mode gets the level unchanged");
+        eq(LedDrive.redFor(9, 50), 50, "in both directions off the end of the table");
+
+        eq(LedDrive.tierOf(4), 0, "Super Eco is the first tier");
+        eq(LedDrive.tierOf(3), 3, "Presentation the last");
+        eq(LedDrive.tierOf(5), -1, "and an unknown mode has none");
+
+        // ---- a broken setting must never leave the LEDs somewhere nobody chose ----
+        check(LedDrive.Config.decode(null).isStock(), "a missing config is stock");
+        check(LedDrive.Config.decode("").isStock(), "an empty one is stock");
+        check(LedDrive.Config.decode("d1,30,50").isStock(), "a truncated one is stock");
+        check(LedDrive.Config.decode("d1,a,b,c,d").isStock(), "an unparseable one is stock");
+        check(LedDrive.Config.decode("d9,30,50,70,90").isStock(),
+                "and an unknown version is stock, not read as if it were d1");
+        check(LedDrive.Config.decode(bright.encode()).encode().equals(bright.encode()),
+                "an edited config round trips byte for byte");
+    }
+
+    /**
+     * The {@code rgbcurrent} show handler, which is racy, off by one, and now explained.
+     *
+     * A failed SPI read hands the driver {@code 0x8080}; it computes
+     * {@code current = -1333 ma, percent = -18}; sysfs prints that percent as an unsigned
+     * byte. That is where the 238 and 241 seen in the field come from, and it is why any
+     * field above 100 has to read as "could not tell" rather than as the kernel having
+     * overwritten the drive -- treating it as a mismatch would rewrite the nodes every
+     * five seconds for ever.
+     */
+    private static void testLedDriveReadback() {
+        section("LED drive: reading back, the off-by-one and the 238/241 glitch");
+
+        int[] rb = LedDrive.parseReadback("red_current=13 green_current=13 blue_current=13 "
+                + "duty_r=83 duty_g=89 duty_b=89 duty_b2=89");
+        check(rb != null && rb[0] == 83 && rb[1] == 89,
+                "duty_r is channel 1 and duty_b the other three");
+        check(LedDrive.parseReadback("duty_r=100 duty_b=100") != null,
+                "100 is a legal reading");
+
+        check(LedDrive.parseReadback("duty_r=238 duty_b=89") == null,
+                "238 is a failed SPI read printed as an unsigned byte, not a drive level");
+        check(LedDrive.parseReadback("duty_r=83 duty_b=241") == null,
+                "and so is 241, in either field");
+        check(LedDrive.parseReadback("duty_r=101 duty_b=89") == null,
+                "anything above 100 makes the whole reading unusable");
+        check(LedDrive.parseReadback("duty_b=89") == null, "a missing duty_r is no reading");
+        check(LedDrive.parseReadback("duty_r=83") == null, "nor is a missing duty_b");
+        check(LedDrive.parseReadback("duty_r= duty_b=89") == null, "nor is an empty field");
+        check(LedDrive.parseReadback("duty_r=x duty_b=89") == null, "nor is junk");
+        check(LedDrive.parseReadback(null) == null, "nor is nothing at all");
+        check(LedDrive.parseReadback("") == null, "nor is an empty node");
+
+        check(LedDrive.matches(75, 76), "the handler reports one below what was written");
+        check(LedDrive.matches(76, 76),
+                "and the exact value is accepted too, so a firmware that stops doing that "
+                        + "does not turn every tick into a rewrite");
+        check(!LedDrive.matches(74, 76), "two below is a mismatch");
+        check(!LedDrive.matches(55, 76), "and the stock table reappearing certainly is");
+    }
+
+    /**
+     * The decision, walked through the states it has to get right, with the writes landing
+     * on the stub tree.
+     *
+     * The sequences here are the ones that cost something when they are wrong: an override
+     * that never applies, one that rewrites the nodes every second, one that does not come
+     * back after the kernel reinstates the stock table, one that does not go away when the
+     * app stops being the fan controller, and a ceiling trip that re-arms itself and
+     * flickers the picture.
+     */
+    private static void testLedDriveDecide() throws Exception {
+        section("LED drive: apply, hold, rewrite, restore, and the ceiling latch");
+
+        File root = stubRoot();
+        String oldRoot = Sysfs.root;
+        Sysfs.root = root.getAbsolutePath();
+        try {
+            File rgbCurrent = new File(root, "sys/class/dlpc343x/rgbcurrent");
+            File redCurrent = new File(root, "sys/class/dlpc343x/redcurrent");
+            File rgbLevel = new File(root, "sys/class/dlpc343x/rgblevel");
+
+            LedDrive d = new LedDrive();
+            LedDrive.Config bright = LedDrive.Config.bright();
+            long t = 1000000L;
+
+            // ---- not allowed: nothing is written, and nothing is believed ----
+            LedDrive.Plan p = d.decide(bright, 3, false, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.NONE, "not allowed writes nothing at all");
+            check(!d.overriding(), "and believes nothing is applied");
+            eq(d.appliedLevel(), -1, "which is the blank the CSV column carries");
+            check("stock".equals(d.state()), "with the screen saying stock");
+
+            // ---- the enabling edge applies, immediately ----
+            p = d.decide(bright, 3, true, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.APPLY, "the enabling edge applies");
+            eq(p.other, 90, "at Presentation's configured level");
+            eq(p.red, 84, "with channel 1 held to the stock table's ratio");
+            check(d.perform(p), "and both writes land");
+            check("90".equals(slurp(rgbCurrent)),
+                    "rgbcurrent holds the level bare  (got " + quote(slurp(rgbCurrent)) + ")");
+            check("84".equals(slurp(redCurrent)), "and redcurrent the ratio");
+            eq(d.appliedLevel(), 90, "the CSV column carries the level once it is on");
+            check(d.state().startsWith("applied 90/84"),
+                    "and the screen says so  (got " + quote(d.state()) + ")");
+
+            // ---- steady state: a read-back that agrees writes nothing ----
+            t += 1000L;
+            p = d.decide(bright, 3, true, 45.0, "duty_r=83 duty_b=89", t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "a read-back one below what was written is agreement, not a mismatch");
+
+            // ---- the glitch is not a mismatch ----
+            t += 1000L;
+            p = d.decide(bright, 3, true, 45.0, "duty_r=238 duty_b=89", t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "and the 238 glitch is 'could not tell', which also writes nothing");
+
+            // ---- a genuine mismatch rewrites, but not before the rate limit ----
+            t += 1000L;
+            p = d.decide(bright, 3, true, 45.0, "duty_r=71 duty_b=76", t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "the stock table reappearing inside REAPPLY_EVERY_MS waits its turn");
+            t += LedDrive.REAPPLY_EVERY_MS;
+            p = d.decide(bright, 3, true, 45.0, "duty_r=71 duty_b=76", t);
+            eq(p.action, LedDrive.Plan.APPLY, "and is put back once the limit has passed");
+            eq(p.other, 90, "at the same level");
+            check(d.perform(p), "and the rewrite lands");
+
+            // ---- a brightness-mode change is an edge, and ignores the limit ----
+            put(root, "sys/class/dlpc343x/rgblevel", "2\n");
+            t += 1000L;
+            p = d.decide(bright, 2, true, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.APPLY,
+                    "a brightness-mode change re-applies at once, rate limit or not");
+            eq(p.other, 70, "at Normal's configured level");
+            eq(p.red, 61, "and Normal's own ratio");
+            check(d.perform(p), "with both writes landing again");
+
+            // ---- losing the coupling puts the stock table back ----
+            t += 1000L;
+            p = d.decide(bright, 2, false, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.RESTORE,
+                    "losing the coupling restores the stock table");
+            eq(p.rgblevel, 2, "by rewriting the mode the override was applied under");
+            check(!d.overriding(), "it stops believing anything is applied");
+            eq(d.appliedLevel(), -1, "and the CSV column goes blank again");
+            check(d.perform(p), "the restore write lands");
+            check("2".equals(slurp(rgbLevel)),
+                    "as a rewrite of rgblevel with the value it already held, which is what "
+                            + "makes the kernel reinstate the whole table");
+            t += 1000L;
+            p = d.decide(bright, 2, false, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "and it is done once, not on every tick that follows");
+
+            // ---- the ceiling: dropped, latched, and no automatic re-arm ----
+            put(root, "sys/class/dlpc343x/rgblevel", "3\n");
+            LedDrive e = new LedDrive();
+            long u = 2000000L;
+            check(e.perform(e.decide(bright, 3, true, 45.0, null, u)),
+                    "a fresh override applies while the light engine is cool");
+            u += 1000L;
+            p = e.decide(bright, 3, true, LedDrive.DEFAULT_TRIP_C + 0.2, null, u);
+            eq(p.action, LedDrive.Plan.RESTORE,
+                    "above the ceiling the override is dropped");
+            check(e.tripped(), "and latched off");
+            check(e.state().startsWith("held off"),
+                    "which the screen names  (got " + quote(e.state()) + ")");
+            check(p.note.indexOf("LEDDRIVE TRIP") >= 0,
+                    "and the log gets it as an event  (got " + quote(p.note) + ")");
+            e.perform(p);
+            u += 30000L;
+            p = e.decide(bright, 3, true, 40.0, null, u);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "cooling down does not re-arm it - brightness cycling on the wall is "
+                            + "more objectionable than a fan swing, so it waits to be asked");
+            check(e.tripped(), "the latch holds");
+
+            // ---- and releases on the two things that make the trip stale ----
+            u += 1000L;
+            p = e.decide(bright, 2, true, 40.0, null, u);
+            check(!e.tripped(), "a brightness-mode change is a different LED load, so it releases");
+            eq(p.action, LedDrive.Plan.APPLY, "and the override goes back on for the new mode");
+
+            LedDrive f = new LedDrive();
+            long v = 3000000L;
+            f.perform(f.decide(bright, 3, true, 45.0, null, v));
+            v += 1000L;
+            f.perform(f.decide(bright, 3, true, LedDrive.DEFAULT_TRIP_C + 1.0, null, v));
+            check(f.tripped(), "a second override trips the same way");
+            v += 1000L;
+            LedDrive.Config other = LedDrive.Config.decode("d1,25,45,60,80");
+            p = f.decide(other, 3, true, 45.0, null, v);
+            check(!f.tripped(), "and changing the configuration releases the latch too");
+            eq(p.action, LedDrive.Plan.APPLY, "at the new levels");
+            eq(p.other, 80, "which is the new Presentation level");
+
+            // ---- the handback that is not a tick ----
+            LedDrive g = new LedDrive();
+            long w = 4000000L;
+            check(g.forceRestore(w).action == LedDrive.Plan.NONE,
+                    "forcing a restore with nothing applied writes nothing, so calling it "
+                            + "on a machine this app never boosted is free");
+            g.perform(g.decide(bright, 3, true, 45.0, null, w));
+            check(g.overriding(), "with an override applied");
+            LedDrive.Plan back = g.forceRestore(w);
+            eq(back.action, LedDrive.Plan.RESTORE, "forcing a restore asks for the rewrite");
+            check(!g.overriding(), "and drops the belief immediately");
+
+            // ---- a stock table is the same as off, whatever the switch says ----
+            LedDrive h = new LedDrive();
+            p = h.decide(new LedDrive.Config(), 3, true, 45.0, null, w);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "a stock configuration has nothing to apply, so allowed changes nothing");
+            p = h.decide(null, 3, true, 45.0, null, w);
+            eq(p.action, LedDrive.Plan.NONE, "and neither does no configuration at all");
+        } finally {
+            Sysfs.root = oldRoot;
+            rmrf(root);
+        }
+    }
+
+    /**
+     * LINEAR's ceiling under the LED drive override: promoted when it is still the untouched
+     * default, left exactly alone when somebody has set it.
+     *
+     * The numbers behind the promotion are inferred from the x1.18 the boost costs, not
+     * measured, and they are in {@link LinearConfig#BOOST_CEILING_C}. What is checked here
+     * is the rule, which is the part that can be wrong in a way nobody notices: a controller
+     * that quietly rewrote a ceiling its owner had chosen, or that stored 54 where 52 was
+     * meant, would both look correct on screen.
+     */
+    private static void testLinearCeilingPromotion() {
+        section("linear: the ceiling the LED drive override moves, and the ones it must not");
+
+        eq((int) Math.round(LinearConfig.DEFAULT_CEILING_C * 10), 520,
+                "the stock default is 52.0");
+        eq((int) Math.round(LinearConfig.BOOST_CEILING_C * 10), 540,
+                "and the boosted one is 54.0, where the Bright curve rests");
+
+        LinearConfig off = new LinearConfig();
+        check(!LinearConfig.promoteForBoost(off, false),
+                "with the override off the default is left where it is");
+        eq((int) Math.round(off.ceilingC * 10), 520, "untouched");
+
+        LinearConfig on = new LinearConfig();
+        check(LinearConfig.promoteForBoost(on, true),
+                "with the override on the untouched default is raised, and says it was");
+        eq((int) Math.round(on.ceilingC * 10), 540, "to 54.0");
+        check(!LinearConfig.promoteForBoost(on, true),
+                "and a second pass over an already-raised config moves nothing and claims "
+                        + "nothing, so the status line does not announce it twice");
+
+        // A ceiling somebody chose is a ceiling somebody chose, whatever else is on.
+        double[] hand = {35.0, 49.0, 51.9, 52.1, 54.0, 60.0};
+        for (int i = 0; i < hand.length; i++) {
+            LinearConfig h = new LinearConfig();
+            h.ceilingC = hand[i];
+            h.sanitise();
+            double was = h.ceilingC;
+            check(!LinearConfig.promoteForBoost(h, true),
+                    "a hand-set " + Sample.fmt1(was) + " C ceiling is left alone");
+            eq((int) Math.round(h.ceilingC * 10), (int) Math.round(was * 10), "  exactly");
+        }
+
+        // Nothing is stored. The promotion is applied to the copy the loop is about to use,
+        // so the encoded line -- which is what reaches SharedPreferences -- still says 52.0,
+        // and switching the override off puts the ceiling back without a migration.
+        LinearConfig stored = new LinearConfig();
+        LinearConfig loaded = LinearConfig.decode(stored.encode());
+        LinearConfig.promoteForBoost(loaded, true);
+        check(stored.encode().indexOf("52.0") >= 0,
+                "the stored line is still the 52.0 default  (got " + stored.encode() + ")");
+        check(loaded.encode().indexOf("54.0") >= 0,
+                "while the copy the loop holds says 54.0  (got " + loaded.encode() + ")");
+        check(LinearConfig.decode(stored.encode()).ceilingC == LinearConfig.DEFAULT_CEILING_C,
+                "and re-reading the stored line gives 52.0 again, so the override is "
+                        + "reversible by switching it off rather than by editing anything");
+
+        check(!LinearConfig.promoteForBoost(null, true), "a null config is not a crash");
     }
 
     private static String slurp(File f) throws Exception {

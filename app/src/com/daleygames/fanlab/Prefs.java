@@ -202,6 +202,24 @@ public final class Prefs {
         get(c).edit().remove(K_LEDDRIVE).remove(K_LEDDRIVE_ON).apply();
     }
 
+    /**
+     * Is the override asking for anything at all? The switch on <i>and</i> a table that is
+     * not the kernel's own.
+     *
+     * The one question every caller actually has, in one place: the service's coupling rule,
+     * the LINEAR ceiling promotion, the screen and the broadcast reply all turn on it, and
+     * "on with a stock table" is the state where they would otherwise disagree -- the loop
+     * treats it as off, so everything else must too.
+     *
+     * Deliberately the <i>setting</i>, not what is on the hardware. {@link LedDrive} drops
+     * the override on its own ceiling trip and puts it back when the brightness mode
+     * changes, and a ceiling that also moved the LINEAR ceiling twice in a minute would be
+     * a controller chasing itself.
+     */
+    public static boolean ledBoostOn(Context c) {
+        return ledDriveOn(c) && !ledDrive(c).isStock();
+    }
+
     // ---- stated room temperature ----
 
     /**
