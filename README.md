@@ -51,7 +51,7 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 2289**, run on the host as part of every build.
+- **Test count: 2329**, run on the host as part of every build.
 - **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
   fan only above 70 °C on the die and can never subtract any. See
   [The SoC guard](#the-soc-guard).
@@ -115,17 +115,137 @@ is taken away from it.
 
 ## Install
 
-**No PC, no cable, no flashing.** The projector has an APK installer built in.
+**No PC, no cable, no flashing.** The projector has an APK installer built in, and the app
+installs like any other. Nothing is written to a system partition and it uninstalls from
+Settings like any other app.
+
+**Which file:** `release/fanlab-system.apk`. That is the one to install.
+
+There are two builds in `release/` and only the first is useful on a projector:
+
+| file | what it is |
+|---|---|
+| **`fanlab-system.apk`** | **the one you want.** Platform-signed, so it can write the fan node and disable the stock controller |
+| `fanlab-plain.apk` | debug-signed, observe-only. It can read and log but cannot drive the fan. For development on a device without the platform key |
+
+### Steps
 
 1. Copy `release/fanlab-system.apk` onto a USB stick
-2. Plug it into the projector
-3. Open **AppInstaller** from the launcher and select the file
-4. Open **FanLab** and press the takeover control
+2. Plug the stick into the projector
+3. From the launcher open **AppInstaller** and pick the file
+4. Open **FanLab** from the launcher
+5. Set **Mode** to `CURVE`
 
-To undo it: open FanLab and press **RESTORE STOCK FAN CONTROL**, or uninstall from
-Settings — but read [docs/safety.md](docs/safety.md) first, because the order matters.
+That is the whole install. Choosing `CURVE` disables the stock fan controller for you —
+there is a separate **Take over** button but you do not need to press it. The fan takes
+about fifteen seconds to come down from wherever the stock controller had it, and then it
+should not move again.
 
-There is also an adb route for development, in [docs/deploy.md](docs/deploy.md).
+**Leave `Start automatically after a reboot` on** (it is on by default). Without it the
+stock controller takes back over on the next power cycle.
+
+## Using it
+
+The main screen is a list you move through with the remote's up/down, changing a value with
+left/right and pressing a button row with OK.
+
+### The controls that matter
+
+| control | what it does |
+|---|---|
+| **Mode** | `OFF` observes only. `CURVE` is the fan curve — **this is the one to use**. `MANUAL` holds one fixed speed. `LINEAR` holds a temperature instead of a speed (see below) |
+| **Curve preset** | `Quiet` / `Balanced` / `Cool` / `Cold`. Quiet is the default and the quietest; each step up adds 5 % fan and buys about 1.5 °C. See [The four presets](#the-four-presets) |
+| **Room temperature** | optional. Tells the log what the room actually is, so later analysis is not guessing |
+| **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
+| **Start automatically after a reboot** | leave this on |
+| **Re-assert every second** | leave this on. The projector's own brightness code slams a fan preset on brightness changes; this puts it back. It is not cosmetic — see [Warnings](#warnings) |
+| **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed and the app stops driving |
+| **RESTORE STOCK FAN CONTROL** | the permanent undo. Clears the setting that disables the stock controller. **Press this before uninstalling** — see below |
+
+### Which preset
+
+Start on **Quiet** and only move up if the light engine runs hotter than you want it to.
+The figures are in [The four presets](#the-four-presets); the short version is that Quiet
+keeps the light engine under 55 °C up to a 28 °C room, and each step up extends that by
+about 2 °C at the cost of 5 % more fan.
+
+### CURVE or LINEAR
+
+**Use CURVE.** It is the default, it has thirty-six hours of field logging behind it, and
+it is the quieter of the two in any room you are likely to be sitting in.
+
+LINEAR holds a *temperature* rather than a fan speed. It is the right choice only if you
+care more about a temperature ceiling than about noise — it is quieter than CURVE below
+about 24 °C and considerably louder above it. Read
+[Read this before choosing it](#read-this-before-choosing-it) first.
+
+### Undoing it
+
+There are two different controls and they do different things. Confusing them is the one
+way to leave the projector worse off than you found it.
+
+**To stop the app driving, for now:** press **RELEASE CONTROL**. The stock controller is
+re-armed immediately and the app goes back to observing. Expect a few seconds of loud fan —
+it hands back at 83 % on purpose, so the machine is never unmanaged in between. Setting
+**Mode** to `OFF` does the same thing.
+
+**To uninstall:** press **RESTORE STOCK FAN CONTROL** *first*, then uninstall from Settings.
+
+That second control matters because taking over sets a property,
+`persist.sys.fanctrl.by.temperatue = 0`, which lives in `/data` and **survives a reboot and
+survives uninstalling the app**. The app re-arms the stock controller on every path where it
+gets to run code — a normal stop, a mode change, a force-stop, a crash — but an uninstall
+runs no code at all and never returns. So:
+
+| how the app stops | stock controller handed back? |
+|---|---|
+| Mode → OFF, RELEASE CONTROL, mode change, force-stop, crash | **yes** |
+| **uninstall** | **no** |
+
+If it has already happened, the projector is not in danger — the 75 °C over-temperature
+shutdown and the kernel's fan-stall watchdog are both untouched, and the fan holds the
+kernel's own default rather than stopping. But nothing is responding to temperature. One
+line fixes it:
+
+```bash
+adb shell setprop persist.sys.fanctrl.by.temperatue 1
+```
+
+[docs/safety.md](docs/safety.md) has the full account.
+
+### Driving it from a PC
+
+Everything above is also settable over adb, which is how it is developed and how the curve
+is deployed. The full reference is in [docs/deploy.md](docs/deploy.md). The two commands
+worth knowing:
+
+```bash
+ADB="C:/Users/Gamer/AppData/Local/Android/Sdk/platform-tools/adb.exe"
+
+# read the current state, changes nothing
+"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
+
+# switch preset
+"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    --es preset quiet
+```
+
+**Use the full component name.** The system build's package is
+`com.daleygames.fanlab.system`, and `am broadcast` does not validate components — a
+broadcast to the wrong one reports `result=0` and silently does nothing.
+
+The reply is the resulting state, so diff it against what you sent. It says
+`curve(REPAIRED)` or `linear(REPAIRED)` when a value was clamped rather than accepted.
+
+### If something looks wrong
+
+| symptom | what it is |
+|---|---|
+| fan cycles slowly between two speeds | something else is writing the fan node. Check `Mode` is `CURVE` and `Re-assert` is on. MANUAL leaves the stock controller armed by design, so it is not usable for a quiet run |
+| fan jumps to 83 % and stays | a fail-safe. Every error path writes 83 rather than a low value. Check the Diagnostics screen |
+| fan loud for ~15 s after changing mode | expected. Changing away from CURVE hands back at 83 %, and coming back is a slew-limited ramp down |
+| a setting did not take, over adb | wrong component name — see above |
+| "CSV rows" resets to zero | it counts rows written by the current service instance, not the length of the file. A service restart resets it. The file is fine |
 
 ## The SoC guard
 
