@@ -165,7 +165,8 @@ left/right and pressing a button row with OK.
 | **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
 | **Start automatically after a reboot** | leave this on |
 | **Re-assert every second** | leave this on. The projector's own brightness code slams a fan preset on brightness changes; this puts it back. It is not cosmetic — see [Warnings](#warnings) |
-| **CAIC** | off by default, and nothing to do with the fan. An experiment on the display controller's own LED-power feature; read [The CAIC experiment](#the-caic-experiment) before pressing it. Press again to turn it off; a power cycle turns it off regardless |
+| **LED drive** | off by default. Raises the light engine above the brightness mode's stock drive — `Bright` is 30/50/70/90 for Super Eco/Eco/Normal/Presentation against a stock 20/40/55/76. It only applies while the app is actually driving the fan, so light output can never outrun cooling. See [The LED drive override](#the-led-drive-override) |
+| **CAIC** | off by default, and nothing to do with the fan. An experiment on the display controller's own LED-power feature; read [The CAIC experiment](#the-caic-experiment) before pressing it. Turning it on starts a **15-second countdown that reverts unless you confirm**, because a bad result can be one you cannot see to undo |
 | **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed, the app stops driving, and CAIC is turned off if it was on |
 | **RESTORE STOCK FAN CONTROL** | the permanent undo. Clears the setting that disables the stock controller. **Press this before uninstalling** — see below |
 
@@ -252,6 +253,54 @@ The CAIC experiment is `--ez caic true` and `--ez caic false`; the reply's `caic
 gives the setting and, on the system build a few seconds later, what the display
 controller itself said (`on (read back: on)`). See the next section before sending it.
 
+The LED drive override is `--es leddrive stock|bright|<encoded>` followed by
+`--ez leddriveon true|false` — the level is applied before the switch, so both can go in
+one broadcast. The reply carries three fields answering three different questions:
+`leddrive=` the configured levels, `leddriveon=` whether it is switched on, and
+`leddrivestate=` what is actually on the hardware right now, which is the only one of the
+three that accounts for the mode, the fail-safe and the temperature trip.
+
+### The LED drive override
+
+**Off by default.** The kernel maps each brightness mode to a fixed LED drive, as a
+percentage of the driver's own per-channel maximum — Super Eco 20, Eco 40, Normal 55,
+Presentation 76, with the red channel a few points lower at each. So the light engine
+spends its life at about three-quarters of what the firmware's own scale permits. This
+override writes `rgbcurrent` and `redcurrent` to move those levels up; `Bright` is
+30/50/70/90.
+
+**It is capped at 97, not 100, and that is not caution.** Reading `rgbcurrent` makes the
+driver log the absolute current: at Presentation it reports `current = 5357 ma, percent = 75`,
+so a channel's maximum is about 7.1 A. The driver converts milliamps to a 7-bit DAC code and
+clamps it as `if (code > 0x7F) code = 0x3F` — an overflow does **not** saturate, it drops
+that channel to code 63, about 2.8 A. The code passes 127 at roughly 99 %. Ask for 100 and
+the picture goes *dimmer*, not brighter. The app clamps to 97 and a test holds it there.
+
+**What it costs.** Heat, and it lands on the red die — the lowest-rated part in the light
+path, the one that loses output fastest with temperature, and the one seven owners of this
+model have reported losing. Presentation at 90 runs the light engine roughly 3.5 °C hotter
+at a given fan speed. That is why `Bright` exists: it is the curve that spends fan to put
+that back.
+
+**The rule that makes it safe.** The override is on the hardware *only* while the app is
+genuinely the fan controller — mode `CURVE` or `LINEAR`, no measurement session running, the
+light engine on, and the fail-safe not latched. In every other state the stock table is put
+back, within a second, by rewriting `rgblevel`. This is the whole safety case: raising light
+output while something else owns the fan is exactly the "Presentation-class heat on the Eco
+ladder" failure this project has refused to ship since the reverse-engineering found it. There
+is also a temperature trip — above 57 °C the override drops to stock and stays off until the
+brightness mode or the configuration changes, because brightness that cycles is worse than
+brightness that stops.
+
+**How to undo it.** Turn the row off, `--ez leddriveon false`, `--ez reset`, press
+**RELEASE CONTROL**, or switch to `OFF` or `MANUAL` — any of them restore the stock table.
+Nothing it writes survives a reboot, and the kernel restores the stock levels itself on the
+next brightness-mode change.
+
+**What is not known.** Whether 90 looks meaningfully brighter, and whether the white point
+drifts cool as the red channel droops faster than green and blue. Neither is a temperature
+question and neither can be answered from a log — put up a white field and look.
+
 ### The CAIC experiment
 
 **This is not a fan setting and it is off by default.** It is here because the display
@@ -287,7 +336,7 @@ permission the plain build cannot hold — so on the plain build it stays `unver
 for ever, which is the truth.
 
 **How to try it.** On the screen, the `CAIC` row under *Experiment — display controller*;
-press it once for on, again for off. From a PC:
+press it once and confirm within fifteen seconds. From a PC:
 
 ```bash
 "$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
@@ -303,9 +352,16 @@ reads on, the controller's *max available power* word about once a minute
 (`caic_maxpower=0x...`) — that number moving with the content is the one piece of evidence
 the experiment can produce without a light meter.
 
-**How to undo it.** Any of:
+**How to undo it — including with no picture.** The first three need nothing on screen,
+which is the point: if CAIC blanks or wrecks the image, you cannot read a menu to escape it.
 
-- press the `CAIC` row again, or `--ez caic false` — one write, `w 50 1 0`;
+- **do nothing for fifteen seconds.** Turning it on arms a countdown owned by the service,
+  not the screen; without a confirmation the service writes `w 50 1 0` and reverts. The
+  preference is only saved once you confirm, so an unconfirmed CAIC cannot come back after
+  a reboot either;
+- **power-cycle the projector** (see below);
+- `--ez caic false` from a PC;
+- press the `CAIC` row again — one write, `w 50 1 0`;
 - press **RELEASE CONTROL**, which turns it off along with everything else the app drives;
 - `--ez reset`, which turns it off along with the curve;
 - **power-cycle the projector.** The controller reloads the factory settings at boot, and
@@ -664,7 +720,9 @@ a case it has to have been measured in.
 
 **LINEAR is not simply louder — it trades noise against temperature in opposite directions
 either side of about 24 °C**, which is where its default 52 °C ceiling was chosen to meet the
-curve. Presentation, both controllers solved against the measured plant:
+curve. (With the LED drive override on, that default is promoted to 54 °C — holding 52 °C at
+a raised drive costs about twelve duty points more, and 54 °C is where the `Bright` curve
+rests, so the two controllers still meet. A ceiling you have set by hand is left alone.) Presentation, both controllers solved against the measured plant:
 
 | room | CURVE Quiet | LINEAR @ 52 °C | LINEAR costs | and buys |
 |---|---|---|---|---|
