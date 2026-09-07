@@ -437,14 +437,16 @@ public final class FanLabTest {
                             + " matches Presentation at knee " + k);
                 }
             }
-            // A rising segment several times the deadband cannot be a boundary the machine
-            // parks on. 4 C is five deadbands. This is NECESSARY, NOT SUFFICIENT, and it was
-            // found out the hard way: Cold's rise from the pinned floor was 4 C wide and
-            // still hunted by four duty points at 17 C ambient, because it climbed 23 duty
-            // points in those 4 C and the deadband then spanned 4.6 of them. Width bounds the
-            // slope only if the rise is bounded too. The check that actually decides is
-            // dynamic -- testCurvePresetsDoNotHunt below drives the real controller against
-            // the plant -- and tools/CurveSim.java is the fuller version of it.
+            // A shape check, not a stability proof. It catches a knee typed in wrong.
+            //
+            // It used to be described here as the stability criterion, and it is not:
+            // Cold's rise from the pinned floor was 4 C wide, passed this, and hunted by
+            // four duty points at 17 C ambient. Nor is the slope the criterion -- Cool's
+            // 47-51 C rise is 4.5 duty/C and steady, while a 2.67 duty/C rise tried during
+            // the shelf work hunted. Three static rules have been proposed for this curve
+            // and all three passed something that hunts. The check that decides is dynamic:
+            // testCurvePresetsDoNotHunt drives the real controller against the plant, and
+            // tools/CurveSim.java is the fuller version of it.
             //
             // This bound was relaxed to 3 C while placing the shelf, because Normal's
             // settled reading (47.1 C) and Presentation's (50.8 C) leave only 3.7 C
@@ -3153,6 +3155,10 @@ public final class FanLabTest {
      */
     private static void testCurvePresetsDoNotHunt() {
         section("curve: no preset hunts against the plant, 14 to 34 C ambient");
+        // The only check that has ever caught a hunt in this curve. Three static rules --
+        // segment width, slope, and their product -- were each written down as the criterion
+        // and each passed a curve that hunts; the measurements are in docs/curve.md.
+        //
         // This mirrors tools/CurveSim.java's pole sweep on purpose, detail for detail,
         // because a first version of this test -- one pole at 120 s, no noise, started at
         // duty 40 -- PASSED the Cold preset that CurveSim had already caught hunting by four

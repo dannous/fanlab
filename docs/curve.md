@@ -125,11 +125,15 @@ the floor cannot end below 47. Presentation's settled reading starts at 50.8 °C
 covering all of it cannot start above 50.8. That leaves 3.7 °C for the rise between them —
 and **a rising segment needs 4 °C.**
 
-That last figure is not a rule of thumb. At 3 °C the rise is 2.7 duty points per °C, the
-0.8 °C deadband then spans 2.1 duty points, and no single duty can rest inside it. The 3 °C
-version was built and run through `tools/CurveSim.java` rather than argued about: it hunted
-by two duty points at 18 and 21 °C ambient, where every 4 °C version is steady at every
-thermal pole tried. So the 4 °C rise is kept and the shelf starts at 51.
+That last figure is not a rule of thumb, and it is not derived either — the 3 °C version was
+built and run through `tools/CurveSim.java` rather than argued about. It hunted by two duty
+points at 18 and 21 °C ambient, where every 4 °C version tried was steady at every thermal
+pole. So the 4 °C rise is kept and the shelf starts at 51.
+
+Do not read 4 °C as a threshold with a mechanism behind it. Cool's 47–51 °C rise is steeper
+still, at 4.5 duty/°C, and is perfectly steady; the discussion under
+[Stability](#stability--measured-not-argued) has the full set of measurements and why no
+static rule survives them.
 
 The cost is the coldest degree of the room's measured range: below about 23 °C the
 thermistor drops off the bottom of the shelf onto the rise and the duty comes down a point.
@@ -357,30 +361,53 @@ wrong is worth recording: a 3 °C-wide rise at **2.7 duty/°C** — nowhere near
 two duty points at 18 and 21 °C ambient when run through `CurveSim.java`.
 
 **And a correction to the correction.** "Every rising segment at least 4 °C wide" was then
-adopted as the design rule, and it is necessary but *not sufficient*: Cold's rise from the
-pinned floor was exactly 4 °C wide, passed every static check, and hunted by four duty points
-at a 17 °C room — because it climbed 23 duty points across those 4 °C, a slope of 5.75 duty/°C,
-against which the 0.8 °C deadband spans 4.6 duty points. Width bounds the slope only when the
-*rise* is bounded too. The rule that survives is the product:
+adopted as the design rule. It is not sufficient either: Cold's rise from the pinned floor was
+exactly 4 °C wide, passed every static check in the suite, and hunted by four duty points at a
+17 °C room.
 
-```
-slope (duty/°C)  ×  hysteresisC  <  1 duty point
-```
+The obvious next move was to bound the product, `slope × hysteresisC`, on the grounds that it
+is the width of the deadband measured in duty points. **That is also wrong**, and the shipping
+curves are the counter-example. Every measured case, on segments the machine can actually rest
+on:
 
-with the measured caveat above that the true boundary sits somewhere between 1.6 and 2.1 duty
-points rather than exactly at 1. Since no static rule has yet survived contact with this
-plant, the host test now drives every preset through the real `FanCurve` against it at every
-ambient from 14 to 34 °C, mirroring this file's own pole sweep — noise, 70/30 split and all,
-because a first version without those details passed the Cold curve that `CurveSim` had
-already caught.
+| slope | where | result |
+|---:|---|---|
+| 2.00 duty/°C | Quiet, 47–51 °C | steady |
+| **2.67 duty/°C** | a 3 °C rise, built and rejected | **hunts at 18 and 21 °C** |
+| 2.88 duty/°C | Cold, 43–51 °C | steady |
+| **4.50 duty/°C** | Cool, 47–51 °C | **steady** |
+| 5.75 duty/°C | Cold's old 47–51 °C | hunts at 17 °C |
 
-The mechanism is that hysteresis is applied to the input temperature, so a segment's
-deadband spans `slope × hysteresisC` duty points; when that exceeds one, no single duty can
-rest inside it. **But do not turn that into a threshold of 1.** Measured against the real
-controller: 2.0 duty/°C (1.6 points) is steady at every pole tried, and 2.7 duty/°C
-(2.1 points) hunts. The boundary is somewhere between, and nobody has located it — it is
-not a clean function of the slope alone, because the slew limiter and the 1 Hz sample are
-also in the loop. Treat `width ≥ 4 °C` as the rule to design to and `CurveSim` as the
+2.67 hunts and 4.50 does not. No monotone function of slope can produce that ordering, so
+**slope is not the determinant** — and neither is width, nor their product. Whether a curve
+hunts depends on where its equilibrium happens to fall relative to the integer duty boundaries
+and the deadband, which is a property of the whole closed loop at one ambient, not of a segment
+in isolation. Quiet's surviving wobble at 16 °C is the same phenomenon: 2.00 duty/°C is the
+gentlest reachable slope in the whole preset set and it is the one that wobbles, purely because
+that ambient puts the operating point between two integers.
+
+**So there is no static rule, and this document should stop proposing one.** Three have now been
+written down here and all three passed a curve that hunts. What is left is the dynamic check,
+and the host suite now runs it on every build: all four presets through the real `FanCurve`
+against the plant at every ambient from 14 to 34 °C, failing if any settles outside two duty
+points or moves more than one point per tick.
+
+Getting that test to mean anything took two attempts, which is worth recording because the
+first one looked perfectly reasonable. One pole at 120 s, no sensor noise, started at duty 40 —
+and it **passed the Cold curve `CurveSim` had already caught**. A hunt on a knife-edge is
+decided by exactly the details a tidy model leaves out, so the test now mirrors this file's own
+pole sweep in full: the 230 s fast pole, all four slow-pole values, the 70/30 amplitude split
+and 0.03 °C of seeded noise. It reproduces both known hunts, which is the only reason it can be
+trusted to catch a third.
+
+The `≥ 4 °C wide` assertion stays in the suite as a cheap sanity check on curve *shape* — it
+catches a knee typed in wrong — but it is documented there as necessary, not sufficient.
+
+The tempting mechanism is that hysteresis applies to the input temperature, so a segment's
+deadband spans `slope × hysteresisC` duty points and above one point no single duty can rest
+inside it. It is a good story and the measurements do not support it — see the table above,
+where 2.67 duty/°C hunts and 4.50 does not. Treat `width ≥ 4 °C` as a shape check and
+`CurveSim` as the
 authority, which is what caught the 3 °C attempt.
 
 The curve's own operating points sidestep the question by being flat or nearly so, which is
