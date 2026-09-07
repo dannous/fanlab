@@ -10,6 +10,9 @@ which is what says whether the point is stable and whether the fan will hunt.
 
     python solve_curve.py                       # the curve in CURVE.md
     python solve_curve.py --curve "v1,42,..."   # any encoded CurveConfig
+    python solve_curve.py --curve ... --drive Presentation=90,Normal=70,Eco=50,SuperEco=30
+                                                # the same on a machine with the LED drive
+                                                # raised: an inferred plant, see drive_scale
 """
 import sys
 
@@ -63,6 +66,92 @@ MODES = ["Presentation", "Normal", "Eco", "SuperEco"]
 # Curve profile index for each mode: LOW=0 (Eco and Super Eco), NORMAL=1, HIGH=2.
 PROFILE_OF = {"Presentation": 2, "Normal": 1, "Eco": 0, "SuperEco": 0}
 
+# The LED drive each column of PLANT was measured at, percent of the driver maximum.
+STOCK_DRIVE = {"Presentation": 76, "Normal": 55, "Eco": 40, "SuperEco": 20}
+
+# Per-mode adjustments to the measured plant, for asking what a curve does on a machine
+# that is not the one measured. Both default to "the table as it stands". Set them with
+# --drive, --scale or --rise-offset (see plant_args), never by editing here.
+#
+#   OFFSET  additive, degrees C, applied first. Its one real use is Normal, whose table
+#           column is a lower bound: the field log has Normal settling at 46.5 C on duty
+#           30 in a 24 C room, about 2.5 C above the table (docs/curve.md, "The floor
+#           stops at 47 C").
+#   SCALE   multiplicative, applied second, for a different LED drive level.
+SCALE = {m: 1.0 for m in MODES}
+OFFSET = {m: 0.0 for m in MODES}
+
+
+def drive_scale(mode, drive):
+    """How much hotter a mode runs, at every duty, when its LED drive is raised.
+
+    Fitted across all four modes at duty 40: rise ~= 1.60 + 0.342 x drive, which
+    reproduces Normal and Eco to about 1 K. The duty dependence is a single
+    multiplicative shape -- the four sensors agree on it within 3 % -- so a column for a
+    new drive level is the measured column times the ratio of the two fitted rises.
+    Presentation 76 -> 90 is x1.180, Normal 55 -> 70 x1.250, Eco 40 -> 50 x1.220,
+    Super Eco 20 -> 30 x1.378.
+
+    This is an INFERENCE from the fit, not a measurement: nothing has yet been held at a
+    raised drive. Anything solved with a scale other than 1.0 needs confirming with a
+    measured hold before it is relied on.
+    """
+    return (1.60 + 0.342 * drive) / (1.60 + 0.342 * STOCK_DRIVE[mode])
+
+
+def _mode_of(key):
+    for m in MODES:
+        if m.lower() == key.strip().lower():
+            return m
+    raise SystemExit("unknown mode %r; one of %s" % (key, ", ".join(MODES)))
+
+
+def plant_args(args):
+    """Consume the plant-adjustment flags shared by every solver here; return the rest.
+
+        --drive Presentation=90,Normal=70      LED drive per mode -> SCALE via drive_scale
+        --scale Presentation=1.18              a scale factor directly
+        --rise-offset Normal=2.5               degrees added to a column before scaling
+
+    Modes not named are left alone, so a flag can raise one mode and no other.
+    """
+    rest = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--drive", "--scale", "--rise-offset"):
+            for pair in args[i + 1].split(","):
+                key, val = pair.split("=")
+                mode = _mode_of(key)
+                if a == "--drive":
+                    SCALE[mode] = drive_scale(mode, float(val))
+                elif a == "--scale":
+                    SCALE[mode] = float(val)
+                else:
+                    OFFSET[mode] = float(val)
+            i += 2
+        else:
+            rest.append(a)
+            i += 1
+    return rest
+
+
+def plant_note():
+    """One line saying how the plant differs from the table, or '' if it does not."""
+    parts = []
+    for m in MODES:
+        bits = []
+        if OFFSET[m]:
+            bits.append("%+.1f C" % OFFSET[m])
+        if SCALE[m] != 1.0:
+            bits.append("x%.3f" % SCALE[m])
+        if bits:
+            parts.append("%s %s" % (m, " then ".join(bits)))
+    if not parts:
+        return ""
+    return ("plant adjusted (INFERRED from the drive fit, not measured): "
+            + "; ".join(parts))
+
 CURVE_MD = "v1,42,48,52,55,58,62,30,32,42,56,70,83,34,36,44,56,70,83,38,40,46,56,70,83,0.5,0.25,0.12,10,35,83"
 
 
@@ -103,10 +192,12 @@ def rise_at(mode, duty):
 
     Extrapolates below the lowest measured duty using the local slope there, which is
     the steepest part of the plant -- flagged by the caller, because the quiet end of
-    every curve rests on exactly this extrapolation.
+    every curve rests on exactly this extrapolation. OFFSET and SCALE are applied to
+    every point first, so a raised drive steepens the extrapolation along with the rest.
     """
     col = MODES.index(mode)
-    pts = sorted((d, v[col]) for d, v in PLANT.items() if v[col] is not None)
+    pts = sorted((d, (v[col] + OFFSET[mode]) * SCALE[mode])
+                 for d, v in PLANT.items() if v[col] is not None)
     if not pts:
         return None, True
     if duty >= pts[-1][0]:
@@ -169,7 +260,7 @@ def audible(duty):
 def main():
     curve = CURVE_MD
     ambients = [21, 24, 27, 30, 33]
-    args = sys.argv[1:]
+    args = plant_args(sys.argv[1:])
     i = 0
     while i < len(args):
         if args[i] == "--curve":
@@ -180,7 +271,10 @@ def main():
             i += 1
 
     cfg = parse_curve(curve)
-    print("curve: %s\n" % curve)
+    print("curve: %s" % curve)
+    if plant_note():
+        print(plant_note())
+    print()
     print("%-7s %-13s %6s %8s %6s %6s  %s"
           % ("ambient", "mode", "duty", "LED C", "gain", "extrap", "sounds"))
     for amb in ambients:

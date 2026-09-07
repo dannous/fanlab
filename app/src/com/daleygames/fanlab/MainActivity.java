@@ -212,7 +212,10 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "\n    Balanced    43–45 %    50.3 °C"
                         + "\n    Cool        48–50 %    49.2 °C"
                         + "\n    Cold        53–55 %    48.3 °C"
-                        + "\nAll four idle at 30 % in Normal, Eco and Super Eco."),
+                        + "\n    Bright      ~44 %      53.8 °C   with the LED drive raised "
+                        + "to 90 %; predicted, not yet measured"
+                        + "\nAll five idle at 30 % in Normal, Eco and Super Eco at stock "
+                        + "drive."),
                 Ui.wrap());
         ceilingRow = addRow(root, new StepRow(c, "Temperature ceiling — LINEAR mode")
                 .range((int) LinearConfig.MIN_CEILING_C, (int) LinearConfig.MAX_CEILING_C)
@@ -366,8 +369,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
         if (presetRow != null) {
             // The colour tracks the noise, not the state: green for the quietest, amber
-            // for the two whose operating point reaches the owner's "just acceptable" 50 in
-            // a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 % -- and dim for a
+            // for the ones whose operating point reaches the owner's "just acceptable" 50
+            // in a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 %, and Bright is
+            // predicted at 45.9 % in a 26 C room with the LED drive raised -- and dim for a
             // curve that is none of them and therefore has nothing to say about how loud it
             // is.
             //
@@ -378,7 +382,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
             presetRow.valueColour(mode != Mode.CURVE ? Ui.DIM
                     : preset == 0 ? Ui.GOOD
                     : preset == 1 ? Ui.ACCENT
-                    : (preset == 2 || preset == 3) ? Ui.WARN : Ui.DIM);
+                    : (preset >= 2 && preset < CurveConfig.PRESET_NAMES.length) ? Ui.WARN
+                    : Ui.DIM);
         }
         if (ceilingRow != null) {
             LinearConfig lin = Prefs.linear(this);
@@ -571,10 +576,11 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("preset".equals(row.tagName)) {
-                // Quiet -> Balanced -> Cool -> Cold -> Quiet. Custom is a state to arrive
-                // in, not one to cycle to: it has no curve of its own, so PRESET_CUSTOM
-                // being -1 lands the next press on Quiet, which is the only sensible place
-                // to go from a curve the four names do not describe.
+                // Quiet -> Balanced -> Cool -> Cold -> Bright -> Quiet, in PRESET_NAMES
+                // order. Custom is a state to arrive in, not one to cycle to: it has no
+                // curve of its own, so PRESET_CUSTOM being -1 lands the next press on
+                // Quiet, which is the only sensible place to go from a curve none of the
+                // names describe.
                 int next = Prefs.preset(this) + 1;
                 if (next >= CurveConfig.PRESET_NAMES.length) {
                     next = 0;

@@ -28,10 +28,11 @@ import android.util.Log;
  * {@code am broadcast} prints it on stdout and no logcat parsing is needed.
  *
  * <table>
- *   <tr><td>{@code --es preset <s>}</td><td>{@code quiet}, {@code balanced}, {@code cool}
- *       or {@code cold}, any case; {@code --ei preset 0|1|2|3} does the same. Applied
+ *   <tr><td>{@code --es preset <s>}</td><td>a name from {@link CurveConfig#PRESET_NAMES}
+ *       -- {@code quiet}, {@code balanced}, {@code cool}, {@code cold} or {@code bright} --
+ *       any case; {@code --ei preset <n>} takes the index into the same list. Applied
  *       <i>before</i> {@code curve}, so sending both lands on the hand-written curve and a
- *       curve that is none of the four stays possible</td></tr>
+ *       curve that is none of the presets stays possible</td></tr>
  *   <tr><td>{@code --es curve <s>}</td><td>a {@link CurveConfig#encode()} string</td></tr>
  *   <tr><td>{@code --ei mode <n>}</td><td>0 OFF, 1 MANUAL, 2 CURVE, 3 LINEAR</td></tr>
  *   <tr><td>{@code --ef ceiling <f>}</td><td>LINEAR's temperature ceiling in C, held to
@@ -130,7 +131,10 @@ public class ConfigReceiver extends BroadcastReceiver {
             int given = intent.getIntExtra("preset", CurveConfig.PRESET_CUSTOM);
             int i = name == null ? given : presetIndexFor(name);
             if (i < 0 || i >= CurveConfig.PRESET_NAMES.length) {
-                return "ERROR preset must be quiet, balanced, cool or cold, or 0..3, got "
+                // Spelled out from the list itself, so the error cannot go on naming four
+                // presets after a fifth has been added.
+                return "ERROR preset must be " + presetWords() + ", or 0.."
+                        + (CurveConfig.PRESET_NAMES.length - 1) + ", got "
                         + (name == null ? Integer.toString(given) : name.trim());
             }
             Prefs.setPreset(context, i);
@@ -297,6 +301,19 @@ public class ConfigReceiver extends BroadcastReceiver {
             }
         }
         return CurveConfig.PRESET_CUSTOM;
+    }
+
+    /** "quiet, balanced, cool, cold or bright" -- the accepted words, as the list has them. */
+    private static String presetWords() {
+        StringBuilder sb = new StringBuilder();
+        int n = CurveConfig.PRESET_NAMES.length;
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                sb.append(i == n - 1 ? " or " : ", ");
+            }
+            sb.append(CurveConfig.PRESET_NAMES[i].toLowerCase());
+        }
+        return sb.toString();
     }
 
     /** The state as the app now sees it — the point of the round trip. */
