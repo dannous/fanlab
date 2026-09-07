@@ -297,6 +297,14 @@ brightness that stops.
 Nothing it writes survives a reboot, and the kernel restores the stock levels itself on the
 next brightness-mode change.
 
+**Reading it back.** `cat /sys/class/dlpc343x/rgbcurrent` shows the levels the hardware
+actually has — but its field names lie. The kernel prints the four SPI channels in array
+order under the labels `duty_r, duty_g, duty_b, duty_b2`, while the real map is
+ch0 green, ch1 red, ch2 b2, ch3 blue. So **`duty_g` is the red channel** and the other
+three all carry the common level. With Bright on in Presentation it reads
+`duty_r=89 duty_g=83 duty_b=89 duty_b2=89` — 90 and 84, each one low, which is how the
+handler reports. Any field above 100 is a failed SPI read, not a level.
+
 **What is not known.** Whether 90 looks meaningfully brighter, and whether the white point
 drifts cool as the red channel droops faster than green and blue. Neither is a temperature
 question and neither can be answered from a log — put up a white field and look.

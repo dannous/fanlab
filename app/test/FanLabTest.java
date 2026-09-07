@@ -2703,23 +2703,34 @@ public final class FanLabTest {
     private static void testLedDriveReadback() {
         section("LED drive: reading back, the off-by-one and the 238/241 glitch");
 
+        // Exactly what the projector printed on 2026-09-07 with 90 written to rgbcurrent
+        // and 84 to redcurrent. duty_g is the red channel: the kernel prints ch0..ch3
+        // under the labels r/g/b/b2 while the map is green/red/b2/blue.
         int[] rb = LedDrive.parseReadback("red_current=13 green_current=13 blue_current=13 "
-                + "duty_r=83 duty_g=89 duty_b=89 duty_b2=89");
+                + "duty_r=89 duty_g=83 duty_b=89 duty_b2=89");
         check(rb != null && rb[0] == 83 && rb[1] == 89,
-                "duty_r is channel 1 and duty_b the other three");
-        check(LedDrive.parseReadback("duty_r=100 duty_b=100") != null,
+                "duty_g carries red and the other three carry the common level");
+        check(LedDrive.parseReadback("duty_r=100 duty_g=100") != null,
                 "100 is a legal reading");
 
-        check(LedDrive.parseReadback("duty_r=238 duty_b=89") == null,
-                "238 is a failed SPI read printed as an unsigned byte, not a drive level");
-        check(LedDrive.parseReadback("duty_r=83 duty_b=241") == null,
-                "and so is 241, in either field");
-        check(LedDrive.parseReadback("duty_r=101 duty_b=89") == null,
-                "anything above 100 makes the whole reading unusable");
-        check(LedDrive.parseReadback("duty_b=89") == null, "a missing duty_r is no reading");
-        check(LedDrive.parseReadback("duty_r=83") == null, "nor is a missing duty_b");
-        check(LedDrive.parseReadback("duty_r= duty_b=89") == null, "nor is an empty field");
-        check(LedDrive.parseReadback("duty_r=x duty_b=89") == null, "nor is junk");
+        // Three fields carry the common level, so one glitching is not a lost reading.
+        rb = LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=89 duty_b2=89");
+        check(rb != null && rb[0] == 83 && rb[1] == 89,
+                "a glitch in one common field is covered by the other two");
+        rb = LedDrive.parseReadback("duty_r=241 duty_g=83 duty_b=238 duty_b2=89");
+        check(rb != null && rb[1] == 89, "two glitches still leave a usable reading");
+        check(LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=241 duty_b2=238") == null,
+                "but all three glitching is 'could not tell', not a mismatch");
+
+        check(LedDrive.parseReadback("duty_r=89 duty_g=241") == null,
+                "red glitching is a lost reading -- it is printed once and has no stand-in");
+        check(LedDrive.parseReadback("duty_r=89 duty_g=101") == null,
+                "anything above 100 is the failed-SPI byte, not a drive level");
+        check(LedDrive.parseReadback("duty_r=89") == null, "a missing duty_g is no reading");
+        check(LedDrive.parseReadback("duty_g=83") == null,
+                "and so is a red with nothing to compare the common level against");
+        check(LedDrive.parseReadback("duty_r=89 duty_g=") == null, "nor is an empty field");
+        check(LedDrive.parseReadback("duty_r=89 duty_g=x") == null, "nor is junk");
         check(LedDrive.parseReadback(null) == null, "nor is nothing at all");
         check(LedDrive.parseReadback("") == null, "nor is an empty node");
 
@@ -2778,23 +2789,23 @@ public final class FanLabTest {
 
             // ---- steady state: a read-back that agrees writes nothing ----
             t += 1000L;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=83 duty_b=89", t);
+            p = d.decide(bright, 3, true, 45.0, "duty_r=89 duty_g=83", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "a read-back one below what was written is agreement, not a mismatch");
 
             // ---- the glitch is not a mismatch ----
             t += 1000L;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=238 duty_b=89", t);
+            p = d.decide(bright, 3, true, 45.0, "duty_r=238 duty_g=241 duty_b=238", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "and the 238 glitch is 'could not tell', which also writes nothing");
 
             // ---- a genuine mismatch rewrites, but not before the rate limit ----
             t += 1000L;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=71 duty_b=76", t);
+            p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "the stock table reappearing inside REAPPLY_EVERY_MS waits its turn");
             t += LedDrive.REAPPLY_EVERY_MS;
-            p = d.decide(bright, 3, true, 45.0, "duty_r=71 duty_b=76", t);
+            p = d.decide(bright, 3, true, 45.0, "duty_r=76 duty_g=71", t);
             eq(p.action, LedDrive.Plan.APPLY, "and is put back once the limit has passed");
             eq(p.other, 90, "at the same level");
             check(d.perform(p), "and the rewrite lands");

@@ -280,9 +280,33 @@ public final class LedDrive {
     // ------------------------------------------------------------------ read-back
 
     /**
-     * Pull {@code duty_r} and {@code duty_b} out of the {@code rgbcurrent} show text.
+     * Pull the red and the common level out of the {@code rgbcurrent} show text.
      *
-     * @return {@code {red, other}}, or null if either field is missing, unparseable, or
+     * <h3>The field names in that text do not mean what they say</h3>
+     * The kernel prints the four SPI channels in array order under the labels
+     * {@code duty_r, duty_g, duty_b, duty_b2}, but the channel map recovered from the
+     * driver is {@code ch0 = green, ch1 = red, ch2 = b2, ch3 = blue}. The labels are the
+     * array index dressed up as a colour, so they are off by that map:
+     *
+     * <pre>
+     *   printed as   is really    carries
+     *   duty_r       ch0 green    the common level
+     *   duty_g       ch1 red      THE RED LEVEL
+     *   duty_b       ch2 b2       the common level
+     *   duty_b2      ch3 blue     the common level
+     * </pre>
+     *
+     * Confirmed by writing known values on hardware on 2026-09-07: with 90 written to
+     * {@code rgbcurrent} and 84 to {@code redcurrent}, Presentation reads back
+     * {@code duty_r=89 duty_g=83 duty_b=89 duty_b2=89}. Reading {@code duty_r} as red is
+     * what the first version of this method did, and it made every comparison fail --
+     * 285 pointless rewrites in one evening's log, and a mismatch check that could never
+     * have caught a real mismatch because it was always reporting one.
+     *
+     * Three fields carry the common level, so any one of them answers and a glitch in one
+     * costs nothing. Red is printed once and has no stand-in.
+     *
+     * @return {@code {red, other}}, or null if either value is missing, unparseable, or
      *         above 100. Above 100 is the handler's failed-SPI glitch -- {@code 0x8080}
      *         read back, {@code percent = -18} computed, printed as an unsigned byte, which
      *         is the 238 and 241 seen in the field -- and it must read as "could not tell"
@@ -292,12 +316,23 @@ public final class LedDrive {
         if (text == null) {
             return null;
         }
-        int r = field(text, "duty_r=");
-        int b = field(text, "duty_b=");
-        if (r < 0 || b < 0 || r > 100 || b > 100) {
+        int red = field(text, "duty_g=");
+        if (red < 0 || red > 100) {
             return null;
         }
-        return new int[]{r, b};
+        int other = -1;
+        String[] commonFields = {"duty_r=", "duty_b=", "duty_b2="};
+        for (int i = 0; i < commonFields.length; i++) {
+            int v = field(text, commonFields[i]);
+            if (v >= 0 && v <= 100) {
+                other = v;
+                break;
+            }
+        }
+        if (other < 0) {
+            return null;
+        }
+        return new int[]{red, other};
     }
 
     private static int field(String text, String key) {
