@@ -81,6 +81,19 @@ public class FanService extends Service {
      */
     private static final long STAMP_EVERY_MS = 60000L;
 
+    /**
+     * How often the CAIC state is read back from the DLPC, at most. Each read-back is a
+     * picoreg write plus a {@code logcat} exec on a thread of its own, so one a minute is
+     * the budget; the write path is edge-triggered and does not wait for it.
+     */
+    private static final long CAIC_READ_EVERY_MS = 60000L;
+    /** A read-back is brought forward to this long after a write, so the screen answers soon. */
+    private static final long CAIC_READ_AFTER_WRITE_MS = 3000L;
+    /** The bound on one read-back's round trip. On its own thread, so this stalls nothing. */
+    private static final long CAIC_READ_TIMEOUT_MS = 4000L;
+    /** After a failed CAIC write, how long before the tick tries again. */
+    private static final long CAIC_RETRY_AFTER_FAIL_MS = 60000L;
+
     // ---- state the UI reads; single process, so plain volatiles are enough ----
     public static volatile FanService instance;
     public static volatile Sample lastSample;
@@ -103,6 +116,34 @@ public class FanService extends Service {
     public static volatile String[] sweepFiles = new String[0];
     /** The most recent DLPC temperature attempt, so the UI can say so loudly. */
     public static volatile PicoReg.Reading lastDlpc;
+
+    // ---- CAIC ----
+    /**
+     * What this process last wrote to the DLPC's LED output control method (0x50):
+     * -1 never, 0 off, 1 on. The hand-back paths write off only when this is 1, so a
+     * machine this app never touched is never written to on the way out.
+     */
+    public static volatile int caicWritten = -1;
+    /** The last CAIC write failed, and the tick is backing off before retrying. */
+    public static volatile boolean caicWriteFailed;
+    /**
+     * The most recent 0x51 read-back, or null if none has run. Only the system variant
+     * runs one, because only it can read the kernel log the answer lands in; on the plain
+     * build this stays null and the screen says "unverified", which is the truth.
+     */
+    public static volatile PicoReg.CaicReading caicReadback;
+    /** rgblevel the previous tick saw, so a brightness-mode change can re-assert the write. */
+    private int lastRgbSeen = -1;
+    /** Monotonic time of the last read-back attempt; 0 means never. */
+    private long caicReadMonoMs;
+    /** Monotonic time of the last failed write; 0 means never. */
+    private long caicFailMonoMs;
+    /** A read-back is in flight, so a slow one is never stacked on another. */
+    private volatile boolean caicReading;
+    /** The previous read-back's summary, so the log carries the change and not the minute. */
+    private volatile String lastCaicReadLine = "";
+    /** Which build this is. Read once; it decides whether a read-back can ever succeed. */
+    private boolean systemVariant;
 
     private HandlerThread thread;
     private Handler handler;
@@ -263,6 +304,17 @@ public class FanService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        // A fresh instance has written nothing. The previous one, if there was one in this
+        // process, handed back in its onDestroy; a leftover from a process that died is
+        // what Prefs.caicDriven is for, and the first tick checks it.
+        caicWritten = -1;
+        caicWriteFailed = false;
+        caicReadback = null;
+        try {
+            systemVariant = android.os.Process.myUid() == android.os.Process.SYSTEM_UID;
+        } catch (Throwable ignored) {
+            systemVariant = false;
+        }
         Sysfs.sink = new Sysfs.Sink() {
             @Override
             public void note(String msg, Throwable t) {
@@ -414,6 +466,14 @@ public class FanService extends Service {
         } catch (Throwable t) {
             Log.e(TAG, "onDestroy failsafe", t);
         }
+        // The display controller too: if this process turned CAIC on, it turns it off on
+        // the way out, and a process that never wrote 0x50 does not start now. The setting
+        // survives, so a restart with it on writes on again.
+        try {
+            handBackCaic("service_stop");
+        } catch (Throwable t) {
+            Log.e(TAG, "onDestroy caic", t);
+        }
         // Close out a session that was still running, so the files on the stick describe
         // what happened rather than stopping mid-sentence.
         try {
@@ -506,6 +566,12 @@ public class FanService extends Service {
             lastWritten = ok ? FanIo.FAIL_SAFE_DUTY : -1;
             curve.reset();
             linear.reset();
+            // RELEASE means everything this app drives, and the CAIC write is a thing it
+            // drives. The setting is cleared as well as the register, for the same reason
+            // the mode is set OFF above: a tick racing us must reach the same conclusion,
+            // not put it back a second later.
+            Prefs.setCaic(this, false);
+            handBackCaic("release");
             note("release->" + FanIo.FAIL_SAFE_DUTY + (ok ? "" : " FAILED"));
             statusLine = ok
                     ? "released: fan handed back at " + FanIo.FAIL_SAFE_DUTY
@@ -819,7 +885,8 @@ public class FanService extends Service {
 
         // ---------------- the light engine, and ambient ----------------
         int engineState = s.ledStatus < 0 ? lastEngineState : (s.ledStatus == 0 ? 0 : 1);
-        if (engineState == 1 && lastEngineState != 1) {
+        boolean engineOnEdge = engineState == 1 && lastEngineState != 1;
+        if (engineOnEdge) {
             // A power-on. Record the reading and the evidence needed to grade it, rather
             // than gating on a threshold: the thermistor is still 4.7 C above its resting
             // value five hours in, so an hour-long gate would pass a reading several
@@ -852,6 +919,12 @@ public class FanService extends Service {
                 stampEngineOn(now, mono, engineOnBootMs);
             }
         }
+
+        // ---------------- CAIC ----------------
+        // Edge-triggered, never per tick: the register is written when the setting
+        // changes and re-asserted where the DLPC is known or suspected to be re-programmed.
+        // The read-back is a minute apart at most and runs on its own thread.
+        syncCaic(s, interactive, resumeEdge, engineOnEdge, note, mono);
 
         // A read-back that is not what we last wrote is another writer on the node: the
         // stock ladder, or the kernel reimposing 55 % after a stall. It is a free
@@ -1258,6 +1331,200 @@ public class FanService extends Service {
     }
 
     /** Persist the stamp, off the control loop. See {@link #runOffLoop}. */
+    // ---- CAIC ----
+
+    /**
+     * Keep the DLPC's LED output control method coupled to the CAIC setting.
+     *
+     * <h3>When it writes</h3>
+     * <ul>
+     *   <li>On the edge where the setting turns on, or on the first tick of a service
+     *       that starts with it on: {@code w 50 1 1}.</li>
+     *   <li>On the edge where it turns off, if this process ever wrote on: {@code w 50 1 0}.</li>
+     *   <li>Re-asserted on -- one write, not a loop -- when {@code rgblevel} changes,
+     *       because the kernel re-programs the DLPC LED registers on a brightness-mode
+     *       change; after a resume edge and a light-engine power-on, because the DLPC may
+     *       be re-initialised across a display-off and a power cycle certainly resets it.
+     *       Whether any of those actually clears 0x50 is not known; a write that was not
+     *       needed costs one I2C transaction, and a write that was needed and not made
+     *       costs the experiment.</li>
+     *   <li>Once, on the first tick, if a previous process turned CAIC on and died before
+     *       turning it off and the setting is now off: see {@link Prefs#caicDriven}.</li>
+     * </ul>
+     * Never while the display is off -- the DLPC is not reliably up, and the resume edge
+     * covers it -- and never after the stop latch. A failed write backs off for a minute
+     * rather than retrying every tick, because a note per tick is a row per tick.
+     *
+     * <h3>What it does not do</h3>
+     * It does not infer the register's state from its own writes. What the DLPC is
+     * actually doing is {@link #caicReadback}'s business, and that is null until a read
+     * has genuinely returned a byte.
+     */
+    private void syncCaic(Sample s, boolean interactive, boolean resumeEdge,
+                          boolean engineOnEdge, StringBuilder note, long mono) {
+        boolean wanted = Prefs.caic(this);
+        boolean rgbEdge = lastRgbSeen >= 0 && s.rgblevel >= 0 && s.rgblevel != lastRgbSeen;
+        if (s.rgblevel >= 0) {
+            lastRgbSeen = s.rgblevel;
+        }
+        if (stopped || !interactive) {
+            return;
+        }
+        if (caicFailMonoMs != 0L && mono - caicFailMonoMs < CAIC_RETRY_AFTER_FAIL_MS) {
+            return;
+        }
+        if (wanted) {
+            String why = caicWritten != 1 ? (caicWritten < 0 ? "start" : "setting")
+                    : rgbEdge ? "rgblevel"
+                    : resumeEdge ? "resume"
+                    : engineOnEdge ? "poweron"
+                    : null;
+            if (why != null) {
+                writeCaic(true, why, note, mono);
+            }
+        } else if (caicWritten == 1) {
+            writeCaic(false, "setting", note, mono);
+        } else if (ticks == 1 && Prefs.caicDriven(this)) {
+            // A previous process wrote on and never wrote off. Leave the machine as the
+            // owner now wants it, once, and clear the memory.
+            writeCaic(false, "leftover", note, mono);
+        }
+
+        // ---- the read-back, system variant only, at most once a minute ----
+        // Gated on the experiment being in play: a build that has never written 0x50 and
+        // is not asked to has no reason to send the DLPC a command a minute.
+        if (systemVariant && (wanted || caicWritten >= 0) && !caicReading
+                && (caicReadMonoMs == 0L || mono - caicReadMonoMs >= CAIC_READ_EVERY_MS)) {
+            caicReadMonoMs = mono;
+            readCaicAsync();
+        }
+    }
+
+    private void writeCaic(boolean on, String why, StringBuilder note, long mono) {
+        boolean ok = PicoReg.writeLedOutputControl(on);
+        if (ok) {
+            caicWritten = on ? 1 : 0;
+            caicWriteFailed = false;
+            caicFailMonoMs = 0L;
+            append(note, "caic<-" + (on ? "on" : "off") + ":" + why);
+            // Bring the next read-back forward, so the screen can say what the DLPC did
+            // with the write within seconds rather than at the next minute boundary.
+            caicReadMonoMs = mono - CAIC_READ_EVERY_MS + CAIC_READ_AFTER_WRITE_MS;
+            if (Prefs.caicDriven(this) != on) {
+                persistCaicDriven(on);
+            }
+        } else {
+            caicWriteFailed = true;
+            caicFailMonoMs = mono;
+            append(note, "caic WRITE FAILED:" + why);
+            statusLine = "cannot write " + PicoReg.NODE
+                    + " - CAIC not applied; check the node exists and is 0777";
+        }
+    }
+
+    /**
+     * Write CAIC off if this process ever wrote it on. Called from the hand-back paths,
+     * on whichever thread they run on; the register is the DLPC's, not the fan's, so it
+     * is written directly rather than routed through the tick.
+     */
+    private void handBackCaic(String why) {
+        if (caicWritten != 1) {
+            return;
+        }
+        if (PicoReg.writeLedOutputControl(false)) {
+            caicWritten = 0;
+            note("caic<-off:" + why);
+            persistCaicDriven(false);
+        } else {
+            note("caic hand-back WRITE FAILED:" + why);
+            Log.w(TAG, "CAIC hand-back write failed (" + why + "); a power cycle clears it");
+        }
+    }
+
+    private void persistCaicDriven(final boolean v) {
+        runOffLoop(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Prefs.setCaicDriven(FanService.this, v);
+                } catch (Throwable t) {
+                    Log.w(TAG, "persistCaicDriven", t);
+                }
+            }
+        });
+    }
+
+    /**
+     * Ask the DLPC what it is doing, on a thread that is neither the control loop nor
+     * the housekeeping looper -- a hung {@code logcat} must be able to take nothing down
+     * with it. Publishes to {@link #caicReadback} and files a note only when the answer
+     * changes, plus the max-available-power word while CAIC reads on, since that number
+     * moving with the content is the one piece of evidence the experiment can produce
+     * without a light meter.
+     */
+    private void readCaicAsync() {
+        caicReading = true;
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        PicoReg.CaicReading r = PicoReg.readLedOutputControl(CAIC_READ_TIMEOUT_MS);
+                        caicReadback = r;
+                        String line = "caic_read=" + r.state
+                                + (r.known() ? "(" + r.source + ")" : "");
+                        if (!line.equals(lastCaicReadLine)) {
+                            lastCaicReadLine = line;
+                            // CsvLogger.q quotes the note column, so the reason's commas
+                            // and quotes are safe to pass through as they are.
+                            note(r.known() ? line : line + " (" + r.reason + ")");
+                        }
+                        if (PicoReg.CAIC_ON.equals(r.state)) {
+                            PicoReg.CaicPower p = PicoReg.readCaicMaxPower(CAIC_READ_TIMEOUT_MS);
+                            if (p.rawWord >= 0) {
+                                note("caic_maxpower=" + p.rawHex()
+                                        + "(" + Sample.fmt1(p.watts) + "W?)");
+                            }
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "caic read", t);
+                    } finally {
+                        caicReading = false;
+                    }
+                }
+            }, "fanlab-caic-read");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable t) {
+            caicReading = false;
+            Log.w(TAG, "readCaicAsync", t);
+        }
+    }
+
+    /**
+     * One line for the screen and the broadcast reply: the setting, whether this process
+     * has written it, and what the DLPC said if anything has asked it.
+     *
+     * "unverified" is the plain build's permanent answer and the system build's answer
+     * until the first read-back lands. It is not "on"; nothing here says on until a byte
+     * has said so.
+     */
+    public static String caicSummary(boolean wanted) {
+        PicoReg.CaicReading rb = caicReadback;
+        boolean known = rb != null && rb.known();
+        if (!wanted) {
+            // Worth saying when the DLPC disagrees with the setting: the setting was turned
+            // off but the register still reads on, which means the off write has not
+            // happened or did not take.
+            return known && PicoReg.CAIC_ON.equals(rb.state) && caicWritten == 1
+                    ? "off (read back: still ON)" : "off";
+        }
+        if (caicWritten == 1) {
+            return known ? "on (read back: " + rb.state + ")" : "on (unverified)";
+        }
+        return caicWriteFailed ? "on (WRITE FAILED)" : "on (not written yet)";
+    }
+
     private void stampEngineOn(final long wallMs, final long monoMs, final long bootMs) {
         runOffLoop(new Runnable() {
             @Override

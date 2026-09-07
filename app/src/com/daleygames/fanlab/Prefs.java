@@ -26,6 +26,8 @@ public final class Prefs {
     private static final String K_ENGINE_ON_WALL = "engine_on_wall_ms";
     private static final String K_ENGINE_ON_MONO = "engine_on_mono_ms";
     private static final String K_ENGINE_ON_BOOT = "engine_on_boot_ms";
+    private static final String K_CAIC = "caic";
+    private static final String K_CAIC_DRIVEN = "caic_driven";
 
     private Prefs() {
     }
@@ -253,6 +255,44 @@ public final class Prefs {
                 .putLong(K_ENGINE_ON_MONO, monoMs)
                 .putLong(K_ENGINE_ON_BOOT, bootWallMs)
                 .apply();
+    }
+
+    // ---- CAIC ----
+
+    /**
+     * Ask the display controller to run Content Adaptive Illumination Control.
+     *
+     * Default false, which is what the factory {@code picosetting} ships. This is an
+     * experiment with a one-write undo, not a tuning: the board has no TI LED driver for
+     * CAIC to lower current through, so whether it saves anything, brightens the image, or
+     * does nothing at all is unknown until someone looks. See {@link PicoReg} for the
+     * account. A power cycle turns it off whatever this says, so the service re-asserts
+     * it on the edges where the DLPC is known to be re-programmed.
+     */
+    public static boolean caic(Context c) {
+        return get(c).getBoolean(K_CAIC, false);
+    }
+
+    public static void setCaic(Context c, boolean v) {
+        get(c).edit().putBoolean(K_CAIC, v).apply();
+    }
+
+    /**
+     * True from the moment this app writes CAIC on until it writes it off again.
+     *
+     * A process that dies with CAIC on cannot hand it back, and if the setting is then
+     * turned off while nothing is running, the next service start would see "off, never
+     * wrote anything" and leave the DLPC exactly as the dead process left it. This is the
+     * memory that closes that gap: a start that finds it set with the setting off writes
+     * the off command once, and clears it. Written off the control loop like the
+     * engine-on stamp, and rarely -- twice per experiment.
+     */
+    public static boolean caicDriven(Context c) {
+        return get(c).getBoolean(K_CAIC_DRIVEN, false);
+    }
+
+    public static void setCaicDriven(Context c, boolean v) {
+        get(c).edit().putBoolean(K_CAIC_DRIVEN, v).apply();
     }
 
     // ---- presets ----

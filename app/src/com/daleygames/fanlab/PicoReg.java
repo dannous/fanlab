@@ -47,6 +47,11 @@ import java.io.InputStreamReader;
  * tenths, or the sign bit sits elsewhere, the trace can be reinterpreted offline without
  * re-running the sweep. Every decoded value is flagged {@code provisional} for that reason.
  *
+ * <h3>Also here: the CAIC toggle</h3>
+ * The same node carries the one write this app makes to the display controller, the LED
+ * output control method (0x50), and its read-back (0x51). It is the same channel with
+ * the same write-only problem, so it lives in the same class; see the CAIC section.
+ *
  * Pure Java (Sysfs + java.lang only), so the headless test drives it against a stub tree.
  */
 public final class PicoReg {
@@ -56,6 +61,23 @@ public final class PicoReg {
     /** DLPU078 SS 3.5.7, Read System Temperature. */
     public static final int OPCODE_SYSTEM_TEMPERATURE = 0xD6;
     public static final int SYSTEM_TEMPERATURE_LEN = 2;
+
+    /**
+     * DLPU078 Write / Read LED Output Control Method: one byte, {@code 0x00} manual RGB LED
+     * currents (CAIC off, which is how the factory {@code picosetting} templates ship,
+     * every one of them {@code caic=0x00}) and {@code 0x01} CAIC on. See
+     * {@link #writeLedOutputControl} for what CAIC is and what is not known about it here.
+     */
+    public static final int OPCODE_LED_OUTPUT_CONTROL_WRITE = 0x50;
+    public static final int OPCODE_LED_OUTPUT_CONTROL_READ = 0x51;
+    public static final int LED_OUTPUT_CONTROL_LEN = 1;
+
+    /**
+     * DLPU078 Read CAIC LED Max Available Power: two bytes, little endian, watts x 100.
+     * Only meaningful while CAIC is on; recorded raw, for the log, and never acted on.
+     */
+    public static final int OPCODE_CAIC_MAX_POWER = 0x57;
+    public static final int CAIC_MAX_POWER_LEN = 2;
 
     /** Nodes that do have a show() handler, so the LED drive can be recorded per step. */
     public static final String[] CURRENT_NODES = {
@@ -107,7 +129,7 @@ public final class PicoReg {
         return "r " + Integer.toHexString(opcode & 0xFF) + " " + Integer.toHexString(len & 0xFF);
     }
 
-    /** The command string for a write, e.g. {@code w 52 1 7}. Not used by the sweep. */
+    /** The command string for a write, e.g. {@code w 52 1 7}. The CAIC toggle is the one writer. */
     public static String writeCommand(int opcode, int[] payload) {
         StringBuilder sb = new StringBuilder();
         sb.append("w ").append(Integer.toHexString(opcode & 0xFF)).append(' ');
@@ -333,7 +355,7 @@ public final class PicoReg {
             // 2. the kernel log. The driver prints "read 0x%02x data:" there. Reading it
             //    needs READ_LOGS, which an ordinary app does not have.
             if (logRouteWorthTrying) {
-                int[] bytes = fromKernelLog();
+                int[] bytes = fromKernelLog(OPCODE_SYSTEM_TEMPERATURE, SYSTEM_TEMPERATURE_LEN);
                 if (bytes != null) {
                     double c = decodeSystemTemperature(bytes);
                     r.rawWord = word(bytes);
@@ -398,8 +420,17 @@ public final class PicoReg {
         }
     }
 
-    /** Scan the tail of the kernel log for the driver's read response. */
-    private static int[] fromKernelLog() {
+    /**
+     * Scan the tail of the kernel log for the driver's response to a read of
+     * {@code opcode}, and return the newest one.
+     *
+     * Newest, because the log is a history: a response to the same opcode from a minute
+     * ago is still in it, and this cannot tell that line from the one the read just made.
+     * Callers that poll therefore learn what the DLPC last answered, which may lag one
+     * poll behind a change; they do not learn nothing, and they never learn a fiction,
+     * because the line is the driver's own and carries the opcode.
+     */
+    private static int[] fromKernelLog(int opcode, int want) {
         String[][] attempts = {
                 {"logcat", "-d", "-b", "kernel", "-t", "300"},
                 {"dmesg"},
@@ -414,8 +445,7 @@ public final class PicoReg {
                 int[] newest = null;
                 int guard = 0;
                 while ((line = in.readLine()) != null && guard++ < 2000) {
-                    int[] bytes = parseKernelLogLine(line, OPCODE_SYSTEM_TEMPERATURE,
-                            SYSTEM_TEMPERATURE_LEN);
+                    int[] bytes = parseKernelLogLine(line, opcode, want);
                     if (bytes != null) {
                         newest = bytes;
                     }
@@ -443,6 +473,301 @@ public final class PicoReg {
             }
         }
         return null;
+    }
+
+    // ------------------------------------------------------------------ CAIC
+
+    /*
+     * CAIC is Content Adaptive Illumination Control, the DLPC3436's IntelliBright feature.
+     * Per frame it lowers the LED current and raises the DMD duty cycle by the same factor
+     * on content that does not need full output, so the displayed white point holds while
+     * the LEDs draw less. TI's datasheet example is 27 % LED power saved at constant
+     * brightness. Stock has it OFF: caic=0x00 in every template of the factory picosetting
+     * blob, and no Java caller of Pico.setProjectorCaic anywhere in the firmware.
+     *
+     * What is NOT known, and why this is an experiment rather than a feature:
+     *
+     *   This board has no TI DLPA LED driver. The LED currents are set by the kernel over
+     *   SPI to two MAX20096 drivers, and the DLPC's own RGB current registers hold a
+     *   nominal 13. CAIC's power saving comes from the DLPC lowering LED current itself,
+     *   through a DLPA it does not have here. So it may be unable to lower real LED current
+     *   at all, in which case it does only the duty-cycle half -- a brighter image at the
+     *   same LED power -- or nothing, or shows artefacts if its LUTs were never calibrated
+     *   for this engine. Nothing in this class claims a power saving, and nothing in the
+     *   documentation should either.
+     *
+     * The write is runtime only: "w 50 1 1" turns it on, "w 50 1 0" turns it off, and a
+     * power cycle turns it off regardless because the DLPC re-loads picosetting at boot.
+     * The picosetting partition (/dev/block/mmcblk2p21) is deliberately never touched --
+     * that would persist across reboots, and the point of a one-write undo is that it is
+     * one write.
+     *
+     * Reading it back has the same problem D6h has: picoreg's show() is NULL on this
+     * firmware, so the response only appears in the kernel log, which needs READ_LOGS,
+     * which only the system variant holds. The reading below is therefore tri-state --
+     * on, off, or unknown with a reason -- and "unknown" is the answer whenever the bytes
+     * did not actually arrive. It is never inferred from what was written.
+     */
+
+    public static final String CAIC_ON = "on";
+    public static final String CAIC_OFF = "off";
+    public static final String CAIC_UNKNOWN = "unknown";
+
+    /** One attempt at reading the LED output control method back (0x51). */
+    public static final class CaicReading {
+        /** {@link #CAIC_ON}, {@link #CAIC_OFF} or {@link #CAIC_UNKNOWN}. Never anything else. */
+        public String state = CAIC_UNKNOWN;
+        /** Where the byte came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** The raw byte as returned, or -1 if none was obtained. */
+        public int rawByte = -1;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        public boolean known() {
+            return CAIC_ON.equals(state) || CAIC_OFF.equals(state);
+        }
+
+        public String rawHex() {
+            return rawByte < 0 ? null : "0x" + pad2(Integer.toHexString(rawByte & 0xFF));
+        }
+    }
+
+    /** The command string for 0x50: {@code w 50 1 1} to turn CAIC on, {@code w 50 1 0} off. */
+    public static String ledOutputControlCommand(boolean caic) {
+        return writeCommand(OPCODE_LED_OUTPUT_CONTROL_WRITE, new int[]{caic ? 1 : 0});
+    }
+
+    /**
+     * Write the LED output control method: CAIC on or off.
+     *
+     * @return whatever {@link Sysfs#write} said. True means the bytes reached the node
+     *         and the stream closed cleanly. It does <b>not</b> mean the DLPC took the
+     *         value; only {@link #readLedOutputControl} can say that, and only where the
+     *         kernel log is readable.
+     */
+    public static boolean writeLedOutputControl(boolean caic) {
+        if (!Sysfs.exists(NODE)) {
+            return false;
+        }
+        return Sysfs.write(NODE, ledOutputControlCommand(caic));
+    }
+
+    /**
+     * Decode a 0x51 response byte. {@code 0x00} is off, {@code 0x01} is on, and anything
+     * else -- including no byte at all -- is unknown, because DLPU078 defines only those two
+     * values and a third is not a state, it is a wrong answer.
+     */
+    public static String decodeLedOutputControl(int[] bytes) {
+        if (bytes == null || bytes.length < 1) {
+            return CAIC_UNKNOWN;
+        }
+        int b = bytes[0] & 0xFF;
+        return b == 0x00 ? CAIC_OFF : b == 0x01 ? CAIC_ON : CAIC_UNKNOWN;
+    }
+
+    /**
+     * Turn a raw 0x51 response into a {@link CaicReading}. Split out from the I/O for the
+     * same reason {@link #fromResponseText} is: so the host test can drive every outcome.
+     */
+    public static CaicReading caicFromResponseText(String text, String source) {
+        CaicReading r = new CaicReading();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, LED_OUTPUT_CONTROL_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + LED_OUTPUT_CONTROL_LEN
+                    + " hex byte; treating it as unknown rather than guessing";
+            return r;
+        }
+        return caicFromBytes(bytes, source);
+    }
+
+    private static CaicReading caicFromBytes(int[] bytes, String source) {
+        CaicReading r = new CaicReading();
+        r.rawByte = bytes[0] & 0xFF;
+        String state = decodeLedOutputControl(bytes);
+        if (CAIC_UNKNOWN.equals(state)) {
+            r.reason = "the response was " + r.rawHex() + ", which is neither 0x00 (manual) "
+                    + "nor 0x01 (CAIC), so it is not a valid 0x51 answer. Recorded as unknown.";
+            return r;
+        }
+        r.state = state;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /**
+     * Ask the DLPC which LED output control method it is using right now. Never throws,
+     * never blocks on anything unbounded, and never answers on or off without the byte
+     * that says so.
+     *
+     * The kernel-log route is tried regardless of the D6h latch. That latch records that
+     * the log yielded nothing for a temperature read; whether it yields anything for this
+     * opcode is a separate question, and the caller ({@code FanService}) already restricts
+     * this to the variant that can read the log at all.
+     */
+    public static CaicReading readLedOutputControl() {
+        CaicReading r = new CaicReading();
+        try {
+            String cmd = readCommand(OPCODE_LED_OUTPUT_CONTROL_READ, LED_OUTPUT_CONTROL_LEN);
+            if (!Sysfs.exists(NODE)) {
+                r.reason = NODE + " does not exist on this firmware";
+                return r;
+            }
+            if (!Sysfs.write(NODE, cmd)) {
+                r.reason = "cannot write \"" + cmd + "\" to " + NODE
+                        + " (the node should be 0777; check the app is the API-28 build)";
+                return r;
+            }
+            // 1. the node itself; expected to fail, see readSystemTemperature. The same
+            //    echo guard: a node that plays back the command is not answering it.
+            String back = Sysfs.read(NODE);
+            if (back != null && !back.trim().startsWith(cmd)) {
+                CaicReading fromNode = caicFromResponseText(back, "sysfs");
+                if (fromNode.known() || fromNode.rawByte >= 0) {
+                    return fromNode;
+                }
+            }
+            // 2. the kernel log.
+            int[] bytes = fromKernelLog(OPCODE_LED_OUTPUT_CONTROL_READ, LED_OUTPUT_CONTROL_LEN);
+            if (bytes != null) {
+                CaicReading fromLog = caicFromBytes(bytes, "kernel log");
+                if (fromLog.known()) {
+                    fromLog.reason = "recovered from the newest \"read 0x51 data:\" line the "
+                            + "dlpc343x driver printed to the kernel log";
+                }
+                return fromLog;
+            }
+            r.reason = "the command was accepted but no response came back: " + NODE
+                    + " has no show() handler on this firmware, and the driver's "
+                    + "\"read 0x%02x data:\" line goes to the kernel log, which needs "
+                    + "READ_LOGS. CAIC state is UNKNOWN from this build.";
+            return r;
+        } catch (Throwable t) {
+            CaicReading bad = new CaicReading();
+            bad.reason = "exception while reading: " + t;
+            return bad;
+        }
+    }
+
+    /** As {@link #readLedOutputControl()}, on a throwaway thread, giving up after {@code timeoutMs}. */
+    public static CaicReading readLedOutputControl(long timeoutMs) {
+        final CaicReading[] slot = new CaicReading[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readLedOutputControl();
+                }
+            }, "fanlab-picoreg-caic");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            CaicReading r = new CaicReading();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            CaicReading r = new CaicReading();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    /** One attempt at 0x57, Read CAIC LED Max Available Power. Raw first, watts second. */
+    public static final class CaicPower {
+        /** The raw 16-bit little-endian word, or -1 if none was obtained. */
+        public int rawWord = -1;
+        /** {@code rawWord / 100} if DLPU078's "watts x 100" holds here; NaN otherwise. */
+        public double watts = Double.NaN;
+        /** True whenever watts is present: the unit interpretation is not confirmed on this board. */
+        public boolean provisional;
+        public String source;
+        public String reason = "not attempted";
+
+        public String rawHex() {
+            return rawWord < 0 ? null : "0x" + pad4(Integer.toHexString(rawWord));
+        }
+    }
+
+    /** Decode a 0x57 response. Recorded, never acted on; see {@link CaicPower}. */
+    public static CaicPower caicPowerFromBytes(int[] bytes, String source) {
+        CaicPower p = new CaicPower();
+        if (bytes == null || bytes.length < CAIC_MAX_POWER_LEN) {
+            p.reason = "no response bytes";
+            return p;
+        }
+        p.rawWord = word(bytes);
+        p.watts = p.rawWord / 100.0;
+        p.provisional = true;
+        p.source = source;
+        p.reason = "read from " + source + "; watts assumes DLPU078's x100 scaling, which "
+                + "has not been checked against this board, so the raw word is kept";
+        return p;
+    }
+
+    /**
+     * Read the CAIC max available power. Only meaningful while CAIC is on, and only
+     * reachable through the kernel log, like everything else on this node. For the log.
+     */
+    public static CaicPower readCaicMaxPower() {
+        CaicPower p = new CaicPower();
+        try {
+            String cmd = readCommand(OPCODE_CAIC_MAX_POWER, CAIC_MAX_POWER_LEN);
+            if (!Sysfs.exists(NODE) || !Sysfs.write(NODE, cmd)) {
+                p.reason = "cannot write \"" + cmd + "\" to " + NODE;
+                return p;
+            }
+            String back = Sysfs.read(NODE);
+            if (back != null && !back.trim().startsWith(cmd)) {
+                int[] bytes = parseHexBytes(back, CAIC_MAX_POWER_LEN);
+                if (bytes != null) {
+                    return caicPowerFromBytes(bytes, "sysfs");
+                }
+            }
+            int[] bytes = fromKernelLog(OPCODE_CAIC_MAX_POWER, CAIC_MAX_POWER_LEN);
+            if (bytes != null) {
+                return caicPowerFromBytes(bytes, "kernel log");
+            }
+            p.reason = "no 0x57 response in the kernel log";
+            return p;
+        } catch (Throwable t) {
+            CaicPower bad = new CaicPower();
+            bad.reason = "exception while reading: " + t;
+            return bad;
+        }
+    }
+
+    /** As {@link #readCaicMaxPower()}, bounded. */
+    public static CaicPower readCaicMaxPower(long timeoutMs) {
+        final CaicPower[] slot = new CaicPower[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readCaicMaxPower();
+                }
+            }, "fanlab-picoreg-caicpower");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            CaicPower p = new CaicPower();
+            p.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return p;
+        } catch (Throwable e) {
+            CaicPower p = new CaicPower();
+            p.reason = "could not run the picoreg read: " + e;
+            return p;
+        }
     }
 
     // ------------------------------------------------------------------ LED currents

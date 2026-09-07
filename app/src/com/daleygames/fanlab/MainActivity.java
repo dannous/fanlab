@@ -49,6 +49,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow presetRow;
     private StepRow ceilingRow;
     private StepRow reassertRow;
+    private StepRow caicRow;
     private StepRow loggingRow;
     private StepRow autostartRow;
     private StepRow takeoverRow;
@@ -234,6 +235,23 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 .tag("reassert", 0));
         addRow(root, new StepRow(c, "Curve settings…").button().tag("curve", 0));
 
+        root.addView(Ui.heading(c, "Experiment — display controller"), Ui.wrap());
+        caicRow = addRow(root, new StepRow(c, "CAIC (content-adaptive LED power)").button()
+                .tag("caic", 0));
+        root.addView(Ui.body(c,
+                "An experiment, not a fan setting. CAIC asks the display controller to lower "
+                        + "LED current and raise the mirror duty cycle together on frames "
+                        + "that do not need full output. Stock ships with it off. This board "
+                        + "has no TI LED driver for it to lower current through, so it may "
+                        + "save power, may only brighten the image, may do nothing, or may "
+                        + "show artefacts. Undo: press again, or power-cycle the projector — "
+                        + "nothing is written anywhere that survives a reboot. "
+                        + (systemVariant
+                        ? "\"read back\" is what the controller itself reported, refreshed "
+                          + "about once a minute."
+                        : "Only the system build can read the controller's answer back, so "
+                          + "this build says \"unverified\".")), Ui.wrap());
+
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
         StepRow auto = new StepRow(c,
                 "AUTO — measure the steady-state temperature at every duty…").button()
@@ -394,6 +412,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
             reassertRow.display(r ? "ON" : "OFF");
             reassertRow.valueColour(r ? Ui.GOOD : Ui.DIM);
         }
+        syncCaicRow();
         if (loggingRow != null) {
             boolean l = Prefs.logging(this);
             loggingRow.display(l ? "ON" : "OFF");
@@ -429,7 +448,42 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
+    /**
+     * The CAIC row. Called from the preference sync and from the 1 s poll, because two of
+     * its states arrive asynchronously: the service's write happens on the next tick, and
+     * the read-back lands seconds later on a thread of its own.
+     *
+     * Green only when the DLPC itself has said on. Amber for on-but-unverified, which is
+     * what the plain build shows for ever and the system build shows for a few seconds;
+     * red when the register disagrees with the setting or the write failed.
+     */
+    private void syncCaicRow() {
+        if (caicRow == null) {
+            return;
+        }
+        boolean want = Prefs.caic(this);
+        String text = FanService.caicSummary(want);
+        caicRow.display(text);
+        PicoReg.CaicReading rb = FanService.caicReadback;
+        boolean saysOn = rb != null && PicoReg.CAIC_ON.equals(rb.state);
+        boolean saysOff = rb != null && PicoReg.CAIC_OFF.equals(rb.state);
+        int colour;
+        if (!want) {
+            colour = text.indexOf("still ON") >= 0 ? Ui.DANGER : Ui.DIM;
+        } else if (FanService.caicWriteFailed) {
+            colour = Ui.DANGER;
+        } else if (FanService.caicWritten == 1 && saysOn) {
+            colour = Ui.GOOD;
+        } else if (FanService.caicWritten == 1 && saysOff) {
+            colour = Ui.DANGER;
+        } else {
+            colour = Ui.WARN;
+        }
+        caicRow.valueColour(colour);
+    }
+
     private void refresh() {
+        syncCaicRow();
         Sample s = FanService.lastSample;
         if (s == null) {
             statusView.setText("waiting for the first sample…  " + FanService.statusLine);
@@ -594,6 +648,19 @@ public class MainActivity extends Activity implements StepRow.Listener {
             } else if ("reassert".equals(row.tagName)) {
                 Prefs.setReassert(this, !Prefs.reassert(this));
                 syncControlsFromPrefs();
+            } else if ("caic".equals(row.tagName)) {
+                // Poked: the write to the display controller happens on the loop thread,
+                // on the tick that sees the setting change, never from here.
+                boolean next = !Prefs.caic(this);
+                Prefs.setCaic(this, next);
+                FanService.poke(this, FanService.ACTION_REFRESH);
+                syncControlsFromPrefs();
+                if (next) {
+                    toastLike("CAIC requested. The controller is written on the next tick; "
+                            + "watch the picture for a change in brightness or for "
+                            + "artefacts. Press again to turn it off, or power-cycle the "
+                            + "projector — nothing persistent has been changed.");
+                }
             } else if ("logging".equals(row.tagName)) {
                 Prefs.setLogging(this, !Prefs.logging(this));
                 syncControlsFromPrefs();

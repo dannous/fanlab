@@ -125,6 +125,7 @@ public final class FanLabTest {
         testSweepTimeCap();
         testHoldSession();
         testPicoReg();
+        testCaic();
         testReportOutput();
 
         System.out.println();
@@ -2233,6 +2234,159 @@ public final class FanLabTest {
         } finally {
             Sysfs.root = oldRoot;
             rmrf(tmp);
+        }
+    }
+
+    // ----------------------------------------------------------------- CAIC
+
+    /**
+     * The CAIC toggle is one write with a one-write undo, and the whole of its safety
+     * argument is that the bytes on the wire are exactly the two DLPU078 documents and
+     * that the read-back never invents a state. So: the strings, byte for byte; the
+     * decode against good, wrong and absent bytes; and the write landing on the stub
+     * node with nothing added to it.
+     */
+    private static void testCaic() throws Exception {
+        section("CAIC (0x50/0x51) - the command bytes, and never inferring the state");
+
+        // The opcodes are DLPU078's, and the strings are the picoreg format.
+        eq(PicoReg.OPCODE_LED_OUTPUT_CONTROL_WRITE, 0x50, "Write LED Output Control Method is 0x50");
+        eq(PicoReg.OPCODE_LED_OUTPUT_CONTROL_READ, 0x51, "Read LED Output Control Method is 0x51");
+        eq(PicoReg.OPCODE_CAIC_MAX_POWER, 0x57, "Read CAIC LED Max Available Power is 0x57");
+        check("w 50 1 1".equals(PicoReg.ledOutputControlCommand(true)),
+                "CAIC on is exactly \"w 50 1 1\"");
+        check("w 50 1 0".equals(PicoReg.ledOutputControlCommand(false)),
+                "CAIC off is exactly \"w 50 1 0\" - the factory value, and the undo");
+        check("r 51 1".equals(PicoReg.readCommand(PicoReg.OPCODE_LED_OUTPUT_CONTROL_READ,
+                        PicoReg.LED_OUTPUT_CONTROL_LEN)),
+                "the read-back command is exactly \"r 51 1\"");
+        check("r 57 2".equals(PicoReg.readCommand(PicoReg.OPCODE_CAIC_MAX_POWER,
+                        PicoReg.CAIC_MAX_POWER_LEN)),
+                "the max-power read is \"r 57 2\"");
+
+        // Decoding: two values are states, everything else is a wrong answer.
+        check(PicoReg.CAIC_ON.equals(PicoReg.decodeLedOutputControl(new int[]{0x01})),
+                "0x01 decodes as on");
+        check(PicoReg.CAIC_OFF.equals(PicoReg.decodeLedOutputControl(new int[]{0x00})),
+                "0x00 decodes as off");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[]{0x02})),
+                "0x02 is neither, and is unknown rather than rounded to a state");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[]{0xFF})),
+                "0xff is unknown");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(null)),
+                "no bytes is unknown, never off");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[0])),
+                "an empty array is unknown");
+
+        // The driver's kernel-log line, for the opcode we asked about and no other.
+        int[] p = PicoReg.parseKernelLogLine(
+                "<6>[  456.789] lcd extern: read 0x51 data: 01", 0x51, 1);
+        check(p != null && p.length == 1 && p[0] == 0x01, "\"read 0x51 data: 01\" parses as on");
+        p = PicoReg.parseKernelLogLine("read 0x51 data: 00", 0x51, 1);
+        check(p != null && p[0] == 0x00, "\"read 0x51 data: 00\" parses as off");
+        check(PicoReg.parseKernelLogLine("read 0x51 data: zz", 0x51, 1) == null,
+                "garbage after data: is refused");
+        check(PicoReg.parseKernelLogLine("read 0x51 data:", 0x51, 1) == null,
+                "a line with no payload is refused");
+        check(PicoReg.parseKernelLogLine("read 0xd6 data: 2b 00", 0x51, 1) == null,
+                "a D6h response is not mistaken for a 0x51 one");
+        check(PicoReg.parseKernelLogLine("read 0x50 data: 01", 0x51, 1) == null,
+                "nor is the write opcode's own echo");
+
+        // The response handler: on, off, and every way of not knowing.
+        PicoReg.CaicReading r = PicoReg.caicFromResponseText("01\n", "sysfs");
+        check(PicoReg.CAIC_ON.equals(r.state) && r.known(), "\"01\" reads as on");
+        check("sysfs".equals(r.source) && "0x01".equals(r.rawHex()),
+                "  with its source and raw byte");
+        r = PicoReg.caicFromResponseText("00", "kernel log");
+        check(PicoReg.CAIC_OFF.equals(r.state) && r.known(), "\"00\" reads as off");
+        r = PicoReg.caicFromResponseText("07", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state) && !r.known(),
+                "\"07\" is unknown - a third value is not a state");
+        check(r.rawByte == 0x07 && r.reason.indexOf("0x07") >= 0,
+                "  and the raw byte is kept and named in the reason: " + quote(r.reason));
+        r = PicoReg.caicFromResponseText("", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state), "an empty response is unknown");
+        check(r.rawByte < 0 && r.rawHex() == null, "  with no byte to show");
+        r = PicoReg.caicFromResponseText(null, "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state), "a null response is unknown");
+        r = PicoReg.caicFromResponseText("zip", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state) && r.rawByte < 0,
+                "text with no hex in it is unknown and yields no byte");
+        // "banana" is mostly hex digits; parseHexBytes hands back 0xba and the decode
+        // refuses it. Same shape as the D6h case, and the same reason it matters.
+        r = PicoReg.caicFromResponseText("banana", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state),
+                "hex-looking junk is caught by the decode, not reported as a state");
+        check(new PicoReg.CaicReading().reason != null
+                        && !new PicoReg.CaicReading().known(),
+                "a fresh reading is unknown with a reason, never a default state");
+
+        // Max power: raw first, the watts interpretation flagged.
+        PicoReg.CaicPower pw = PicoReg.caicPowerFromBytes(new int[]{0x34, 0x12}, "kernel log");
+        eq(pw.rawWord, 0x1234, "0x57's word is little endian");
+        eq(pw.watts, 46.60, 0.001, "  and /100 gives watts if DLPU078's scaling holds");
+        check(pw.provisional, "  which is flagged provisional");
+        check("0x1234".equals(pw.rawHex()), "  with the raw word beside it");
+        check(PicoReg.caicPowerFromBytes(new int[]{0x34}, "x").rawWord < 0
+                        && Double.isNaN(PicoReg.caicPowerFromBytes(null, "x").watts),
+                "one byte, or none, is no power reading");
+
+        // Against the stub tree: the write lands as the bare command, and the read never
+        // manufactures a state out of an echo, an empty node, or a missing one.
+        File tmp = File.createTempFile("fanlab-caic", "");
+        tmp.delete();
+        tmp.mkdirs();
+        String oldRoot = Sysfs.root;
+        try {
+            Sysfs.root = tmp.getAbsolutePath();
+            check(!PicoReg.writeLedOutputControl(true),
+                    "with no picoreg node the write reports failure rather than pretending");
+            r = PicoReg.readLedOutputControl();
+            check(PicoReg.CAIC_UNKNOWN.equals(r.state)
+                            && r.reason.indexOf("does not exist") >= 0,
+                    "and the read is unknown, saying the node is missing: " + quote(r.reason));
+
+            File dir = new File(tmp, "sys/class/dlpc343x");
+            dir.mkdirs();
+            File node = new File(dir, "picoreg");
+            write(node, "");
+            check(PicoReg.writeLedOutputControl(true), "the on write succeeds against the node");
+            check("w 50 1 1".equals(slurp(node)),
+                    "and the node holds exactly \"w 50 1 1\" - no newline, nothing else");
+            check(PicoReg.writeLedOutputControl(false), "the off write succeeds");
+            check("w 50 1 0".equals(slurp(node)), "and the node holds exactly \"w 50 1 0\"");
+
+            // The stub echoes whatever was last written, which is what a file does and
+            // exactly what a node with no show() must not be mistaken for.
+            r = PicoReg.readLedOutputControl();
+            check(PicoReg.CAIC_UNKNOWN.equals(r.state),
+                    "an echo of \"r 51 1\" is not decoded as a state");
+            check("r 51 1".equals(slurp(node)), "  (the read did write the read command)");
+            check(r.reason.indexOf("show()") >= 0 && r.reason.indexOf("READ_LOGS") >= 0,
+                    "  and the reason names the obstacle and the permission: "
+                            + quote(r.reason));
+
+            PicoReg.CaicReading timed = PicoReg.readLedOutputControl(1500L);
+            check(timed != null && timed.state != null && !timed.known(),
+                    "the bounded call always answers, and here answers unknown");
+            PicoReg.CaicPower tp = PicoReg.readCaicMaxPower(1500L);
+            check(tp != null && tp.rawWord < 0 && Double.isNaN(tp.watts),
+                    "the bounded power read answers, with no watts it did not read");
+        } finally {
+            Sysfs.root = oldRoot;
+            rmrf(tmp);
+        }
+    }
+
+    private static String slurp(File f) throws Exception {
+        java.io.FileInputStream in = new java.io.FileInputStream(f);
+        try {
+            byte[] buf = new byte[4096];
+            int n = in.read(buf);
+            return n <= 0 ? "" : new String(buf, 0, n, "UTF-8");
+        } finally {
+            in.close();
         }
     }
 
