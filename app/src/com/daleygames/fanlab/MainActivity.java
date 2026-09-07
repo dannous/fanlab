@@ -228,8 +228,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "\n    Balanced    43–45 %    50.3 °C"
                         + "\n    Cool        48–50 %    49.2 °C"
                         + "\n    Cold        53–55 %    48.3 °C"
-                        + "\n    Bright      ~44 %      53.8 °C   with the LED drive raised "
-                        + "to 90 %; predicted, not yet measured"
+                        + "\n    Bright      ~44 %      53.8 °C   use with LED drive"
+                        + "\nChoose Bright only with the LED drive on. On stock drive "
+                        + "it behaves like Quiet, so it buys nothing."
                         + "\nAll five idle at 30 % in Normal, Eco and Super Eco at stock "
                         + "drive."),
                 Ui.wrap());
@@ -249,28 +250,25 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "Choose CURVE for quiet, LINEAR when the ceiling matters more."),
                 Ui.wrap());
         ledDriveRow = addRow(root, new StepRow(c,
-                "LED drive — run the light engine above the brightness mode").button()
+                "LED drive (BETA) — a brighter picture").button()
                 .tag("leddrive", 0));
         root.addView(Ui.body(c,
-                "Stock → Bright → Stock. Bright drives the four brightness modes at "
-                        + "30/50/70/90 % instead of 20/40/55/76 — about 18 % more light in "
-                        + "Presentation, and about 3.4 °C more on the LED thermistor for "
-                        + "every 10 points.\n"
-                        + "It only ever applies while this app is the one cooling the "
-                        + "machine: CURVE or LINEAR, no AUTO or VERIFY session, the light "
-                        + "engine on, the fail-safe clear. Anywhere else the kernel's own "
-                        + "table goes straight back — running Presentation-class LED heat "
-                        + "under the Eco fan ladder is the one thing this app must not do. "
-                        + "Above " + Sample.fmt1(LedDrive.DEFAULT_TRIP_C) + " °C it drops "
-                        + "the override and stays off until the brightness mode or the "
-                        + "setting changes.\n"
-                        + "It starts only when you switch it on or change mode, never part "
-                        + "way through a run: switching it on under LINEAR mid-session "
-                        + "would walk the fan about 12 points, which is audible.\n"
-                        + "Switching it on also raises LINEAR's ceiling from "
-                        + Sample.fmt1(LinearConfig.DEFAULT_CEILING_C) + " to "
-                        + Sample.fmt1(LinearConfig.BOOST_CEILING_C) + " °C, unless you have "
-                        + "set the ceiling yourself. Predicted, not measured."), Ui.wrap());
+                "Runs the LEDs harder than the projector normally does. Presentation "
+                        + "goes from 76 % to 90 % of maximum — roughly 18 % more "
+                        + "light. Press to cycle Stock → Bright → Stock.\n"
+                        + "\nSwitch the curve preset to Bright as well. The light "
+                        + "engine runs about 4 °C hotter on this setting, and Bright "
+                        + "is the curve that spends a little more fan to cover it.\n"
+                        + "\nThen put up a white image and check two things: it should "
+                        + "look brighter, and white should still look white. If it looks "
+                        + "dimmer instead, switch it off — that means the drive was set "
+                        + "too high and the hardware cut it back.\n"
+                        + "\nIt switches itself off above "
+                        + Sample.fmt1(LedDrive.DEFAULT_TRIP_C) + " °C, and whenever this "
+                        + "app is not the one driving the fan. To turn it off yourself, "
+                        + "press this row again or set Mode to OFF.\n"
+                        + "\nBETA — the temperatures quoted for it are calculated, "
+                        + "not yet measured on this projector."), Ui.wrap());
         reassertRow = addRow(root, new StepRow(c,
                 "Re-assert every second (beat the stock controller)").button()
                 .tag("reassert", 0));
@@ -280,26 +278,25 @@ public class MainActivity extends Activity implements StepRow.Listener {
         caicRow = addRow(root, new StepRow(c, "CAIC (content-adaptive LED power)").button()
                 .tag("caic", 0));
         root.addView(Ui.body(c,
-                "An experiment, not a fan setting. CAIC asks the display controller to lower "
-                        + "LED current and raise the mirror duty cycle together on frames "
-                        + "that do not need full output. Stock ships with it off. This board "
-                        + "has no TI LED driver for it to lower current through, so it may "
-                        + "save power, may only brighten the image, may do nothing, or may "
-                        + "show artefacts — including a picture you cannot read.\n"
-                        + "So it asks first: switching it on gives you "
-                        + (CaicArm.WINDOW_MS / 1000) + " seconds to press OK. Do nothing "
-                        + "and it turns itself back off, and it is never remembered until "
-                        + "you confirm it — so it cannot come back after a reboot leaving "
-                        + "you with no picture and no way in. If the screen is unreadable: "
-                        + "wait " + (CaicArm.WINDOW_MS / 1000) + " seconds, or pull the "
-                        + "power (the register is runtime-only; the factory settings are "
-                        + "never written), or from a shell "
-                        + "\"--ez caic false\". "
+                "Asks the display controller to dim the LEDs on frames that do not need "
+                        + "full output, opening the mirrors to compensate. If it works the "
+                        + "picture looks the same and the projector draws less power. It "
+                        + "is not a fan setting, and the projector ships with it off.\n"
+                        + "\nNobody has run this on this model before. It may do "
+                        + "nothing, or leave the picture blank or full of artefacts — so "
+                        + "it asks before keeping it. Turning it on gives you "
+                        + (CaicArm.WINDOW_MS / 1000) + " seconds to press Keep it. Do "
+                        + "nothing and it turns itself back off.\n"
+                        + "\nIf the screen goes unreadable there are three ways out "
+                        + "and none of them need the screen: wait "
+                        + (CaicArm.WINDOW_MS / 1000) + " seconds, pull the power, or send "
+                        + "\"--ez caic false\" from a computer. It is never saved "
+                        + "until you confirm, so it cannot come back after a reboot.\n"
                         + (systemVariant
-                        ? "\"read back\" is what the controller itself reported, refreshed "
-                          + "about once a minute."
-                        : "Only the system build can read the controller's answer back, so "
-                          + "this build says \"unverified\".")), Ui.wrap());
+                        ? "\n\"read back\" below is what the controller itself "
+                          + "reported, checked about once a minute."
+                        : "\nOnly the system build can read the controller's answer "
+                          + "back, so this build says \"unverified\".")), Ui.wrap());
 
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
         StepRow auto = new StepRow(c,
@@ -541,8 +538,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
         ledDriveRow.valueColour(colour);
         ledDriveRow.label(on
-                ? "LED drive — Bright (" + Prefs.ledDrive(this).summary() + ")"
-                : "LED drive — run the light engine above the brightness mode");
+                ? "LED drive (BETA) — Bright (" + Prefs.ledDrive(this).summary() + ")"
+                : "LED drive (BETA) — a brighter picture");
     }
 
     /**
