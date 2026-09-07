@@ -128,6 +128,32 @@ adb shell setprop persist.sys.fanctrl.by.temperatue 1
 
 Or reinstall the app, press the takeover control, then press RESTORE.
 
+## The CAIC switch adds no heat, and may add nothing
+
+The `CAIC` control is the one thing in the app that writes to the display controller rather
+than the fan. It asks the DLPC3436 to run Content Adaptive Illumination Control: lower the
+LED current and raise the mirror duty cycle together, per frame, on content that does not
+need full output. Done as designed, that is **less** LED power and **less** heat at the
+thermistor — it cannot raise LED current above what the brightness mode already commands.
+The 75 °C shutdown and the fan-stall watchdog are as untouched by it as by everything else.
+
+What it is **not** is a known quantity on this board. CAIC lowers LED current through a TI
+LED driver, and this board has none — the LED currents are set by the kernel, over SPI, to
+two MAX20096 drivers the display controller does not talk to. So the honest range of
+outcomes runs from "saves power as designed" through "brightens the image at the same
+power" to "does nothing" to "visible artefacts from lookup tables never calibrated for this
+engine". Nothing in the app or these documents claims a saving; the screen reports the
+setting, and separately what the controller itself said when asked, and says `unverified`
+when it has not been asked or could not answer.
+
+It is runtime only. The write is `w 50 1 1` to `/sys/class/dlpc343x/picoreg`, the undo is
+`w 50 1 0`, and a **power cycle undoes it regardless**, because the controller reloads the
+factory settings — which have it off — at every boot. The factory settings partition is
+deliberately never written. The app turns it off itself when it stops, if it was the one
+that turned it on, and RELEASE CONTROL turns it off along with the fan. The one way to be
+left with it on is a process killed with no chance to run code, and then the next power
+cycle clears it.
+
 ## The controller cannot see SoC temperature
 
 The fan is driven by the LED thermistor, and nothing in the loop reads the SoC. Switching

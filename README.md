@@ -60,6 +60,9 @@ continuous curve removes that failure structurally: there is no boundary left to
   re-arms it whenever it stops driving, so the projector cannot be left unmanaged.
 - **Optional CSV telemetry** to internal storage and any mounted USB stick at once,
   size-capped and self-pruning. See [Telemetry](#telemetry).
+- **A CAIC switch, as an experiment.** One write asks the display controller to run
+  Content Adaptive Illumination Control; one write, or a power cycle, undoes it. Whether it
+  does anything useful on this board is unknown — see [The CAIC experiment](#the-caic-experiment).
 
 ## Measured results
 
@@ -159,7 +162,8 @@ left/right and pressing a button row with OK.
 | **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
 | **Start automatically after a reboot** | leave this on |
 | **Re-assert every second** | leave this on. The projector's own brightness code slams a fan preset on brightness changes; this puts it back. It is not cosmetic — see [Warnings](#warnings) |
-| **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed and the app stops driving |
+| **CAIC** | off by default, and nothing to do with the fan. An experiment on the display controller's own LED-power feature; read [The CAIC experiment](#the-caic-experiment) before pressing it. Press again to turn it off; a power cycle turns it off regardless |
+| **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed, the app stops driving, and CAIC is turned off if it was on |
 | **RESTORE STOCK FAN CONTROL** | the permanent undo. Clears the setting that disables the stock controller. **Press this before uninstalling** — see below |
 
 ### Which preset
@@ -236,6 +240,74 @@ broadcast to the wrong one reports `result=0` and silently does nothing.
 
 The reply is the resulting state, so diff it against what you sent. It says
 `curve(REPAIRED)` or `linear(REPAIRED)` when a value was clamped rather than accepted.
+
+The CAIC experiment is `--ez caic true` and `--ez caic false`; the reply's `caic=` field
+gives the setting and, on the system build a few seconds later, what the display
+controller itself said (`on (read back: on)`). See the next section before sending it.
+
+### The CAIC experiment
+
+**This is not a fan setting and it is off by default.** It is here because the display
+controller has a feature that, on paper, cuts LED power without dimming the picture, and
+one write turns it on and one write turns it off. It is an experiment with a cheap undo,
+not a recommendation.
+
+**What it is.** CAIC — Content Adaptive Illumination Control, TI's *IntelliBright* — runs
+in the DLPC3436 display controller. Frame by frame, on content that does not need full
+output, it lowers the LED current and raises the mirror duty cycle by the same factor, so
+the white point stays where it was while the LEDs draw less. TI's own example is 27 % LED
+power saved at constant brightness. Less LED power is less heat at the thermistor this
+whole project is built around, which is why it is worth a look.
+
+**Why it is only an experiment here.** The projector ships with it **off** — `caic=0x00`
+in every template of the factory settings blob, and nothing in the firmware ever turns it
+on. And there is a specific reason to doubt it can do its job on this board: CAIC saves
+power by having the controller lower LED current through a TI LED driver, and **this board
+has no TI LED driver**. The LED currents are set by the kernel, over SPI, to two MAX20096
+drivers the controller does not talk to; the controller's own current registers hold a
+placeholder. So turning CAIC on may
+
+- save LED power as designed, if the controller has some path to the drivers nobody found;
+- do only the duty-cycle half — a **brighter** image at the same LED power, no saving;
+- do nothing visible at all; or
+- show artefacts (banding, flicker, a shifted white point) if its lookup tables were never
+  calibrated for this engine.
+
+Nothing in the app claims a power saving. The screen says `on (unverified)` until the
+controller itself has been asked, and `on (read back: on)` only once it has answered. Only
+the system build can hear the answer — it arrives in the kernel log, which needs a
+permission the plain build cannot hold — so on the plain build it stays `unverified`
+for ever, which is the truth.
+
+**How to try it.** On the screen, the `CAIC` row under *Experiment — display controller*;
+press it once for on, again for off. From a PC:
+
+```bash
+"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    --ez caic true
+# a few seconds later, to see what the controller said
+"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
+```
+
+Put up a mostly dark frame with a small bright region and watch it; that is the content
+CAIC is designed for. The CSV note column records every write (`caic<-on:start`,
+`caic<-on:rgblevel`, `caic<-off:setting`), each change in the read-back, and while it
+reads on, the controller's *max available power* word about once a minute
+(`caic_maxpower=0x...`) — that number moving with the content is the one piece of evidence
+the experiment can produce without a light meter.
+
+**How to undo it.** Any of:
+
+- press the `CAIC` row again, or `--ez caic false` — one write, `w 50 1 0`;
+- press **RELEASE CONTROL**, which turns it off along with everything else the app drives;
+- `--ez reset`, which turns it off along with the curve;
+- **power-cycle the projector.** The controller reloads the factory settings at boot, and
+  those have it off. Nothing this switch does is written anywhere that survives a reboot;
+  the factory settings partition is deliberately never touched.
+
+The app also turns it off itself whenever it stops running, if it was the one that turned
+it on, and re-asserts it on brightness-mode changes and after a resume, where the kernel
+re-programs the controller's LED registers.
 
 ### If something looks wrong
 

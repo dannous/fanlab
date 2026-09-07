@@ -66,7 +66,15 @@ import android.util.Log;
  *       CSV row. 0 means "not stated" and logs as a blank, never as a zero. The one
  *       quantity in the log that cannot be derived from the log, so it is worth being able
  *       to state without a D-pad</td></tr>
- *   <tr><td>{@code --ez reset <b>}</td><td>restore the built-in default curve</td></tr>
+ *   <tr><td>{@code --ez caic <b>}</td><td>ask the display controller to run Content
+ *       Adaptive Illumination Control ({@code w 50 1 1} to picoreg; {@code false} writes
+ *       {@code w 50 1 0}). An experiment, not a tuning: this board has no TI LED driver
+ *       for CAIC to lower current through, so what it does here is unknown until looked
+ *       at. Off by default, which is how stock ships; a power cycle turns it off
+ *       regardless. {@code caic=} in the reply gives the setting and, on the system build
+ *       once a read-back has landed, what the DLPC actually says. See {@link PicoReg}</td></tr>
+ *   <tr><td>{@code --ez reset <b>}</td><td>restore the built-in default curve, and turn
+ *       the CAIC experiment off</td></tr>
  *   <tr><td>{@code --ez export <b>}</td><td>copy every existing log to
  *       {@code FanLab-export/} on each mounted USB volume, now, whether or not this boot
  *       has already done it. Runs on its own thread; the reply says it started, and
@@ -119,6 +127,10 @@ public class ConfigReceiver extends BroadcastReceiver {
 
         if (intent.getBooleanExtra("reset", false)) {
             Prefs.resetCurve(context);
+            // The CAIC experiment goes with it. "Reset" is the word someone reaches for
+            // when they want the machine back as the manufacturer left it, and stock has
+            // CAIC off; the service sees the setting change and writes the off command.
+            Prefs.setCaic(context, false);
             did.append(" reset");
         }
         // Before "curve" on purpose: sending both is how a preset gets used as a starting
@@ -255,6 +267,10 @@ public class ConfigReceiver extends BroadcastReceiver {
             Prefs.setRoomC(context, intent.getIntExtra("room", 0));
             did.append(" room");
         }
+        if (intent.hasExtra("caic")) {
+            Prefs.setCaic(context, intent.getBooleanExtra("caic", false));
+            did.append(" caic");
+        }
         if (intent.hasExtra("mode")) {
             int m = intent.getIntExtra("mode", Mode.OFF);
             if (m != Mode.OFF && m != Mode.MANUAL && m != Mode.CURVE && m != Mode.LINEAR) {
@@ -320,6 +336,10 @@ public class ConfigReceiver extends BroadcastReceiver {
                 + " logevery=" + Prefs.logEverySec(context) + "s"
                 + " room=" + (Prefs.roomC(context) == 0
                         ? "not stated" : Prefs.roomC(context) + "C")
+                // The setting, then what the DLPC said if anything has asked it. The
+                // read-back lags a write by a few seconds and runs only on the system
+                // build, so a second round trip after --ez caic true is how to see it.
+                + " caic=" + FanService.caicSummary(Prefs.caic(context))
                 + " session=" + Prefs.session(context)
                 + " fan_ctrl=" + FanIo.readDuty()
                 + " export=" + (FanService.exporting ? "running" : FanService.exportStatus)

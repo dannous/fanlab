@@ -127,6 +127,33 @@ adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.Con
     -a com.daleygames.fanlab.CONFIG --ez logging true
 ```
 
+## The CAIC experiment
+
+Not part of the deployment; off by default, and `deploy.sh` never touches it. Documented
+here because it goes over the same broadcast.
+
+```bash
+# ask the display controller to run Content Adaptive Illumination Control
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --ez caic true
+
+# a few seconds later: the reply's caic= field says what the controller itself reported
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG
+
+# undo -- or power-cycle the projector, which undoes it regardless
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --ez caic false
+```
+
+`caic=` reads `off`, `on (not written yet)` for the tick before the service acts,
+`on (unverified)` once `w 50 1 1` has gone to `picoreg`, and `on (read back: on)` or
+`on (read back: off)` once the controller's own answer has come back through the kernel
+log. Only the system build gets a read-back — the plain build has no `READ_LOGS` — so on
+the plain build `unverified` is permanent and correct. `--ez reset` turns it off along with
+the curve. What CAIC is, and why on this board it is an experiment rather than a feature,
+is in the README under *The CAIC experiment* and in [safety.md](safety.md).
+
 ## Changing the curve later
 
 Edit `final_curve.txt`, check it before you ship it, then re-apply:
