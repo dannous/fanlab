@@ -23,9 +23,10 @@ import android.util.Log;
  *      --ei mode 2 --ez autostart true
  * </pre>
  * Every extra is optional; the receiver applies whichever are present, in a fixed order
- * (the preset, then the curve, then the linear ceiling, then the flags, then the mode), and
- * always answers with the resulting state as the broadcast's result data — so
- * {@code am broadcast} prints it on stdout and no logcat parsing is needed.
+ * (the preset, then the curve, then the linear ceiling, then the LED drive table and its
+ * switch, then the flags, then the mode), and always answers with the resulting state as
+ * the broadcast's result data — so {@code am broadcast} prints it on stdout and no logcat
+ * parsing is needed.
  *
  * <table>
  *   <tr><td>{@code --es preset <s>}</td><td>a name from {@link CurveConfig#PRESET_NAMES}
@@ -57,6 +58,21 @@ import android.util.Log;
  *       can be compared by ear, not as a setting to leave. See
  *       {@link LinearConfig#trendWindowS}. {@code --ei linstep} is the superseded spelling
  *       of {@code linup} and is still accepted</td></tr>
+ *   <tr><td>{@code --es leddrive <s>}</td><td>the four LED drive levels, Super Eco / Eco /
+ *       Normal / Presentation. {@code stock} is the kernel's own 20/40/55/76, {@code bright}
+ *       is the one-press preset 30/50/70/90, and a {@link LedDrive.Config#encode()} string
+ *       sets them individually. Every level is held to
+ *       {@link LedDrive#MIN_LEVEL}..{@link LedDrive#MAX_LEVEL} -- <b>97, not 100</b>,
+ *       because the driver's DAC clamp drops an over-request to about 40 % instead of
+ *       saturating, so asking for 100 would make the picture go dim. Applied <i>before</i>
+ *       {@code leddriveon}, so one command can set the table and switch it on</td></tr>
+ *   <tr><td>{@code --ez leddriveon <b>}</td><td>run the LED light engine above what the
+ *       brightness mode asks for. Off by default. <b>It only ever applies while this app is
+ *       the fan controller</b> -- CURVE or LINEAR, no session running, the light engine on,
+ *       the fail-safe clear -- because Presentation-class LED heat under the Eco fan ladder
+ *       is the one combination this project must not create; see {@link LedDrive}. Switching
+ *       it on while LINEAR's ceiling is still the untouched 52.0 also raises that ceiling to
+ *       54.0, which the reply says out loud</td></tr>
  *   <tr><td>{@code --ei manual <n>}</td><td>MANUAL duty, 1..100</td></tr>
  *   <tr><td>{@code --ez autostart <b>}</td><td>come back after a reboot</td></tr>
  *   <tr><td>{@code --ez reassert <b>}</td><td>defend the node against other writers</td></tr>
@@ -74,8 +90,9 @@ import android.util.Log;
  *       at. Off by default, which is how stock ships; a power cycle turns it off
  *       regardless. {@code caic=} in the reply gives the setting and, on the system build
  *       once a read-back has landed, what the DLPC actually says. See {@link PicoReg}</td></tr>
- *   <tr><td>{@code --ez reset <b>}</td><td>restore the built-in default curve, and turn
- *       the CAIC experiment off</td></tr>
+ *   <tr><td>{@code --ez reset <b>}</td><td>restore the built-in default curve, put the LED
+ *       drive back to the stock table and switch it off, and turn the CAIC experiment
+ *       off</td></tr>
  *   <tr><td>{@code --ez export <b>}</td><td>copy every existing log to
  *       {@code FanLab-export/} on each mounted USB volume, now, whether or not this boot
  *       has already done it. Runs on its own thread; the reply says it started, and
@@ -132,6 +149,13 @@ public class ConfigReceiver extends BroadcastReceiver {
             // when they want the machine back as the manufacturer left it, and stock has
             // CAIC off; the service sees the setting change and writes the off command.
             Prefs.setCaic(context, false);
+            // And the LED drive, for exactly the same reason and by the same mechanism:
+            // stock is the kernel's own table with the override off, and the tick that sees
+            // the setting change hands the hardware back within a second. LINEAR's own
+            // config stays exempt from reset, for the reason Prefs.linear gives -- and the
+            // ceiling still comes back to 52.0 here anyway, because the promotion was never
+            // stored in it.
+            Prefs.resetLedDrive(context);
             did.append(" reset");
         }
         // Before "curve" on purpose: sending both is how a preset gets used as a starting
@@ -247,6 +271,34 @@ public class ConfigReceiver extends BroadcastReceiver {
             Prefs.setLinear(context, lin);
             did.append(repaired ? " linear(REPAIRED)" : " linear");
         }
+        // The LED drive table before its switch, so `--es leddrive bright --ez leddriveon
+        // true` in one command sets the levels and then turns them on, rather than
+        // switching on whatever happened to be stored a moment earlier.
+        if (intent.hasExtra("leddrive")) {
+            String s = intent.getStringExtra("leddrive");
+            String want = s == null ? "" : s.trim();
+            LedDrive.Config cfg;
+            if ("stock".equalsIgnoreCase(want)) {
+                cfg = new LedDrive.Config();
+            } else if ("bright".equalsIgnoreCase(want)) {
+                cfg = LedDrive.Config.bright();
+            } else {
+                cfg = LedDrive.Config.decode(want);
+            }
+            Prefs.setLedDrive(context, cfg);
+            // Same discipline as the curve: decode() falls back to stock on anything
+            // malformed and sanitise() clamps every level to MAX_LEVEL, so compare what was
+            // stored against what was asked for rather than trusting the write. A caller
+            // who sent 100 needs to be told it became 97, not left believing the light
+            // engine is running at a level the DAC would have turned into 40 %.
+            boolean exact = "stock".equalsIgnoreCase(want) || "bright".equalsIgnoreCase(want)
+                    || cfg.encode().equals(want);
+            did.append(exact ? " leddrive" : " leddrive(REPAIRED)");
+        }
+        if (intent.hasExtra("leddriveon")) {
+            Prefs.setLedDriveOn(context, intent.getBooleanExtra("leddriveon", false));
+            did.append(" leddriveon");
+        }
         if (intent.hasExtra("manual")) {
             Prefs.setManualDuty(context, intent.getIntExtra("manual", FanIo.KERNEL_DEFAULT_DUTY));
             did.append(" manual");
@@ -336,8 +388,19 @@ public class ConfigReceiver extends BroadcastReceiver {
     private String state(Context context) {
         CurveConfig c = Prefs.curve(context);
         LinearConfig l = Prefs.linear(context);
+        LedDrive.Config d = Prefs.ledDrive(context);
+        boolean boost = Prefs.ledBoostOn(context);
+        // Two different questions, so two different answers in the same reply. `ceiling=`
+        // is the number the controller will actually hold, with the promotion named rather
+        // than left to be inferred from a value that moved on its own; `linear=` at the end
+        // is the stored line, which the promotion never touches. Taken before the mutation
+        // so the second cannot quietly become the first.
+        String storedLinear = l.encode();
+        boolean raised = LinearConfig.promoteForBoost(l, boost);
         return "mode=" + Mode.name(Prefs.mode(context))
                 + " ceiling=" + Sample.fmt1(l.ceilingC) + "C"
+                + (raised ? "(raised from the " + Sample.fmt1(LinearConfig.DEFAULT_CEILING_C)
+                        + " default for the LED drive override; inferred, not measured)" : "")
                 + " linup=" + l.upStepMs + "ms"
                 + " lindown=" + l.downStepMs + "ms"
                 + " linfast=" + l.downFastMs + "ms"
@@ -357,11 +420,17 @@ public class ConfigReceiver extends BroadcastReceiver {
                 // read-back lags a write by a few seconds and runs only on the system
                 // build, so a second round trip after --ez caic true is how to see it.
                 + " caic=" + FanService.caicSummary(Prefs.caic(context))
+                // The table, then what is actually on the hardware -- which is not the same
+                // question, because the override is held off entirely unless this app is
+                // the fan controller, and it drops itself on its own ceiling trip.
+                + " leddrive=" + (d.isStock() ? "stock" : d.summary() + " (" + d.encode() + ")")
+                + " leddriveon=" + Prefs.ledDriveOn(context)
+                + " leddrivestate=" + FanService.ledDriveStatus
                 + " session=" + Prefs.session(context)
                 + " fan_ctrl=" + FanIo.readDuty()
                 + " export=" + (FanService.exporting ? "running" : FanService.exportStatus)
                 + " preset=" + CurveConfig.presetName(Prefs.preset(context))
                 + " curve=" + c.encode()
-                + " linear=" + l.encode();
+                + " linear=" + storedLinear;
     }
 }

@@ -42,6 +42,23 @@ public final class Mode {
      * </pre>
      * Above a 32.5 C room LINEAR cannot hold 52 C at all and reports it rather than
      * pretending. See {@link FanLinear}.
+     *
+     * <h3>With the LED drive override on, the default ceiling becomes 54 C</h3>
+     * LINEAR needs no new mode for the boost -- it holds a temperature, so it absorbs the
+     * extra LED heat by itself and pays for it in fan. What it needs is a different number,
+     * because holding 52 C under a x1.18 heat load is expensive, and the point of the table
+     * above survives only if both controllers move together. 54 C is where the Bright CURVE
+     * preset rests, so they still meet. <b>All four numbers below are inferred from that
+     * scaling, not measured:</b>
+     * <pre>
+     *   at LED drive 90       LINEAR @ 54 C      LINEAR @ 52 C, if left there
+     *   24 C room             ~44 %              50 %      (38 % at stock drive)
+     *   reaches duty 50 at    26.0 C             ~24 C, and 60 by 26.6 C
+     *   out of authority at   ~31.1 C            ~29.1 C   (32.6 at stock drive)
+     * </pre>
+     * The promotion applies only while the stored ceiling is still the untouched 52.0, it
+     * is never written to the preferences, and it reverses when the override goes off:
+     * {@link LinearConfig#promoteForBoost}.
      */
     public static final int LINEAR = 3;
 

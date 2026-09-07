@@ -51,7 +51,13 @@ import java.util.Set;
  *       never lower;</li>
  *   <li>stopping the service while it was driving the fan writes
  *       {@link FanIo#FAIL_SAFE_DUTY} on the way out, so a crash or a kill can never
- *       leave a low duty behind.</li>
+ *       leave a low duty behind;</li>
+ *   <li>the LED drive override is applied <i>only</i> while this app is the temperature
+ *       controller, and the stock table goes back on every path out of that state. See
+ *       {@link LedDrive} for why the two are inseparable;</li>
+ *   <li>CAIC is armed rather than set: the register is written, a fifteen-second countdown
+ *       runs <b>here</b> rather than in the activity, and the preference is persisted only
+ *       once someone confirms the picture survived. See {@link CaicArm}.</li>
  * </ul>
  */
 public class FanService extends Service {
@@ -144,6 +150,51 @@ public class FanService extends Service {
     private volatile String lastCaicReadLine = "";
     /** Which build this is. Read once; it decides whether a read-back can ever succeed. */
     private boolean systemVariant;
+
+    /**
+     * The arm-and-confirm countdown for CAIC.
+     *
+     * Static and final, for two reasons. The activity has to be able to arm it on the press
+     * that also starts the service, when {@link #instance} is still null; and the window has
+     * to outlive the activity, because a countdown that dies with the screen it was drawn on
+     * is not a safety net. It holds no preference, so a process death ends an unconfirmed
+     * arm rather than carrying it anywhere.
+     */
+    public static final CaicArm caicArm = new CaicArm();
+
+    // ---- the LED drive override ----
+    /**
+     * The override's own state machine: what it believes is on the hardware, its ceiling
+     * latch and its rate limits. Not static -- it is the service's, and the two paths that
+     * reach it from another thread ({@link #releaseControl} and the session starts) go
+     * through {@link #restoreLedDriveNow}, which is synchronized inside {@link LedDrive}.
+     */
+    private final LedDrive ledDrive = new LedDrive();
+
+    /**
+     * The override may only <b>start</b> here: at a service start, a settings change, or the
+     * tick the mode becomes one this app controls.
+     *
+     * <b>Never spontaneously mid-run</b>, and that is a measurement rather than a
+     * preference. The owner's ear caught a 14-point cumulative fan sweep, and switching the
+     * boost on under LINEAR part way through a session makes it walk about 12 duty points at
+     * one per 5 s -- the same event, arriving by a different route. Gating the <i>start</i>
+     * rather than the whole thing is what lets the override survive a standby or a
+     * light-engine cycle without either re-applying out of nowhere or silently staying off.
+     */
+    private boolean ledDriveArmed;
+
+    /** Was this app the temperature controller last tick? Edge-triggers the arm above. */
+    private boolean lastLedControlling;
+
+    /** Was LINEAR's ceiling promoted for the boost last tick? Edge-triggers the log note. */
+    private boolean linearCeilingWasRaised;
+
+    /**
+     * One phrase describing the override, for the screen and the broadcast reply:
+     * {@code off}, {@code stock}, {@code applied 90/84}, or a reason it is being held off.
+     */
+    public static volatile String ledDriveStatus = "off";
 
     private HandlerThread thread;
     private Handler handler;
@@ -443,6 +494,16 @@ public class FanService extends Service {
         } catch (Throwable ignored) {
             // nothing useful to do
         }
+        // The LED drive first, and before the fan, for the reason releaseControl() gives:
+        // the restore rewrites rgblevel, the stock ladder answers that by writing its own
+        // tier floor, and with the loop already stopped the fail-safe write below has to be
+        // the last thing that touches the node. Unconditional, unlike the fan handback --
+        // forceRestore does nothing at all unless an override is believed to be applied.
+        try {
+            restoreLedDriveNow("service_stop");
+        } catch (Throwable t) {
+            Log.e(TAG, "onDestroy leddrive", t);
+        }
         // Hand the hardware back in a state that cannot cook it. If we were driving the
         // fan and we are going away, the last thing we wrote may be low and nothing else
         // is guaranteed to write for minutes.
@@ -468,8 +529,10 @@ public class FanService extends Service {
         }
         // The display controller too: if this process turned CAIC on, it turns it off on
         // the way out, and a process that never wrote 0x50 does not start now. The setting
-        // survives, so a restart with it on writes on again.
+        // survives, so a restart with it on writes on again -- but an unconfirmed arm is
+        // not a setting and does not survive anything, which is the whole point of it.
         try {
+            caicArm.cancel();
             handBackCaic("service_stop");
         } catch (Throwable t) {
             Log.e(TAG, "onDestroy caic", t);
@@ -562,6 +625,11 @@ public class FanService extends Service {
             // which nothing at all is responsible for cooling. Mode is already OFF above,
             // so a tick racing us reaches the same conclusion.
             syncStockLadder();
+            // And put the stock LED table back before the fan write, not after. Restoring
+            // it rewrites rgblevel, which fires the stock ladder's mode-change branch and
+            // slams that tier's floor into fan_ctrl; with the mode already OFF no tick will
+            // take that back, so the fail-safe below has to be the last thing on the node.
+            restoreLedDriveNow("release");
             boolean ok = FanIo.writeFailSafe();
             lastWritten = ok ? FanIo.FAIL_SAFE_DUTY : -1;
             curve.reset();
@@ -569,8 +637,10 @@ public class FanService extends Service {
             // RELEASE means everything this app drives, and the CAIC write is a thing it
             // drives. The setting is cleared as well as the register, for the same reason
             // the mode is set OFF above: a tick racing us must reach the same conclusion,
-            // not put it back a second later.
+            // not put it back a second later. An arm in flight is dropped rather than
+            // expired, so the note says "release" and not "unconfirmed".
             Prefs.setCaic(this, false);
+            caicArm.cancel();
             handBackCaic("release");
             note("release->" + FanIo.FAIL_SAFE_DUTY + (ok ? "" : " FAILED"));
             statusLine = ok
@@ -926,6 +996,16 @@ public class FanService extends Service {
         // The read-back is a minute apart at most and runs on its own thread.
         syncCaic(s, interactive, resumeEdge, engineOnEdge, note, mono);
 
+        // ---------------- the LED drive override, first half ----------------
+        // Loaded here because two different parts of the tick need the answer and neither
+        // should ask twice: LINEAR's ceiling has to know about the boost before it steps,
+        // just below, and the override itself is applied after the fan write, further down,
+        // where an extra sysfs read and a couple of writes cannot get in front of a cooling
+        // decision. The same question Prefs.ledBoostOn answers, asked from a config this
+        // tick has to load anyway.
+        LedDrive.Config ledCfg = Prefs.ledDrive(this);
+        boolean ledFeatureOn = Prefs.ledDriveOn(this) && !ledCfg.isStock();
+
         // A read-back that is not what we last wrote is another writer on the node: the
         // stock ladder, or the kernel reimposing 55 % after a stall. It is a free
         // measurement -- fan_ctrl is read back before every write anyway -- and it is one
@@ -1070,6 +1150,22 @@ public class FanService extends Service {
                 failSafeLatched = false;
                 boolean engineOn = s.ledStatus != 0;
                 LinearConfig lin = Prefs.linear(this);
+                // LINEAR needs no new mode for the LED drive override -- it holds a
+                // temperature, so it absorbs the extra heat by itself and pays for it in
+                // fan. What it needs is a different number: at drive 90 the stock 52.0
+                // costs duty 50 in a 24 C room where today it rests at 38, and gives up at
+                // 29.1 C ambient instead of 32.6. The default moves to 54.0 while the
+                // override is on -- inferred from the x1.18 scaling, never written to the
+                // preferences, and never applied to a ceiling the owner set by hand.
+                boolean raised = LinearConfig.promoteForBoost(lin, ledFeatureOn);
+                if (raised != linearCeilingWasRaised) {
+                    append(note, raised
+                            ? "linear ceiling " + Sample.fmt1(LinearConfig.DEFAULT_CEILING_C)
+                              + "->" + Sample.fmt1(lin.ceilingC)
+                              + " for the LED drive override (inferred)"
+                            : "linear ceiling back to " + Sample.fmt1(lin.ceilingC));
+                    linearCeilingWasRaised = raised;
+                }
                 desired = linear.step(lin, Prefs.curve(this), s.profile, s.degC,
                         s.socC[0], engineOn, mono);
                 guardBoost = linear.guardBoost();
@@ -1173,6 +1269,63 @@ public class FanService extends Service {
                     }
                 }
             }
+        }
+
+        // ---------------- the LED drive override, second half ----------------
+        // Deliberately after the write, exactly like the DLPC read below: one sysfs read
+        // and up to two writes, none of which may sit in front of a cooling decision.
+        //
+        // The coupling rule is the entire safety case and it is a conjunction. Raising LED
+        // output while this app is not the fan controller runs Presentation-class heat
+        // under whatever fan ladder rgblevel happens to select, which is the hazard the
+        // notes forbid outright -- so every term below is required, and any doubt about
+        // one of them resolves to not-allowed.
+        //
+        // The one term where that reads oddly is led_status, which is tested for "not 0"
+        // and so treats an unreadable node as "on", exactly as the curve does. It is the
+        // conservative answer here as well, for a different reason: the hazard is the fan
+        // coupling, and every term that establishes the coupling is checked above. Writing
+        // LED currents to an engine that turns out to be off is inert -- there is nothing
+        // lit to drive -- so guessing wrong in this direction costs one sysfs write.
+        boolean ledControls = Mode.controls(mode);
+        boolean ledInCharge = ledFeatureOn && !stopped && ledControls
+                && !sessionRunning && !failSafeLatched;
+        // Arming. The override may only start on one of three events -- see ledDriveArmed
+        // for the measurement behind that -- and lastLedControlling starts false, so the
+        // service's own first tick in CURVE or LINEAR is an entry edge and needs no case
+        // of its own.
+        //
+        // Losing the display or the light engine is a pause, not a disarm: both come back
+        // through a discontinuity the loop already resyncs across, so re-applying there is
+        // the service-start case rather than a change nobody asked for. Everything else --
+        // the mode leaving, a session taking the node, the fail-safe latching, the feature
+        // being switched off -- clears the arm, so coming back takes a deliberate act.
+        boolean ledModeEntered = ledControls && !lastLedControlling;
+        lastLedControlling = ledControls;
+        if (!ledInCharge) {
+            ledDriveArmed = false;
+        } else if (settingsChanged || ledModeEntered) {
+            ledDriveArmed = true;
+        }
+        boolean ledAllowed = ledInCharge && ledDriveArmed && interactive && s.ledStatus != 0;
+        try {
+            // One extra read a tick, and only while the feature is asking for something:
+            // with the override off there is nothing to compare a read-back against.
+            String rgbCurrent = ledFeatureOn ? Sysfs.read(Sysfs.RGBCURRENT) : null;
+            LedDrive.Plan plan = ledDrive.decide(ledFeatureOn ? ledCfg : null, s.rgblevel,
+                    ledAllowed, Thermistor.plausible(s.degC) ? s.degC : Double.NaN,
+                    rgbCurrent, mono);
+            ledDrive.perform(plan);
+            s.ledDrive = ledDrive.appliedLevel();
+            if (plan.note != null && plan.note.length() > 0) {
+                append(note, plan.note);
+            }
+            ledDriveStatus = ledDriveLine(ledFeatureOn, ledInCharge, interactive, s.ledStatus);
+        } catch (Throwable t) {
+            // Sysfs does not throw and LedDrive catches its own arithmetic, so this is the
+            // outermost belt: the fan has already been written this tick and nothing about
+            // the LEDs is worth losing a tick over.
+            Log.w(TAG, "leddrive", t);
         }
 
         // ---------------- exclusive control ----------------
@@ -1362,7 +1515,30 @@ public class FanService extends Service {
      */
     private void syncCaic(Sample s, boolean interactive, boolean resumeEdge,
                           boolean engineOnEdge, StringBuilder note, long mono) {
-        boolean wanted = Prefs.caic(this);
+        // The countdown is swept first, above every gate below, so an unconfirmed arm
+        // expires on the second it is due even with the display off -- an owner who cannot
+        // see the picture is precisely who the window is for, and one who has walked away
+        // is the case the activity could not have covered.
+        //
+        // The write that reverts it still obeys the gates: the DLPC is not reliably up
+        // while the display is off, so the revert may have to wait for the resume edge.
+        // CaicArm.reverting() is what carries the reason across that wait, so the note the
+        // log eventually gets says "unconfirmed" rather than "setting".
+        if (caicArm.poll(mono)) {
+            if (Prefs.caic(this)) {
+                // The setting went true while the window was open -- a shell sent
+                // `--ez caic true`, which is a deliberate act by someone who has another
+                // way in. There is nothing left to revert, so drop the debt rather than
+                // leaving it owed against a write that is now wanted.
+                caicArm.reverted();
+            } else {
+                append(note, "caic arm expired unconfirmed -> off");
+            }
+        }
+        // An arm counts as wanting it on. The preference does not move until someone
+        // confirms -- see confirmCaic, which is the only thing in the app that writes it
+        // true -- so a process death here ends with CAIC off and nothing persisted.
+        boolean wanted = Prefs.caic(this) || caicArm.armed(mono);
         boolean rgbEdge = lastRgbSeen >= 0 && s.rgblevel >= 0 && s.rgblevel != lastRgbSeen;
         if (s.rgblevel >= 0) {
             lastRgbSeen = s.rgblevel;
@@ -1383,7 +1559,18 @@ public class FanService extends Service {
                 writeCaic(true, why, note, mono);
             }
         } else if (caicWritten == 1) {
-            writeCaic(false, "setting", note, mono);
+            boolean unconfirmed = caicArm.reverting();
+            if (writeCaic(false, unconfirmed ? "unconfirmed" : "setting", note, mono)
+                    && unconfirmed) {
+                caicArm.reverted();
+                statusLine = "CAIC was not confirmed within " + (CaicArm.WINDOW_MS / 1000)
+                        + " s, so it has been turned back off.";
+            }
+        } else if (caicArm.reverting()) {
+            // The window closed but this process never got the on write onto the hardware,
+            // so there is nothing to undo. Clear the latch rather than leaving a revert
+            // owed for ever.
+            caicArm.reverted();
         } else if (ticks == 1 && Prefs.caicDriven(this)) {
             // A previous process wrote on and never wrote off. Leave the machine as the
             // owner now wants it, once, and clear the memory.
@@ -1400,7 +1587,8 @@ public class FanService extends Service {
         }
     }
 
-    private void writeCaic(boolean on, String why, StringBuilder note, long mono) {
+    /** @return true if the DLPC took the write. */
+    private boolean writeCaic(boolean on, String why, StringBuilder note, long mono) {
         boolean ok = PicoReg.writeLedOutputControl(on);
         if (ok) {
             caicWritten = on ? 1 : 0;
@@ -1420,6 +1608,7 @@ public class FanService extends Service {
             statusLine = "cannot write " + PicoReg.NODE
                     + " - CAIC not applied; check the node exists and is 0777";
         }
+        return ok;
     }
 
     /**
@@ -1512,6 +1701,16 @@ public class FanService extends Service {
     public static String caicSummary(boolean wanted) {
         PicoReg.CaicReading rb = caicReadback;
         boolean known = rb != null && rb.known();
+        // The countdown outranks both: while it is running the setting still reads false,
+        // because nothing is persisted until it is confirmed, and reporting that as "off"
+        // would be the one moment the screen contradicts the picture.
+        int left = caicCountdownSec();
+        if (left > 0) {
+            return "arming - " + left + " s to confirm, reverts on its own otherwise";
+        }
+        if (caicArm.reverting()) {
+            return "reverting: not confirmed";
+        }
         if (!wanted) {
             // Worth saying when the DLPC disagrees with the setting: the setting was turned
             // off but the register still reads on, which means the off write has not
@@ -1523,6 +1722,111 @@ public class FanService extends Service {
             return known ? "on (read back: " + rb.state + ")" : "on (unverified)";
         }
         return caicWriteFailed ? "on (WRITE FAILED)" : "on (not written yet)";
+    }
+
+    /**
+     * Ask for CAIC and start the countdown. The tick writes {@code w 50 1 1}; nothing is
+     * persisted, and in {@link CaicArm#WINDOW_MS} the tick writes it back off unless
+     * {@link #confirmCaic} has been called.
+     *
+     * Static, and it arms before it pokes, because the same press is what starts the
+     * service on a cold app: by the time the first tick runs the window is already open.
+     */
+    public static void armCaic(Context c) {
+        caicArm.arm(SystemClock.elapsedRealtime());
+        poke(c, ACTION_REFRESH);
+    }
+
+    /**
+     * The owner confirmed the picture survived. <b>The only place in the app that stores
+     * CAIC on</b> -- everything else arms it.
+     *
+     * @return false if the window had already closed, in which case nothing is stored: a
+     *         press that arrives late is a press at a picture that has already come back.
+     */
+    public static boolean confirmCaic(Context c) {
+        if (!caicArm.confirm()) {
+            return false;
+        }
+        Prefs.setCaic(c, true);
+        poke(c, ACTION_REFRESH);
+        return true;
+    }
+
+    /** Drop an arm before its time. The tick writes off; nothing was ever persisted. */
+    public static void cancelCaicArm(Context c) {
+        caicArm.cancel();
+        poke(c, ACTION_REFRESH);
+    }
+
+    /** Seconds left on the CAIC countdown, 0 when nothing is armed. For the screen. */
+    public static int caicCountdownSec() {
+        return caicArm.secondsLeft(SystemClock.elapsedRealtime());
+    }
+
+    // ---- the LED drive override ----
+
+    /**
+     * One phrase describing the override, for {@link #ledDriveStatus}.
+     *
+     * The distinction worth drawing is between "stock because nothing is asking" and "stock
+     * because something is holding it off", because the second is a state the owner has to
+     * be able to see the reason for: the row says Bright, the picture is not, and without
+     * this the screen would just look wrong.
+     */
+    private String ledDriveLine(boolean featureOn, boolean inCharge, boolean interactive,
+                                int ledStatus) {
+        if (!featureOn) {
+            return "off";
+        }
+        if (ledDrive.tripped() || ledDrive.overriding()) {
+            // "held off: tripped at 57.2 C", or "applied 90/84".
+            return ledDrive.state();
+        }
+        if (!inCharge) {
+            return "stock: this app is not the fan controller";
+        }
+        if (ledStatus == 0) {
+            return "stock: the light engine is off";
+        }
+        if (!interactive) {
+            return "stock: the display is asleep";
+        }
+        if (!ledDriveArmed) {
+            // The only state that needs the owner to do something. It is reached by the
+            // fail-safe having latched at some point, which is deliberately not
+            // self-clearing -- see ledDriveArmed.
+            return "stock: held until the mode or the settings change";
+        }
+        return "stock";
+    }
+
+    /**
+     * Put the stock LED table back, now, off the tick.
+     *
+     * The handback for the three paths that are not a tick: RELEASE, a session taking the
+     * node, and service stop. Everything a tick can see -- the mode leaving CURVE or
+     * LINEAR, the fail-safe latching, the feature being switched off -- is handled by
+     * {@link LedDrive#decide} instead, on the tick it happens, because that is the method
+     * that knows what is on the hardware and it restores within one second either way.
+     *
+     * {@link LedDrive#forceRestore} ignores the rewrite rate limit, since a handback is a
+     * one-off and a duplicate {@code rgblevel} write is harmless, and it does nothing at
+     * all unless an override is believed to be applied -- so calling this on a machine this
+     * app never boosted writes nothing.
+     */
+    private void restoreLedDriveNow(String why) {
+        try {
+            LedDrive.Plan p = ledDrive.forceRestore(SystemClock.elapsedRealtime());
+            if (p.action == LedDrive.Plan.NONE) {
+                return;
+            }
+            boolean ok = ledDrive.perform(p);
+            note("leddrive->stock:" + why + (ok ? "" : " FAILED"));
+            ledDriveStatus = ok ? "stock" : "stock write FAILED";
+        } catch (Throwable t) {
+            Log.w(TAG, "restoreLedDriveNow", t);
+        }
     }
 
     private void stampEngineOn(final long wallMs, final long monoMs, final long bootMs) {
@@ -1596,6 +1900,11 @@ public class FanService extends Service {
                         + Sample.fmt1(SweepPlan.MAX_START_C) + " C";
                 return false;
             }
+            // Before the session takes the node. A sweep owns rgblevel and drives the fan
+            // to a schedule, so it must not start on top of an LED drive the report would
+            // not mention -- and its own assertRgbLevel would reinstate the stock table a
+            // second later anyway, silently, which is worse than doing it here on purpose.
+            restoreLedDriveNow("session");
             openSessionFiles(false);
             meta = buildMeta("auto", ambientNote);
             lastRgbWritten = -1;
@@ -1713,6 +2022,8 @@ public class FanService extends Service {
                 statusLine = "a session is already running";
                 return false;
             }
+            // For the reason startSweep gives: a hold session owns rgblevel too.
+            restoreLedDriveNow("session");
             openSessionFiles(true);
             meta = buildMeta("verify", "");
             lastRgbWritten = -1;
