@@ -72,7 +72,9 @@ public final class CurveSim {
      * drive} reproduces Normal and Eco to about 1 K, and the duty dependence is one
      * multiplicative shape that the four sensors agree on within 3 %. So a column at a
      * new drive is the measured column times the ratio of the fitted rises: Presentation
-     * 76 -> 90 is x1.174, Normal 55 -> 70 x1.251, Eco 40 -> 50 x1.224.
+     * 76 -> 90 is x1.1735, Normal 55 -> 70 x1.2513, Eco 40 -> 50 x1.2238. (Super Eco
+     * 20 -> 30 is x1.4052, and has no column here -- it shares the LOW profile with Eco
+     * but not the plant, so ask {@code tools/equilibria.py} for it.)
      *
      * Inferred, not measured. Nothing has been held at a raised drive yet, and a result
      * produced with a scale other than 1.0 is a prediction to be confirmed by a hold.

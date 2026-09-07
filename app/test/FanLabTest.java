@@ -430,14 +430,37 @@ public final class FanLabTest {
                             + CurveConfig.PROFILE_NAMES[prof] + ": duty does not fall "
                             + "between knee " + (k - 1) + " and " + k);
                 }
-                // Identical columns, so a brightness change is not a tier change and
-                // FanCurve's immediate-jump exception never fires.
-                for (int k = 0; k < CurveConfig.POINTS; k++) {
-                    eq(p.duty[prof][k], high[k], name + ": "
-                            + CurveConfig.PROFILE_NAMES[prof]
-                            + " matches Presentation at knee " + k);
+            }
+            // The columns used to be identical in every preset, which made "a brightness
+            // change is not a tier change in duty terms" true by construction and stopped
+            // FanCurve's immediate-jump exception ever firing. Bright breaks that on
+            // purpose -- it needs more fan in Presentation and less reason to touch the dim
+            // modes -- so the property is asserted here as what it actually has to be: the
+            // three columns agree at every temperature at or below 51 C, which is where the
+            // dim modes live and therefore where a brightness change is made from. Above
+            // 51 C only Presentation is different, and only in Bright.
+            //
+            // What that leaves is stated rather than hidden: on Bright with the LED drive
+            // raised, the step on a Normal -> Presentation switch is 0 up to a 25 C room,
+            // 1 at 26, 2 at 26.2 -- the warmest this unit has recorded -- and 3, 5 and 6 at
+            // 27, 28 and 30 C. Eco -> Presentation is stepless everywhere below 30 C. In
+            // every other preset it is 0 always, because the columns are identical.
+            String disagreesAt = null;
+            for (double t = -100.0; t <= 51.0 && disagreesAt == null; t += 0.25) {
+                int low = p.dutyAt(CurveConfig.PROFILE_LOW, t);
+                for (int prof = 1; prof < CurveConfig.PROFILES; prof++) {
+                    if (p.dutyAt(prof, t) != low) {
+                        disagreesAt = CurveConfig.PROFILE_NAMES[prof] + " wants "
+                                + p.dutyAt(prof, t) + " where Eco / Super Eco wants " + low
+                                + " at " + t + " C";
+                        break;
+                    }
                 }
             }
+            check(disagreesAt == null, name + ": all three profiles command the same duty "
+                    + "at every temperature up to 51 C, so a brightness change made from "
+                    + "where the dim modes live is not a step"
+                    + (disagreesAt == null ? "" : " -- " + disagreesAt));
             // A shape check, not a stability proof. It catches a knee typed in wrong.
             //
             // It used to be described here as the stability criterion, and it is not:
@@ -467,67 +490,87 @@ public final class FanLabTest {
             }
         }
 
-        // Every preset is Quiet plus a constant at every knee ABOVE THE FLOOR, and the
-        // constant is the design rather than an implementation detail: identical knees plus
-        // a uniform offset leave the shelf's width and slope equal to Quiet's, so the
-        // margin against the deadband cannot have moved there. Assert the transform, not
-        // the resulting numbers, because it is the transform that carries the argument.
+        // What each preset IS, asserted against the published derivation rather than
+        // against a second copy of the numbers here: the derivation is what carries the
+        // stability argument, so the derivation is what wants pinning.
         //
-        // The floor is deliberately NOT offset. Below 47 C the light engine is cool enough
-        // that extra fan buys almost nothing -- measured, Cold's +15 bought 3.4 C in Super
-        // Eco on a thermistor already at 35 C -- and Normal, Eco and Super Eco spend their
-        // whole lives there. So every preset idles at 30, and the offset applies only where
-        // the ceiling is actually in question.
+        // That published derivation used to be int[] PRESET_OFFSETS, and it stopped being
+        // able to describe the set the day Bright arrived. Four presets are Quiet plus a
+        // constant at every knee above the floor, leaving the shelf's width and slope equal
+        // to Quiet's so the margin against the deadband cannot have moved there; Bright's
+        // Presentation row is drawn instead, and its other two are Quiet's untouched. Both
+        // are a CurveConfig.PresetShape now, which is why this loop has no case in it --
+        // the alternative was an offset array with a sentinel in it and an if in every
+        // reader.
         //
-        // Driven off the published PRESET_OFFSETS rather than a copy of it here, so a fifth
-        // curve added without an offset for it fails rather than going unchecked.
-        int[] offsets = CurveConfig.PRESET_OFFSETS;
-        eq(offsets.length, CurveConfig.PRESETS.length,
-                "there is an offset here for every preset on offer");
-        eq(offsets.length, CurveConfig.PRESET_NAMES.length,
+        // The floor is deliberately NOT offset in either shape. Below the floor edge the
+        // light engine is cool enough that extra fan buys almost nothing -- measured,
+        // Cold's +15 bought 3.4 C in Super Eco on a thermistor already at 35 C -- and
+        // Normal, Eco and Super Eco spend their whole lives there. So every preset idles at
+        // 30, and the offset applies only where the ceiling is actually in question.
+        //
+        // Driven off the published PRESET_SHAPES rather than a copy of them here, so a
+        // sixth curve added without a shape fails rather than going unchecked.
+        CurveConfig.PresetShape[] shapes = CurveConfig.PRESET_SHAPES;
+        eq(shapes.length, CurveConfig.PRESETS.length,
+                "there is a shape here for every preset on offer");
+        eq(shapes.length, CurveConfig.PRESET_NAMES.length,
                 "and a name for every one of them");
-        eq(offsets[0], 0, "Quiet is the unshifted curve");
         int[] knees = CurveConfig.preset(0).tempC;
         int[] quiet = CurveConfig.preset(0).duty[CurveConfig.PROFILE_HIGH];
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             String name = CurveConfig.PRESET_NAMES[i];
             CurveConfig p = CurveConfig.preset(i);
-            if (i > 0) {
-                check(offsets[i] > offsets[i - 1], name + " is a bigger offset than "
-                        + CurveConfig.PRESET_NAMES[i - 1] + ", so the list runs quietest "
-                        + "first");
-            }
-            for (int k = 0; k < CurveConfig.POINTS; k++) {
-                if (k == 0) {
-                    // The floor edge is the one knee a preset may move, and only downward:
-                    // with the floor pinned at 30, a preset whose shelf sits 15 points above
-                    // Quiet's has to climb 23 points where Quiet climbs 8, and over the same
-                    // 4 C that is 5.75 duty/C -- steep enough to hunt, and Cold did, by four
-                    // points at 17 C. Starting its rise earlier is the only fix that keeps
-                    // both the pinned floor and the shelf. It must never move UP: that would
-                    // narrow the rise and steepen it further.
-                    check(p.tempC[0] <= knees[0], name + ": floor edge " + p.tempC[0]
-                            + " C is at or before Quiet's " + knees[0]);
-                    continue;
-                }
+            CurveConfig.PresetShape shape = shapes[i];
+            // The floor edge is the one knee a preset may move, and only downward: with the
+            // floor pinned at 30, a preset whose shelf sits 15 points above Quiet's has to
+            // climb 23 points where Quiet climbs 8, and over the same 4 C that is 5.75
+            // duty/C -- steep enough to hunt, and Cold did, by four points at 17 C.
+            // Starting its rise earlier is the only fix that keeps both the pinned floor
+            // and the shelf. It must never move UP: that would narrow the rise and steepen
+            // it further.
+            eq(p.tempC[0], shape.floorEdgeC, name + ": floor edge is the "
+                    + shape.floorEdgeC + " C its shape declares");
+            check(p.tempC[0] <= knees[0], name + ": floor edge " + p.tempC[0]
+                    + " C is at or before Quiet's " + knees[0]);
+            for (int k = 1; k < CurveConfig.POINTS; k++) {
                 eq(p.tempC[k], knees[k], name + ": knee " + k + " is at Quiet's "
                         + knees[k] + " C, so the segment widths above the floor are Quiet's");
-                // Knee 0 is the floor and is never offset. Above it, 83 is the ceiling, so
-                // the offset clips there rather than running past it.
-                int want = (k == 0) ? quiet[0] : Math.min(83, quiet[k] + offsets[i]);
-                for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
-                    eq(p.duty[prof][k], want, name + " "
-                            + CurveConfig.PROFILE_NAMES[prof] + ": knee " + k
-                            + (k == 0 ? " is the shared floor, " + quiet[0]
-                                      : " is Quiet's " + quiet[k] + " + " + offsets[i]
-                                        + ", capped at 83"));
+            }
+            for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
+                int[] want = shape.row(prof, quiet);
+                eq(want.length, CurveConfig.POINTS, name + " "
+                        + CurveConfig.PROFILE_NAMES[prof] + ": its shape derives a row of "
+                        + CurveConfig.POINTS + " knees");
+                for (int k = 0; k < CurveConfig.POINTS; k++) {
+                    eq(p.duty[prof][k], want[k], name + " "
+                            + CurveConfig.PROFILE_NAMES[prof] + ": knee " + k + " is the "
+                            + want[k] + " its shape derives from Quiet's " + quiet[k]);
                 }
+            }
+            // Quietest first, through Cold. Bright is outside that ordering and is last in
+            // the list because it is special-purpose, not because it is the loudest: at
+            // knee 1 it IS Quiet, at knee 2 it sits between Balanced and Cool, and Cold is
+            // louder than it at every knee. Choosing it without the LED drive override on
+            // is pointless rather than dangerous -- solved against the stock plant it rests
+            // half a duty point above Quiet at 24 C.
+            if (i > 0 && i < 4) {
+                int[] prev = CurveConfig.preset(i - 1).duty[CurveConfig.PROFILE_HIGH];
+                int[] mine = p.duty[CurveConfig.PROFILE_HIGH];
+                for (int k = 0; k < CurveConfig.POINTS; k++) {
+                    check(mine[k] >= prev[k], name + ": knee " + k + " is at least "
+                            + CurveConfig.PRESET_NAMES[i - 1] + "'s, so the list runs "
+                            + "quietest first");
+                }
+                check(mine[1] > prev[1], name + ": and strictly louder than "
+                        + CurveConfig.PRESET_NAMES[i - 1] + " at the top of the rise");
             }
             // Stated as its own assertion rather than left implicit in the loop above,
             // because it is the owner's requirement in his own words: "i want the floor to
-            // be 30 for every curve mode and every projector mode". The second half is
-            // rule 4 -- identical columns -- which is checked separately, and together they
-            // mean every preset idles at 30 in every brightness mode.
+            // be 30 for every curve mode and every projector mode". The second half is the
+            // per-profile sweep above, and together they mean every preset idles at 30 in
+            // every brightness mode -- Bright included, which is the whole reason its dim
+            // columns were left as Quiet's.
             for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
                 eq(p.duty[prof][0], 30, name + " " + CurveConfig.PROFILE_NAMES[prof]
                         + ": idles at 30, the floor every preset shares");
@@ -537,10 +580,10 @@ public final class FanLabTest {
         }
 
         // Rule 6: the ceiling has to arrive above anything the plant can produce. Clipping
-        // moves that temperature down for the two biggest offsets -- Quiet and Balanced
-        // reach 83 at the last knee, Cool and Cold at the one before it -- so it is worth
-        // saying where each one lands rather than trusting that "83 somewhere" is enough.
-        // 52.85 C is the hottest degC ever recorded on this unit.
+        // moves that temperature down for the two biggest offsets -- Quiet, Balanced and
+        // Bright reach 83 at the last knee, Cool and Cold at the one before it -- so it is
+        // worth saying where each one lands rather than trusting that "83 somewhere" is
+        // enough. 52.85 C is the hottest degC ever recorded on this unit.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             CurveConfig p = CurveConfig.preset(i);
             int[] high = p.duty[CurveConfig.PROFILE_HIGH];
@@ -553,6 +596,87 @@ public final class FanLabTest {
             check(at >= 60, CurveConfig.PRESET_NAMES[i] + ": reaches 83 by " + at
                     + " C, far above the 52.85 C this unit has ever recorded");
         }
+
+        testBrightPreset();
+    }
+
+    /**
+     * Bright, pinned knee by knee.
+     *
+     * The loops above hold every preset to the rules and to its published shape, which is
+     * the right level for a family. Bright gets its own numbers written down as well,
+     * because it is the one preset whose Presentation row was drawn rather than derived:
+     * there is no offset to re-derive it from, so if it is ever changed the change should
+     * be a deliberate edit here and not a diff nobody reads.
+     *
+     * The row is 30/38/46/56/70/83 on Quiet's knees. That is Quiet's own 2.0 duty/C rise
+     * carried straight through the 51-55 C shelf instead of levelling off on it, and then
+     * 2.0 duty/C again to 60 C before the shared backstop. No new slope anywhere: what
+     * Bright does is spend Quiet's slope over the four degrees where Quiet is flat.
+     *
+     * Where it settles is INFERRED and is not asserted here, because nothing has been held
+     * at the raised LED drive -- see the Bright entry in CurveConfig.PRESETS and
+     * docs/curve.md. What is asserted is the shape, which is a fact about the file.
+     */
+    private static void testBrightPreset() {
+        int i = CurveConfig.PRESET_NAMES.length - 1;
+        eq(i, 4, "Bright is the fifth preset");
+        check("Bright".equals(CurveConfig.PRESET_NAMES[i]), "and it is the one named Bright");
+
+        CurveConfig b = CurveConfig.preset(i);
+        eq(CurveConfig.presetOf(b.encode()), i,
+                "the curve preset(4) returns is recognised back as preset 4");
+
+        int[] quiet = CurveConfig.preset(0).duty[CurveConfig.PROFILE_HIGH];
+        int[] wantHigh = {30, 38, 46, 56, 70, 83};
+        int[] knees = {47, 51, 55, 60, 66, 70};
+        for (int k = 0; k < CurveConfig.POINTS; k++) {
+            eq(b.tempC[k], knees[k], "Bright: knee " + k + " is at " + knees[k]
+                    + " C, exactly Quiet's");
+            eq(b.duty[CurveConfig.PROFILE_HIGH][k], wantHigh[k],
+                    "Bright Presentation: knee " + k + " is " + wantHigh[k]);
+            eq(b.duty[CurveConfig.PROFILE_NORMAL][k], quiet[k],
+                    "Bright Normal: knee " + k + " is Quiet's " + quiet[k] + ", untouched");
+            eq(b.duty[CurveConfig.PROFILE_LOW][k], quiet[k],
+                    "Bright Eco / Super Eco: knee " + k + " is Quiet's " + quiet[k]
+                            + ", untouched");
+        }
+
+        // Everything else about it is Quiet's, which is what lets the stability argument
+        // above the floor be inherited rather than remade.
+        CurveConfig q = CurveConfig.preset(0);
+        eq(b.hysteresisC, q.hysteresisC, 1e-9, "Bright: Quiet's deadband");
+        eq(b.slewUpPerSec, q.slewUpPerSec, 1e-9, "Bright: Quiet's rising slew");
+        eq(b.slewDownPerSec, q.slewDownPerSec, 1e-9, "Bright: Quiet's falling slew");
+        eq(b.minDuty, q.minDuty, "Bright: Quiet's floor");
+        eq(b.maxDuty, q.maxDuty, "Bright: Quiet's ceiling");
+        eq(b.idleDuty, q.idleDuty, "Bright: Quiet's idle duty");
+        check(b.socGuardEnabled == q.socGuardEnabled, "Bright: the guard is armed as Quiet's is");
+        eq(b.socGuardStartC, q.socGuardStartC, "Bright: Quiet's guard knee");
+        eq(b.socGuardGainPerC, q.socGuardGainPerC, 1e-9, "Bright: Quiet's guard gain");
+        eq(b.socGuardMaxDuty, q.socGuardMaxDuty, "Bright: Quiet's guard ceiling");
+        eq(b.socGuardHystC, q.socGuardHystC, 1e-9, "Bright: Quiet's guard deadband");
+
+        // Monotone in temperature and reaching the stock maximum by 70 C, checked on the
+        // controller's own output rather than on the table, because dutyAt applies the
+        // clamps and the rounding and it is dutyAt the fan sees.
+        int prev = -1;
+        boolean monotone = true;
+        for (double t = -100.0; t <= 200.0; t += 0.1) {
+            int d = b.dutyAt(CurveConfig.PROFILE_HIGH, t);
+            if (prev >= 0 && d < prev) {
+                monotone = false;
+                break;
+            }
+            prev = d;
+        }
+        check(monotone, "Bright Presentation: never asks for less fan as it gets hotter");
+        eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 70.0), 83,
+                "Bright Presentation: 83 by 70 C, the same backstop as every other preset");
+        eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 55.0), 46,
+                "Bright Presentation: 46 at 55 C, where Quiet is flat at 40");
+        eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 51.0), 38,
+                "Bright Presentation: 38 at 51 C, where Quiet's shelf starts");
     }
 
     private static void testCurveVsStockAtRungs() {
@@ -1028,7 +1152,7 @@ public final class FanLabTest {
         String tweaked = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
         check(!tweaked.equals(CurveConfig.PRESETS[1]), "the mutated line really differs");
         eq(CurveConfig.presetOf(tweaked), CurveConfig.PRESET_CUSTOM,
-                "a curve that is none of the four reads as Custom");
+                "a curve that is none of the presets reads as Custom");
         eq(CurveConfig.presetOf(null), CurveConfig.PRESET_CUSTOM, "and so does no curve");
         check(CurveConfig.presetName(CurveConfig.PRESET_CUSTOM).equals("Custom"),
                 "which is the word the row shows");
@@ -3287,8 +3411,8 @@ public final class FanLabTest {
      * room temperature from 14 to 34 C. None may hunt.
      *
      * This is the check the static rules above cannot make. A segment can be four degrees
-     * wide, monotone, identical across profiles and clipped correctly, and still leave the
-     * controller with nowhere to rest: Cold's rise from the pinned floor passed every static
+     * wide, monotone, correctly clipped and exactly what its shape derives, and still leave
+     * the controller with nowhere to rest: Cold's rise from the pinned floor passed every static
      * assertion in this file and hunted by four duty points at 17 C ambient, because 23 duty
      * points in 4 C is a slope of 5.75 duty/C and the 0.8 C deadband then spans 4.6 duty
      * points. The width test never saw it. This one does.
@@ -3319,9 +3443,14 @@ public final class FanLabTest {
         // points at 17 C. A hunt on a rounding knife-edge is decided by exactly the details
         // a tidy model leaves out: the 70/30 split between the fast pole and the chassis,
         // the slow pole's value, and 0.03 C of seeded sensor noise. So they are all here.
+        //
+        // It is driven off PRESETS.length rather than a list, so adding a curve puts it
+        // under this check without anyone remembering to. That is how Bright got here.
         final double tauFast = 230.0;
         final double[] tauSlow = {0.0, 900.0, 1500.0, 3000.0};
+        int checked = 0;
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            checked++;
             String name = CurveConfig.PRESET_NAMES[i];
             CurveConfig cfg = CurveConfig.preset(i);
             for (int ambient = 14; ambient <= 34; ambient++) {
@@ -3359,6 +3488,8 @@ public final class FanLabTest {
                 }
             }
         }
+        eq(checked, CurveConfig.PRESET_NAMES.length,
+                "and every curve on offer went through it, not a list of them kept here");
     }
 
     /**

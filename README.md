@@ -45,13 +45,16 @@ continuous curve removes that failure structurally: there is no boundary left to
   against a deliberately induced blocked-vent fault.
 - **One curve shared by all four brightness modes.** The optics care about temperature,
   not about which mode produced it, so changing brightness causes **no fan step** — the
-  measured jump on a mode change is 1 duty point, against 10 for a per-mode design.
+  measured jump on a mode change is 1 duty point, against 10 for a per-mode design. The
+  `Bright` preset is the one place the columns differ, and only above 51 °C — an Eco →
+  Presentation switch is still stepless there, and a Normal → Presentation one reaches 2
+  points at the warmest room this unit has recorded.
 - **A 0.8 °C deadband and a 1-point-per-4-seconds rate limit**, so even a real change is
   inaudible as a change. Rate limiting exists to hide drift the listener did not cause, so
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 2989**, run on the host as part of every build.
+- **Test count: 3292**, run on the host as part of every build.
 - **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
   fan only above 70 °C on the die and can never subtract any. See
   [The SoC guard](#the-soc-guard).
@@ -157,7 +160,7 @@ left/right and pressing a button row with OK.
 | control | what it does |
 |---|---|
 | **Mode** | `OFF` observes only. `CURVE` is the fan curve — **this is the one to use**. `MANUAL` holds one fixed speed. `LINEAR` holds a temperature instead of a speed (see below) |
-| **Curve preset** | `Quiet` / `Balanced` / `Cool` / `Cold`. Quiet is the default and the quietest; each step up adds 5 % fan and buys about 1.5 °C. See [The four presets](#the-four-presets) |
+| **Curve preset** | `Quiet` / `Balanced` / `Cool` / `Cold` / `Bright`. Quiet is the default and the quietest; each of the next three adds 5 % fan and buys about 1.5 °C. `Bright` is not a fifth step up — it is a separate curve for a raised LED drive, and it is only worth choosing with that override on. See [The five presets](#the-five-presets) |
 | **Room temperature** | optional. Tells the log what the room actually is, so later analysis is not guessing |
 | **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
 | **Start automatically after a reboot** | leave this on |
@@ -169,9 +172,13 @@ left/right and pressing a button row with OK.
 ### Which preset
 
 Start on **Quiet** and only move up if the light engine runs hotter than you want it to.
-The figures are in [The four presets](#the-four-presets); the short version is that Quiet
+The figures are in [The five presets](#the-five-presets); the short version is that Quiet
 keeps the light engine under 55 °C up to a 28 °C room, and each step up extends that by
 about 2 °C at the cost of 5 % more fan.
+
+**Use `Bright` only with the LED drive override on.** It is drawn for a machine running
+Presentation at 90 % drive rather than the stock 76, and on the stock drive it is Quiet to
+within half a duty point — harmless, but pointless.
 
 ### CURVE or LINEAR
 
@@ -564,10 +571,10 @@ reads about 2.5 °C low.
 Full derivation, the measured thermal plant, and the stability analysis:
 **[docs/curve.md](docs/curve.md)**.
 
-## The four presets
+## The five presets
 
-The curve ships as four, selectable on the main screen or by broadcast. Each is the base
-curve with a constant added to every knee **above the floor**, clipped at 83 %:
+The curve ships as five, selectable on the main screen or by broadcast. Four of them are the
+base curve with a constant added to every knee **above the floor**, clipped at 83 %:
 
 | preset | fan at 24 °C | LED at 24 °C | holds ≤54 °C to | holds ≤55 °C to |
 |---|---|---|---|---|
@@ -575,10 +582,45 @@ curve with a constant added to every knee **above the floor**, clipped at 83 %:
 | Balanced | 41 % | 50.4 °C | 28.8 °C room | 30.0 °C room |
 | Cool | 43 % | 49.8 °C | 30.1 °C room | 31.2 °C room |
 | Cold | 46 % | 48.6 °C | 31.5 °C room | 32.6 °C room |
+| **Bright** *(raised LED drive)* | **44 %** | **53.8 °C** | **24.4 °C room** | **26.1 °C room** |
+
+**Bright's row is not comparable with the four above it, and its numbers are inferred.** The
+other four are solved against this unit's *measured* thermal plant. Bright is solved against
+that plant scaled up for a raised LED drive — Presentation at 90 % of the driver maximum
+rather than the stock 76 — and **nothing has ever been held at that drive**, so every figure
+in its row is a prediction from a fitted line. One twelve-minute hold at duty 45 confirms or
+corrects it; the derivation, the fit, and what happens if it reads high are all in
+[docs/curve.md](docs/curve.md#the-bright-preset).
+
+On the stock drive Bright settles at 39 % / 51.5 °C at 24 °C — Quiet, near enough. It is not
+a fifth step up the ladder; it is a different curve for a different machine.
+
+**What Bright changes.** Same knees as Quiet, same deadband, slew and SoC guard, and Normal
+and Eco / Super Eco keep Quiet's duty row untouched. Only the Presentation row differs, and
+it is Quiet's own 2.0 duty/°C rise carried straight through the 51–55 °C shelf instead of
+levelling off on it:
+
+```
+tempC   =  47   51   55   60   66   70
+Quiet   =  30   38   40   50   68   83
+Bright  =  30   38   46   56   70   83     Presentation only
+```
+
+On the raised drive that settles at 44 % / 53.8 °C in a 24 °C room, against Quiet's
+40.6 % / 55.3 °C — already over the ceiling — and it stays under the owner's 50 % line until
+about a 29 °C room.
+
+**Raising the LED drive costs the dim modes their silent floor, and that is the drive raise
+rather than the preset.** Bright leaves their rows alone precisely so it does not make it
+worse, but it is worth knowing before switching either on: with Normal at 70 % drive rather
+than 55, **Normal leaves duty 30 at an 18.8 °C room instead of a 24.5 °C one** and sits at
+about 37 % / 50.5 °C in a 24 °C room. Eco at 50 % drive reaches the 47 °C floor edge at a
+27 °C room rather than a 30.7 °C one. Super Eco is untouched below a 31 °C room. The full
+tables are in [docs/curve.md](docs/curve.md#what-it-costs-stated-rather-than-buried).
 
 Two design points worth stating, because both were arrived at the hard way:
 
-**The floor is not offset.** All four presets idle at 30 %. Below the floor edge the light
+**The floor is not offset.** All five presets idle at 30 %. Below the floor edge the light
 engine is cool enough that extra fan buys almost nothing — measured, Cold's +15 bought 3.4 °C
 in Super Eco on a thermistor already sitting at 35 °C. Since Normal, Eco and Super Eco spend
 their whole lives on the floor, offsetting it would make them louder for no useful cooling.
@@ -600,8 +642,9 @@ points rather than carry an exception for a known four.
 segment's width and slope untouched, so the shelf and everything above it inherit the base
 curve's stability rather than needing a fresh argument. The one exception is the rise from
 the pinned floor to the shelf, which climbs further in the same 4 °C — 5.75 duty/°C on Cold
-— and that was not assumed safe: all four were driven through `tools/CurveSim.java` across
-15–35 °C ambient at four thermal poles.
+— and that was not assumed safe: all five are driven through `tools/CurveSim.java` across
+15–35 °C ambient at four thermal poles, and through the host suite at every ambient from 14
+to 34 °C on every build.
 
 **A curve cannot hold a hard temperature ceiling**, and it is worth being explicit about
 why. To pin the LED at exactly 55 °C the curve would have to command 38.2 % in a 27 °C room
@@ -734,10 +777,10 @@ Summarised; the detail is in [docs/findings.md](docs/findings.md).
 ## How the tests work
 
 `app/test/FanLabTest.java` is a plain Java program — no JUnit, no Android — that runs on
-the host as part of every build. **546 assertions**, and the build refuses to produce an
+the host as part of every build. **3292 assertions**, and the build refuses to produce an
 APK if any fail.
 
-It covers four things:
+It covers five things:
 
 1. **The pure logic**, exhaustively: the thermistor conversion against the framework's own
    arithmetic, the curve's interpolation and clamps, monotonicity, and that every output
@@ -748,6 +791,13 @@ It covers four things:
    same dithering input and asserts stock changes speed while the curve does not.
 4. **A simulated hour** of both controllers, asserting the curve never moves more than one
    point at a time and that it is measurably quieter than stock.
+5. **No preset hunts.** Every curve on offer is driven through the real `FanCurve` against
+   the two-pole plant at every ambient from 14 to 34 °C, at four thermal poles, and the run
+   fails if any of them settles outside two duty points or moves more than one point per
+   tick. This is the only check that has ever caught a hunt here — three static rules were
+   each written down as the criterion and each passed a curve that hunts. It is driven off
+   the preset list rather than a copy of it, so a new curve is covered without anyone
+   remembering to add it.
 
 There is also `tools/CurveSim.java`, which drives the **real** controller class against the
 measured thermal response in the time domain, and `tools/equilibria.py`, which checks a

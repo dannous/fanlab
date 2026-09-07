@@ -89,8 +89,13 @@ def drive_scale(mode, drive):
     reproduces Normal and Eco to about 1 K. The duty dependence is a single
     multiplicative shape -- the four sensors agree on it within 3 % -- so a column for a
     new drive level is the measured column times the ratio of the two fitted rises.
-    Presentation 76 -> 90 is x1.180, Normal 55 -> 70 x1.250, Eco 40 -> 50 x1.220,
-    Super Eco 20 -> 30 x1.378.
+    Presentation 76 -> 90 is x1.1735, Normal 55 -> 70 x1.2513, Eco 40 -> 50 x1.2238,
+    Super Eco 20 -> 30 x1.4052.
+
+    Those four were written here as 1.180, 1.250, 1.220 and 1.378 when the flag was added,
+    which is not what the line above produces -- print(drive_scale(...)) rather than
+    trusting the docstring. The formula is the authority and it is unchanged; only these
+    four illustrative numbers were wrong, the last of them by 2 %.
 
     This is an INFERENCE from the fit, not a measurement: nothing has yet been held at a
     raised drive. Anything solved with a scale other than 1.0 needs confirming with a
