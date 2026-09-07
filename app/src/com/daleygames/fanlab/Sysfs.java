@@ -36,6 +36,16 @@ public final class Sysfs {
     public static final String LED_STATUS = "/sys/class/dlpc343x/led_status";
 
     /**
+     * The two LED drive nodes an app may write, both 0777. {@code rgbcurrent} sets all four
+     * channels to one value and has a show handler; {@code redcurrent} sets channel 1
+     * alone. Both are overwritten by the kernel on the next {@code rgblevel} write, which
+     * is what {@link LedDrive} relies on to restore the stock table. {@code b2current} is
+     * not writable by an app and is not here.
+     */
+    public static final String RGBCURRENT = "/sys/class/dlpc343x/rgbcurrent";
+    public static final String REDCURRENT = "/sys/class/dlpc343x/redcurrent";
+
+    /**
      * The SoC die sensors, in millidegrees. Only {@code thermal_zone0} (pll) has cooling
      * devices bound to it -- at 75 C -- so it is the one that can actually throttle; the
      * other two are monitoring only. They are logged because the fan is driven solely by
@@ -75,6 +85,7 @@ public final class Sysfs {
             "/sys/class/dlpc343x/rgblevel",
             "/sys/class/dlpc343x/led_status",
             "/sys/class/dlpc343x/rgbcurrent",
+            "/sys/class/dlpc343x/redcurrent",
             "/sys/class/dlpc343x/b2current",
             "/sys/class/dlpc343x/usb_sw",
             "/sys/class/dlpc343x/usb_power",

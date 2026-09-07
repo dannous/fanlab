@@ -35,7 +35,9 @@ public final class CsvLogger {
      * the SoC block underneath them and be read as data rather than as an error. The six
      * added on 2026-09-07 answer the questions the first field log could not -- ambient,
      * run boundaries, whether the app was alone on the node, and whether the controller
-     * had converged.
+     * had converged. {@code led_drive} says whether the LED drive override was on the
+     * hardware for the row, because a temperature measured under it is not comparable
+     * with one measured under the stock table.
      *
      * A file whose first line is not this string is rolled aside rather than appended to,
      * so changing it is safe and is meant to be done in one revision rather than seven.
@@ -44,7 +46,8 @@ public final class CsvLogger {
             "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
                     + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c"
                     + ",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore"
-                    + ",session,off_s,room_c,exclusive,catchup,duty_hold_s";
+                    + ",session,off_s,room_c,exclusive,catchup,duty_hold_s"
+                    + ",led_drive";
 
     private static final class Target {
         final File file;
