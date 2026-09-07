@@ -15,6 +15,11 @@ import java.util.List;
  * Every line is flushed. A USB stick can be pulled at any moment and the file on it must
  * be complete up to the second before.
  *
+ * A stick inserted after the fact only receives what is written from then on, so
+ * {@link #exportBacklog} copies the history across as well. It is a separate mechanism on
+ * purpose: it writes outside every sink, and it appends by watermark rather than fanning
+ * out.
+ *
  * A destination that fails is dropped and retried later rather than being allowed to
  * take the run down. Nothing here throws.
  *
@@ -22,10 +27,24 @@ import java.util.List;
  */
 public final class CsvLogger {
 
+    /**
+     * The columns, and their order is a compatibility surface.
+     *
+     * New columns go on the end, never in the middle: every analysis script in
+     * {@code tools/} addresses fields by position, and a column inserted at 14 would move
+     * the SoC block underneath them and be read as data rather than as an error. The six
+     * added on 2026-09-07 answer the questions the first field log could not -- ambient,
+     * run boundaries, whether the app was alone on the node, and whether the controller
+     * had converged.
+     *
+     * A file whose first line is not this string is rolled aside rather than appended to,
+     * so changing it is safe and is meant to be done in one revision rather than seven.
+     */
     public static final String HEADER =
             "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
                     + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c"
-                    + ",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore";
+                    + ",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore"
+                    + ",session,off_s,room_c,exclusive,catchup,duty_hold_s";
 
     private static final class Target {
         final File file;
@@ -360,6 +379,465 @@ public final class CsvLogger {
             }
         }
         return written;
+    }
+
+    // ------------------------------------------------------------------ export
+
+    /**
+     * How many differently-headed files may share one first-row timestamp. It takes a
+     * schema change to make even the second, so this only exists to bound the loop.
+     */
+    private static final int MAX_SIBLINGS = 20;
+
+    /** What one {@link #exportBacklog} run managed to do, for the screen and the log. */
+    public static final class Export {
+        /** Source files that held at least one complete row. */
+        public int sources;
+        /** Destinations created or appended to. */
+        public int filesWritten;
+        /** Rows appended, across every destination. */
+        public long rowsCopied;
+        /** Destinations that already held everything their source had. */
+        public int upToDate;
+        /** Sources that could not be read, or destinations that could not be written. */
+        public int failures;
+    }
+
+    /**
+     * Copy the log backlog into {@code destDir}, adding to what is already there rather
+     * than replacing it.
+     *
+     * <h3>The destination must not be a sink</h3>
+     * {@link #prune} deletes everything matching {@code <stem>-*<ext>} in a target's own
+     * directory, so an export named {@code fanlab-1757.csv} written into a sink is
+     * indistinguishable from a rolled file and becomes prune fodder. {@link
+     * #openIfNeeded} would also roll a historic file aside for carrying the header it was
+     * written under. Both are avoided by exporting somewhere no logger writes.
+     *
+     * <h3>How "additive" is made to hold</h3>
+     * A destination is named after its source's <i>first</i> row, whose {@code epoch_ms}
+     * never changes for the life of that file. The live log therefore maps to the same
+     * destination however much it has grown since, and the two internal sinks -- which
+     * are identical copies of the same data under different rolled names -- collapse onto
+     * one destination too. Before appending, the destination's last complete row gives a
+     * watermark and only strictly newer source rows are copied, so the duplicate is a
+     * no-op and a stick brought back tomorrow gains today's tail instead of a second copy
+     * of everything. Filename-based dedupe cannot do this: the live file keeps its name
+     * and grows.
+     *
+     * A destination whose header differs from the source's gets a sibling rather than two
+     * schemas in one file. The sticks in the field already hold 13-column files where
+     * this build writes 20.
+     *
+     * Never throws.
+     */
+    public static Export exportBacklog(File destDir, List<File> sources) {
+        Export r = new Export();
+        if (destDir == null || sources == null) {
+            return r;
+        }
+        try {
+            if (!destDir.isDirectory()) {
+                destDir.mkdirs();
+            }
+            if (!destDir.isDirectory()) {
+                r.failures++;
+                return r;
+            }
+        } catch (Throwable e) {
+            r.failures++;
+            return r;
+        }
+        for (int i = 0; i < sources.size(); i++) {
+            File src = sources.get(i);
+            try {
+                if (src == null || !src.isFile() || src.length() == 0) {
+                    continue;
+                }
+                String header = headerOf(src);
+                long first = firstEpochMs(src);
+                if (header == null || first < 0) {
+                    // A header and nothing else yet, or a single row still being written.
+                    // Nothing is lost by waiting: the name comes from a row that is
+                    // already complete, so the next insertion picks the same destination.
+                    continue;
+                }
+                r.sources++;
+                File dest = destFor(destDir, src.getName(), first, header);
+                if (dest == null) {
+                    r.failures++;
+                    continue;
+                }
+                long n = appendSince(src, dest, lastEpochMs(dest));
+                if (n < 0) {
+                    r.failures++;
+                } else if (n == 0) {
+                    r.upToDate++;
+                } else {
+                    r.filesWritten++;
+                    r.rowsCopied += n;
+                }
+            } catch (Throwable e) {
+                r.failures++;
+            }
+        }
+        return r;
+    }
+
+    /**
+     * The {@code epoch_ms} on the first data row of a log file. Fixed for the life of
+     * that file, which is what makes it usable as an identity.
+     *
+     * Only a row terminated by a newline counts. A half-written first row would otherwise
+     * name the destination after a truncated number, and that name has to come out the
+     * same on every insertion or nothing is additive.
+     *
+     * @return -1 if the file has no complete data row yet.
+     */
+    public static long firstEpochMs(File f) {
+        Rows rows = null;
+        try {
+            if (f == null || !f.isFile() || f.length() == 0) {
+                return -1L;
+            }
+            rows = new Rows(f);
+            rows.next();                       // the header
+            if (!rows.terminated) {
+                return -1L;
+            }
+            String row = rows.next();
+            return rows.terminated ? epochOf(row) : -1L;
+        } catch (Throwable e) {
+            return -1L;
+        } finally {
+            closeQuietly(rows);
+        }
+    }
+
+    /**
+     * The {@code epoch_ms} on the last complete row of a file -- the watermark an append
+     * starts from.
+     *
+     * Read from the tail rather than by scanning: a destination on the stick is already
+     * megabytes, and re-reading all of it to find one number would cost as much as the
+     * copy the watermark exists to avoid.
+     *
+     * @return -1 if the file holds no complete data row, in which case everything copies.
+     */
+    public static long lastEpochMs(File f) {
+        java.io.RandomAccessFile raf = null;
+        try {
+            if (f == null || !f.isFile() || f.length() == 0) {
+                return -1L;
+            }
+            raf = new java.io.RandomAccessFile(f, "r");
+            long size = raf.length();
+            int window = 8192;
+            while (true) {
+                long from = size > window ? size - window : 0L;
+                byte[] b = new byte[(int) (size - from)];
+                raf.seek(from);
+                raf.readFully(b);
+                // The last newline ends the last complete row; anything after it is a
+                // fragment and is deliberately ignored.
+                int end = lastIndexOfNl(b, b.length - 1);
+                int start = end < 0 ? -1 : lastIndexOfNl(b, end - 1);
+                if (end >= 0 && (start >= 0 || from == 0L)) {
+                    return epochOf(new String(b, start + 1, end - start - 1, "UTF-8"));
+                }
+                if (from == 0L) {
+                    return -1L;
+                }
+                window *= 2;
+            }
+        } catch (Throwable e) {
+            return -1L;
+        } finally {
+            if (raf != null) {
+                try {
+                    raf.close();
+                } catch (Throwable ignored) {
+                    // nothing useful to do
+                }
+            }
+        }
+    }
+
+    /**
+     * Copy every row of {@code src} newer than {@code watermark} onto the end of
+     * {@code dest}, giving {@code dest} the source's header if it has none yet.
+     *
+     * The new destination is built in {@code <dest>.part} and renamed into place, so a
+     * stick pulled part way through leaves the file that was already there exactly as it
+     * was. Appending to the real file instead would strand a half row in the middle of
+     * the log, and the next export would write the following row straight onto it.
+     *
+     * A source row without a terminating newline is being written right now. It is
+     * dropped: {@link #append} flushes every complete line, so a missing newline is the
+     * only signature a partial row has and nothing complete is lost by stopping short.
+     *
+     * @return rows copied, 0 if the destination was already up to date and therefore not
+     *         touched at all, or -1 if the copy failed and the destination was left alone.
+     */
+    public static long appendSince(File src, File dest, long watermark) {
+        Rows rows = null;
+        OutputStreamWriter w = null;
+        File part = null;
+        long copied = 0;
+        try {
+            if (src == null || dest == null) {
+                return -1L;
+            }
+            rows = new Rows(src);
+            String header = rows.next();
+            if (header == null || !rows.terminated) {
+                return -1L;
+            }
+            String have = headerOf(dest);
+            if (have != null && !have.equals(header)) {
+                // Different columns. The caller picks the destination and is the only one
+                // that can pick another; mixing them here is the thing to refuse.
+                return -1L;
+            }
+            String row;
+            while ((row = rows.next()) != null) {
+                if (!rows.terminated) {
+                    break;
+                }
+                long e = epochOf(row);
+                if (e < 0 || e <= watermark) {
+                    continue;
+                }
+                if (w == null) {
+                    // Opened lazily, so a source with nothing new costs no writing at
+                    // all -- the common case once a stick has been exported to once.
+                    part = new File(dest.getParentFile(), dest.getName() + ".part");
+                    w = openPart(part, dest, header);
+                    if (w == null) {
+                        return -1L;
+                    }
+                }
+                w.write(row);
+                w.write('\n');
+                copied++;
+            }
+            if (w == null) {
+                return 0L;
+            }
+            w.flush();
+            w.close();
+            w = null;
+            // Swap in only now. If this is interrupted the .part holds everything the
+            // destination did plus the new rows, and the next export rebuilds the
+            // destination from the source anyway, so the data is not stranded.
+            if (dest.exists() && !dest.delete()) {
+                return -1L;
+            }
+            return part.renameTo(dest) ? copied : -1L;
+        } catch (Throwable e) {
+            return -1L;
+        } finally {
+            closeQuietly(rows);
+            if (w != null) {
+                try {
+                    w.close();
+                } catch (Throwable ignored) {
+                    // nothing useful to do
+                }
+            }
+        }
+    }
+
+    /**
+     * The file in {@code destDir} this source belongs in: named after its first row so a
+     * grown source lands on the same one, stepped to a sibling if what is already there
+     * was written under different columns.
+     */
+    private static File destFor(File destDir, String srcName, long first, String header) {
+        int dot = srcName.lastIndexOf('.');
+        String stem = dot > 0 ? srcName.substring(0, dot) : srcName;
+        String ext = dot > 0 ? srcName.substring(dot) : "";
+        // Drop a rolled file's own timestamp. fanlab.csv and fanlab-<millis>.csv are the
+        // same log at different ages and each keys on its own first row instead.
+        int dash = stem.lastIndexOf('-');
+        if (dash > 0 && allDigits(stem.substring(dash + 1))) {
+            stem = stem.substring(0, dash);
+        }
+        String base = stem + "-" + first;
+        for (int v = 1; v <= MAX_SIBLINGS; v++) {
+            File f = new File(destDir, v == 1 ? base + ext : base + "-v" + v + ext);
+            String have = headerOf(f);
+            if (have == null || have.equals(header)) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Start a replacement for {@code dest}, carrying its complete rows across first.
+     *
+     * Copying the rows rather than the bytes drops any fragment a previous interrupted
+     * copy left at the end, which is what stops the fragment being buried mid-file.
+     */
+    private static OutputStreamWriter openPart(File part, File dest, String header) {
+        OutputStreamWriter w = null;
+        Rows rows = null;
+        try {
+            w = new OutputStreamWriter(new FileOutputStream(part, false), "UTF-8");
+            long kept = 0;
+            if (dest.isFile() && dest.length() > 0) {
+                rows = new Rows(dest);
+                String row;
+                while ((row = rows.next()) != null) {
+                    if (!rows.terminated) {
+                        break;
+                    }
+                    w.write(row);
+                    w.write('\n');
+                    kept++;
+                }
+            }
+            if (kept == 0) {
+                w.write(header);
+                w.write('\n');
+            }
+            return w;
+        } catch (Throwable e) {
+            if (w != null) {
+                try {
+                    w.close();
+                } catch (Throwable ignored) {
+                    // nothing useful to do
+                }
+            }
+            return null;
+        } finally {
+            closeQuietly(rows);
+        }
+    }
+
+    /** The first complete line of a file, or null if it has none. */
+    private static String headerOf(File f) {
+        Rows rows = null;
+        try {
+            if (f == null || !f.isFile() || f.length() == 0) {
+                return null;
+            }
+            rows = new Rows(f);
+            String first = rows.next();
+            return rows.terminated ? first : null;
+        } catch (Throwable e) {
+            return null;
+        } finally {
+            closeQuietly(rows);
+        }
+    }
+
+    /** The {@code epoch_ms} a row starts with, or -1 if it does not start with one. */
+    private static long epochOf(String row) {
+        if (row == null) {
+            return -1L;
+        }
+        int end = row.indexOf(',');
+        if (end < 0) {
+            end = row.length();
+        }
+        if (end == 0 || end > 18) {
+            return -1L;
+        }
+        long v = 0;
+        for (int i = 0; i < end; i++) {
+            char c = row.charAt(i);
+            if (c < '0' || c > '9') {
+                return -1L;
+            }
+            v = v * 10 + (c - '0');
+        }
+        return v;
+    }
+
+    private static boolean allDigits(String s) {
+        if (s.length() == 0) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int lastIndexOfNl(byte[] b, int from) {
+        for (int i = from; i >= 0; i--) {
+            if (b[i] == '\n') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static void closeQuietly(Rows r) {
+        if (r != null) {
+            r.close();
+        }
+    }
+
+    /**
+     * A line reader that also says whether the line it just returned was terminated.
+     *
+     * That distinction is the whole reason it exists: the file being read is being
+     * appended to by the control loop at the same time, and taking {@link #append}'s
+     * lock to read it would stall the loop behind a USB copy. Reading a row short of the
+     * newline is the one hazard that leaves, and a reader that reports termination turns
+     * it into a row to skip.
+     */
+    private static final class Rows {
+        private final java.io.Reader r;
+        private final char[] buf = new char[8192];
+        private final StringBuilder line = new StringBuilder(256);
+        private int len;
+        private int pos;
+
+        /** Did the line just returned end in a newline? */
+        boolean terminated;
+
+        Rows(File f) throws java.io.IOException {
+            r = new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8");
+        }
+
+        /** The next line, or null at end of file. */
+        String next() throws java.io.IOException {
+            line.setLength(0);
+            terminated = false;
+            while (true) {
+                if (pos >= len) {
+                    len = r.read(buf, 0, buf.length);
+                    pos = 0;
+                    if (len <= 0) {
+                        return line.length() == 0 ? null : line.toString();
+                    }
+                }
+                char c = buf[pos++];
+                if (c == '\n') {
+                    terminated = true;
+                    return line.toString();
+                }
+                if (c != '\r') {
+                    line.append(c);
+                }
+            }
+        }
+
+        void close() {
+            try {
+                r.close();
+            } catch (Throwable ignored) {
+                // nothing useful to do
+            }
+        }
     }
 
     /** Escape a field for CSV. Only used for the free-text note column. */

@@ -116,6 +116,24 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
+            <intent-filter>
+                <!--
+                  A stick pushed in while this app's process is dead. A running service
+                  registers its own MEDIA_MOUNTED receiver, so this only covers the cold
+                  case, and it only starts the service if autostart is already on.
+
+                  The scheme is required: MEDIA_MOUNTED carries the mount point as a
+                  file: URI and a filter without it matches nothing.
+
+                  Not relied on. Android 9 withholds most implicit broadcasts from
+                  manifest-declared receivers of an app targeting API 26 or later, and
+                  whether this one is on the exemption list has not been confirmed on
+                  this firmware. The service's 30 s rescan is the backstop and needs no
+                  broadcast at all.
+                -->
+                <action android:name="android.intent.action.MEDIA_MOUNTED" />
+                <data android:scheme="file" />
+            </intent-filter>
         </receiver>
 
         <receiver

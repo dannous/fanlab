@@ -10,6 +10,8 @@ app/build/
 app/out/
 *.apk
 !release/*.apk
+# tools/CurveSim.java is compiled ad hoc against app/build/test when validating a curve
+*.class
 
 # Measurement scratch
 *.tmp
@@ -30,3 +32,4 @@ __pycache__/
 # Working notes for the next session; not part of the project
 HANDOVER.md
 NEXT_SESSION.md
+CURVE_V2_BRIEF.md

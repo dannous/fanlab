@@ -14,8 +14,11 @@ configuration these numbers were taken in — including that UHD processing was 
 ## The curve
 
 ```
-tempC   =  42   48   55   60   65   70
-duty    =  30   30   45   60   74   83        <- identical for all three profiles
+tempC   =  47   51   55   60   66   70
+duty    =  30   38   40   50   68   83        <- identical for all three profiles
+             |    |____|
+             |    shelf: 38->40 across the band Presentation occupies
+             floor: flat 30 below here, where Normal, Eco and Super Eco all sit
 
 hysteresisC     = 0.8
 slewUpPerSec    = 0.25      (1 duty point per 4 s)
@@ -28,8 +31,12 @@ idleDuty        = 10        (light engine off)
 Encoded, for `tools/deploy.sh` and `ConfigReceiver`:
 
 ```
-v1,42,48,55,60,65,70,30,30,45,60,74,83,30,30,45,60,74,83,30,30,45,60,74,83,0.8,0.25,0.12,10,30,83
+v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,40,50,68,83,0.8,0.25,0.12,10,30,83
 ```
+
+The four presets are this curve with 5, 10 and 15 added to every knee duty, clipped at 83.
+A uniform offset leaves every segment's width and slope untouched, so the stability
+argument is made once and inherited by all four.
 
 ### Why one curve for all three modes
 
@@ -58,14 +65,96 @@ safety behaviour and was correct for the reason it was written.
 
 ### Why these knees
 
-* **Flat at duty 30 up to 48 °C.** 30 is "inaudible even up close" and it is the floor for
-  every mode that can hold it. Nothing moves in this region at all.
-* **48 → 55 °C ramps to duty 45**, a slope of **2.14 duty points per °C**. That number is
-  measured, not chosen: above about **2.4** the controller hunts (below).
-* **55 → 70 °C** steepens to 83. This is the backstop. The plant cannot reach it at any
-  plausible ambient — at 33 °C ambient with the fan at its cap, Presentation is 56.7 °C.
+The shape is **two flat regions joined by a rise**, and both flats are placed on measured
+operating points rather than on round numbers. A flat region has no boundary to park on,
+which is the whole fix for the original bug; a slope is better than the stock controller's
+step, but only a flat is genuinely indifferent to small temperature movement.
+
+* **Flat at duty 30 up to 47 °C — the floor.** 30 is "inaudible even up close". Normal,
+  Eco and Super Eco all live here: their settled thermistor readings are 46.5, 38.5 and
+  34.4 °C, so all three sit on the flat and never move the fan. The edge is at 47 and not
+  46 because Normal's reading reaches 47.1 °C at its 95th percentile — a floor ending at
+  46 lifts Normal off duty 30 for 96 % of its running time. Note this edge is set from
+  **field measurement, not from the plant table**, whose Normal column under-states the
+  rise by about 2.5 °C.
+* **47 → 51 °C rises to duty 38**, two duty points per °C.
+* **Duty 38 rising to 40 from 51 to 55 °C — the shelf.** This is where Presentation
+  sits. Its rise above ambient at duty 38 is 28.1 °C, so a room from 22.9 to 28.0 °C puts
+  the thermistor inside this band and the fan moves by at most two duty points across the
+  whole of it. In integers it reads 38 % at 51 °C, 39 % from 52 °C and 40 % from 54 °C.
+
+  Duty 38 is the quietest value that still holds the LED under 55 °C in the warmest room
+  this unit has been measured in: 37 breaches it in a 26.3 °C room and 36 in a 25.7 °C
+  room, and this unit's room has been 26.2 °C.
+
+  **Why it tilts rather than being flat, and why by two points.** A flat 38 was built
+  first and is quieter — 0.14 duty changes an hour against 0.79, and only two duty values
+  in play. It was changed on the owner's instruction, and the instruction was right: a flat
+  shelf serves its quietest duty at the *top* of the band as well as the bottom, and he does
+  not want the light engine above 54–55 °C for lamp life. He set the top of the tilt himself
+  — "happy with the fan up until 40" — so the shelf spans 38 to 40 and stops there.
+
+  Two duty points across four degrees is a slope of **0.5 duty/°C**, a quarter of the ramp
+  this curve was built to get off and a twentieth of the stock ladder's step. It buys 0.8 °C
+  at the top of the band, which carries the 55 °C line out to a 28.0 °C room instead of 26.8
+  and the 54 °C line to 26.7 instead of 25.8. As a side effect worth having, it doubles the
+  unit-to-unit tolerance from +2 °C to +4 °C, because the extra authority is available to a
+  hotter unit as well as to a hotter room.
+
+  The cost is measured, not waved away: 0.79 duty changes an hour over the field log against
+  the flat shelf's 0.14 — still one point at a time, and still below the 1.00 of the curve
+  this replaces. It was verified on hardware in a 26.1 °C room: the flat shelf had let the
+  thermistor drift to 54.24 °C at duty 38, and the tilted curve asked for more fan on its
+  first tick.
+* **55 → 60 °C** rises at **2 duty points per °C**, then **60 → 70 °C** steepens to 83.
+  This is the backstop. The 2 %/°C slope is the owner's and its purpose is *transient*, not
+  steady-state: it exists to arrest a runaway. Against the 1.4 %/°C it replaced it is worth
+  +2 duty points at 58 °C, +3 at 60 and +4 at 61 — measured against the blocked-vent fault
+  run of 2026-09-07 — while changing **nothing at all below 55 °C** and moving the settled
+  point by only 0.15 °C at a 30 °C room. Free where the machine lives, useful where it does
+  not. Above 60 °C is territory the plant cannot reach at any plausible ambient; the hottest
+  reading ever recorded on this unit is 52.85 °C, and the hottest ever *induced*, by covering
+  both vents with cloth, is 61.3 °C.
 * **Hysteresis 0.8 rather than 0.5.** At 0.5 the duty dithered by one point at 24 °C
   ambient (4 changes in 50 minutes). 0.8 removes it entirely.
+
+### Why the shelf starts at 51 and not 50
+
+Three constraints, and they do not quite fit. Normal's settled reading reaches 47.1 °C, so
+the floor cannot end below 47. Presentation's settled reading starts at 50.8 °C, so a shelf
+covering all of it cannot start above 50.8. That leaves 3.7 °C for the rise between them —
+and **a rising segment needs 4 °C.**
+
+That last figure is not a rule of thumb. At 3 °C the rise is 2.7 duty points per °C, the
+0.8 °C deadband then spans 2.1 duty points, and no single duty can rest inside it. The 3 °C
+version was built and run through `tools/CurveSim.java` rather than argued about: it hunted
+by two duty points at 18 and 21 °C ambient, where every 4 °C version is steady at every
+thermal pole tried. So the 4 °C rise is kept and the shelf starts at 51.
+
+The cost is the coldest degree of the room's measured range: below about 23 °C the
+thermistor drops off the bottom of the shelf onto the rise and the duty comes down a point.
+Against the field log that is 92 % of settled Presentation time pinned at duty 38, at 0.14
+duty changes an hour, with the duty confined to 37-38.
+
+The alternative — floor at 46, shelf at 50 — pins 100 % of Presentation but lifts Normal
+off duty 30 for 96 % of its running time, and Normal is inaudible today. That trade was
+measured, not guessed, and refused.
+
+### What this replaced, and why
+
+The previous curve was flat at duty 30 below 48 °C and ramped 48 → 55 °C at 2.14 duty
+points per °C. Its documentation claimed the operating point sat mid-shelf with the fan
+never moving. **Thirty-six hours of field log refuted that:** the settled `degC` median was
+51.85, three to five degrees up the ramp, and **every one of the thirty settled duty changes
+in that log happened on the ramp while the shelf produced none.** The shelf was real and the
+machine simply was not on it. Closed-loop against the same room, the old curve holds its
+modal duty for 32 % of settled time and changes once an hour; this one holds 92 % and
+changes once every seven.
+
+One retraction to note, because this document previously asserted it: the claim that "above
+about 2.4 duty points per °C the controller hunts" was withdrawn as an artefact of a bad
+simulator. The geometric constraint above — rise width against the deadband — is the one
+that has survived being tested, and it is what the 3 °C attempt ran into.
 
 ## The measured plant
 
@@ -121,13 +210,51 @@ control authority; bad news for stability margin, since loop gain is (curve slop
 
 ## Where it settles
 
+Driven through the shipping controller by `CurveSim`, so these are what the node is
+actually written, not solver output:
+
 | room | Presentation | Normal | Eco | Super Eco |
 |---|---|---|---|---|
-| 21 °C | 36 · 50.6 °C | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
+| 21 °C | 36 · 50.1 °C | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
+| 23 °C | **38 · 51.1 °C** | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
 | **24 °C** | **38 · 51.9 °C** | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
-| 27 °C | 41 · 53.3 °C | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
-| 30 °C | 45 · 54.9 °C | 33 · barely audible | **30 · inaudible** | **30 · inaudible** |
-| 33 °C | 50 · 56.7 °C | 38 · quiet | 31 · barely audible | **30 · inaudible** |
+| 26 °C | **39 · 53.4 °C** | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
+| 27 °C | **40 · 54.2 °C** | **30 · inaudible** | **30 · inaudible** | **30 · inaudible** |
+| 28 °C | 40 · 54.9 °C | 32 · barely audible | **30 · inaudible** | **30 · inaudible** |
+| 30 °C | 42 · 56.1 °C | 34 · barely audible | **30 · inaudible** | **30 · inaudible** |
+| 33 °C | 46 · 57.8 °C | 38 · quiet | 33 · barely audible | **30 · inaudible** |
+
+Presentation moves by two duty points across 23 to 28 °C — five degrees of room drift for
+two points of fan — and the light engine, not the fan, takes up the rest. The three dimmer
+modes are on the floor and read 30 throughout the room's real range.
+
+**How far each preset holds a ceiling**, which is the number to choose a preset by:
+
+| preset | fan on the shelf | holds LED ≤ 54 °C to | holds LED ≤ 55 °C to |
+|---|---|---|---|
+| Quiet | 38–40 % | 26.7 °C room | 28.0 °C room |
+| Balanced | 43–45 % | 28.8 °C room | 30.0 °C room |
+| Cool | 48–50 % | 30.1 °C room | 31.2 °C room |
+| Cold | 53–55 % | 31.5 °C room | 32.6 °C room |
+
+Those are `equilibria.py` fixed points, solved in floating point. The shipping controller
+writes whole duty points and therefore does slightly better — `CurveSim` has Quiet holding
+54.9 °C in a 28 °C room, because rounding 39.4 up to 40 buys a few tenths. The table above
+is the conservative reading, which is the one to design against.
+
+**A curve cannot hold a hard ceiling, and it is worth being explicit about why.** To pin
+the LED at exactly 55 °C the curve would have to command 38.2 % in a 27 °C room and 44.8 %
+in a 30 °C room — two different duties at the same 55 °C input. A curve is a function of
+temperature, so no shape does that. Above the shelf it rises at 1.7 duty/°C and the
+light engine settles a little over 55 instead: 0.3 °C over at a 28 °C room, 1.4 °C over at
+30 °C. Holding a temperature rather than a fan speed is what `LINEAR` mode is for.
+
+The presets add 5, 10 and 15 to every duty. In Presentation at 24 °C they settle at
+38 % / 51.9 °C, 42 % / 50.3 °C, 44 % / 49.2 °C and 48 % / 48.3 °C, so Balanced, Cool and
+Cold buy 1.6, 2.7 and 3.6 °C. In the dimmer modes the offset transfers almost 1:1 into fan
+speed but buys only about 3 °C, because the light engine is already close to the room and
+there is little left for the fan to take — so the presets are worth much more in
+Presentation than below it.
 
 Stock, for comparison, runs Presentation at a floor of 59 and oscillates to 70 — because
 its first rung fires at 46 °C with **no hysteresis**, and the equilibrium parks on that
@@ -154,13 +281,45 @@ on a two-pole plant with sensor noise, sweeping the slow pole from none to 3000 
 cannot oscillate, so a single-pole test would always pass and prove nothing).
 
 ```
-ambient 21C   0 changes in the last 50 min -> STEADY
+ambient 22C   0 changes in the last 50 min -> STEADY   (all four slow poles)
 ambient 24C   0 changes                    -> STEADY
-ambient 27C   0 changes                    -> STEADY
+ambient 26C   0 changes                    -> STEADY
+ambient 28C   0 changes                    -> STEADY
 ambient 30C   0 changes                    -> STEADY
+ambient 33C   0 changes                    -> STEADY
 ```
 
-Not "moves smoothly" — does not move.
+Not "moves smoothly" — does not move. The largest single-tick duty change anywhere in those
+runs is **1 point**, against the stock controller's 15. All four presets pass the same sweep.
+
+**One known exception, and it is narrow.** Quiet at 16 °C ambient hunts by two duty points
+on three of the four slow poles. 14, 15, 17 and 18 °C are all steady, so this is a rounding
+knife-edge at one ambient rather than a band of instability — at 16 °C the operating point
+lands almost exactly between two integers on the rise below the shelf. It is six degrees
+below the coldest room this unit has been measured in (21.9 °C), and the swing is two points
+at duty 32, where three points went unnoticed by ear at the louder duty of 42-45. Recorded
+rather than fixed, because fixing it means moving a flat region off a measured operating
+point.
+
+**4. Closed-loop replay against the real room.** The strongest of the four, and the one that
+is not a model of the room. Ambient is inferred per-sample from the field log (a property of
+the room, not of the curve), smoothed to remove sensor noise, and the loop solved at each
+point — so a different curve is allowed to produce a different temperature, which an
+open-loop replay over logged temperatures is not. Over 13.9 hours of settled Presentation
+time:
+
+| | modal duty held | duty changes | range |
+|---|---|---|---|
+| previous curve | 32 % of the time | 1.00 / hour | 36–40 |
+| **this curve (shelf 38–40)** | **53 %** | **0.79 / hour** | **37–39** |
+| shelf 38–39, considered | 69 % | 0.22 / hour | 37–39 |
+| flat shelf at 38, considered | 92 % | 0.14 / hour | 37–38 |
+
+The two rejected variants are on that table because they are the honest comparison: both
+are quieter, and the tilt was bought deliberately for 0.8 °C of light-engine temperature at
+the top of the band, on the owner's instruction and to his stated limit of 40 %. Every
+change in every variant is a single duty point; what the tilt costs is how often one
+happens, and even at 0.79/hour that is below the curve this replaces.
 
 **What bounds curve steepness.** Not loop gain — a slew-limited controller on a lagged
 plant does not oscillate merely because the gain exceeds one, and driving the real
@@ -177,8 +336,37 @@ endpoints. So the test is
 width of every rising segment (°C)  >>  hysteresisC
 ```
 
-`equilibria.py` reports it. Every segment of this curve is **6.2× the hysteresis band**,
-which is ample; its steepest ramp is 3.0 duty/°C.
+`equilibria.py` reports it. Every rising segment of this curve is **at least 5× the
+hysteresis band**:
+
+| segment | slope | width vs deadband |
+|---|---:|---:|
+| 47–51 °C | 2.00 duty/°C | 5.00× |
+| 51–55 °C | 0.50 duty/°C | 5.00× |
+| 55–60 °C | 2.00 duty/°C | 6.25× |
+| 60–66 °C | 3.00 duty/°C | 7.50× |
+| 66–70 °C | 3.75 duty/°C | 5.00× |
+
+Nothing the machine reaches in normal use is steeper than 2.00 duty/°C, and the operating
+point itself sits on the 0.50 duty/°C shelf. The steeper segments above 60 °C are the
+backstop.
+
+**A correction to what this section used to say.** It claimed the real controller "produces
+no hunting below about 19 duty points per °C". That is wrong, and the way it was found to be
+wrong is worth recording: a 3 °C-wide rise at **2.7 duty/°C** — nowhere near 19 — hunted by
+two duty points at 18 and 21 °C ambient when run through `CurveSim.java`.
+
+The mechanism is that hysteresis is applied to the input temperature, so a segment's
+deadband spans `slope × hysteresisC` duty points; when that exceeds one, no single duty can
+rest inside it. **But do not turn that into a threshold of 1.** Measured against the real
+controller: 2.0 duty/°C (1.6 points) is steady at every pole tried, and 2.7 duty/°C
+(2.1 points) hunts. The boundary is somewhere between, and nobody has located it — it is
+not a clean function of the slope alone, because the slew limiter and the 1 Hz sample are
+also in the loop. Treat `width ≥ 4 °C` as the rule to design to and `CurveSim` as the
+authority, which is what caught the 3 °C attempt.
+
+The curve's own operating points sidestep the question by being flat or nearly so, which is
+the real reason the shelf exists.
 
 **One note on modelling the plant.** The thermal response is strongly non-linear — 0.06 °C
 per duty point at 80 %, 0.60 at 35 %. A simulation that uses the whole-range average of

@@ -21,16 +21,43 @@ package com.daleygames.fanlab;
  * The shipped table is the one measured on hardware and written up in CURVE.md, and its
  * shape follows from that diagnosis:
  * <ul>
- *   <li><b>a flat shelf at duty 30 up to 48 C</b>, because the fix for a boundary the
- *       machine parks on is not a better boundary but no boundary -- in a normal room the
- *       operating point sits in the middle of the shelf and the fan never moves at all;</li>
- *   <li><b>a gentle ramp above it</b>, about two duty points per degree, so that when the
- *       machine does leave the shelf it leaves it continuously;</li>
+ *   <li><b>a floor at duty 30 up to 47 C</b>, which is where Normal, Eco and Super Eco
+ *       all live -- they are inaudible and they never move. 47 rather than 46 is measured,
+ *       not rounded: Normal's settled thermistor reading has a median of 46.5 C and a 95th
+ *       percentile of 47.1 C, so a floor ending at 46 would lift Normal off duty 30 for
+ *       96 % of its running time while 47 leaves it there for 98 %;</li>
+ *   <li><b>a shelf from 51 to 55 C spanning two duty points, 38 to 40</b>, because the
+ *       fix for a boundary the machine parks on is not a better boundary but no boundary.
+ *       This is the operating point in Presentation and it covers the room this unit
+ *       actually lives in, so the fan barely moves as the room drifts -- <b>0.5 duty points
+ *       per degree, against 2.14 on the curve this replaced</b>. It is a shelf with a
+ *       deliberate tilt rather than a flat one: the owner asked for slightly more fan when
+ *       the light engine is hotter, capped at 40 because that is where he stops calling it
+ *       silent. Two duty points across four degrees buys 0.8 C at the top of the band,
+ *       which carries the 55 C ceiling out to a 28.0 C room instead of 26.8 and the 54 C
+ *       line out to 26.7 instead of 25.8;</li>
+ *   <li><b>a ramp above it</b>, 2 duty points per degree, so that when the machine does
+ *       leave the shelf it leaves it continuously but with real authority. That slope is
+ *       the owner's, and its purpose is transient rather than steady-state: it exists to
+ *       arrest a runaway. In the blocked-vent fault run of 2026-09-07 it is worth +2 duty
+ *       points at 58 C, +3 at 60 and +4 at 61 against the 1.4 duty/C it replaced, while
+ *       changing <b>nothing at all below 55 C</b> and moving the settled point by only
+ *       0.15 C at a 30 C room. Free where the machine actually lives, and useful where it
+ *       does not;</li>
  *   <li><b>a backstop</b> reaching 83 by 70 C, at temperatures the plant cannot reach at
  *       any plausible ambient;</li>
  *   <li><b>identical columns for all three profiles</b>, so a brightness change is not a
  *       tier change in duty terms and FanCurve's immediate-jump exception never fires.</li>
  * </ul>
+ *
+ * <h3>The shelf moved, because the field log said it was in the wrong place</h3>
+ * An earlier version of this table put the shelf at duty 30 below 48 C and this comment
+ * claimed the operating point sat mid-shelf with the fan never moving. Thirty-six hours of
+ * field log refuted it: the settled `degC` median was 51.85, three to five degrees up the
+ * 48-55 C ramp, and <b>every one of the thirty settled duty changes in that log happened
+ * on the ramp while the shelf produced none</b>. The shelf was real and the machine simply
+ * was not on it. It is now placed where the machine actually sits, which is what the claim
+ * had always assumed.
  * The response is monotone and continuous, so it is self-correcting: if the temperature
  * rises, duty rises with it immediately, instead of waiting for a whole-degree tick.
  *
@@ -47,6 +74,126 @@ public final class CurveConfig {
     public static final int PROFILES = 3;
 
     public static final String[] PROFILE_NAMES = {"Eco / Super Eco", "Normal", "Presentation"};
+
+    /** The four curves on offer, quietest first. */
+    public static final String[] PRESET_NAMES = {"Quiet", "Balanced", "Cool", "Cold"};
+
+    /**
+     * How much each preset adds to Quiet's knee duties <b>above the floor</b>.
+     *
+     * The floor -- knee 0, duty 30 below 47 C -- is the same in all four presets and is not
+     * offset. That is the owner's instruction and the arithmetic backs it: below 47 C the
+     * light engine is cool enough that extra fan buys almost nothing. Measured, Cold's +15
+     * bought 3.4 C in Super Eco on a thermistor already sitting at 35 C, and 3.0 C in
+     * Normal at 44 C -- full noise for no useful cooling, in the three brightness modes
+     * that spend their whole lives on the floor. Above the floor the offset is worth
+     * paying: in Presentation the same +15 buys 3.6 C on a thermistor at 52 C, where the
+     * ceiling actually matters.
+     *
+     * Public because it <i>is</i> the design rather than an implementation detail, and the
+     * host test asserts {@link #PRESETS} against it instead of against the resulting
+     * numbers -- the transform is what carries the stability argument, so the transform is
+     * what wants pinning.
+     */
+    public static final int[] PRESET_OFFSETS = {0, 5, 10, 15};
+
+    /** {@link #presetOf} for a curve that is none of the four. Not a destination. */
+    public static final int PRESET_CUSTOM = -1;
+
+    /**
+     * The presets, encoded. All four are the shipped curve with a constant added to every
+     * knee duty, clipped at the 83 ceiling. Nothing else about them differs: same knee
+     * temperatures, same hysteresis, same slew, same guard.
+     *
+     * <h3>Why an offset rather than four drawn curves</h3>
+     * Adding a constant to the knees above the floor leaves the <i>differences</i> between
+     * those knees untouched. The shelf and every segment above it therefore keep Quiet's
+     * width and Quiet's duty/C slope, so their geometry and their stability margin are
+     * unchanged. Monotonicity and identical columns across the three profiles carry across
+     * by construction.
+     *
+     * <h3>The one segment the offsets do change, and what that cost</h3>
+     * Pinning the floor means the rise from it to the shelf has to climb further in the
+     * same 4 C: 2.0 duty/C on Quiet, then 3.25, 4.5 and <b>5.75 on Cold</b>. That is the
+     * one place the "inherit Quiet's stability" argument does not apply, and it is exactly
+     * the kind of steepening that was measured hunting elsewhere in this curve's history --
+     * so it was not assumed safe. All four presets were driven through
+     * {@code tools/CurveSim.java} against the two-pole plant across 15-35 C ambient at four
+     * slow poles: <b>334 of 336 runs are steady at one duty point per tick</b>.
+     *
+     * <b>The two that are not, stated plainly rather than rounded away.</b> Quiet at 16 C
+     * hunts by two duty points, which predates the pinned floor and predates the shelf --
+     * it is a rounding knife-edge where the operating point lands almost exactly between
+     * two integers on the rise, and 14, 15, 17 and 18 C are all steady. <b>Cold at 17 C
+     * hunts by four</b>, duty 31 to 35, and that one <i>is</i> caused by pinning the floor:
+     * 5.75 duty/C is steep enough that the 0.8 C deadband spans 4.6 duty points, so no
+     * single duty rests inside it. 15, 16, 18, 19 and 20 C are steady, so it is one degree
+     * wide.
+     *
+     * It is accepted rather than fixed, for a reason worth writing down: Cold in a 17 C room
+     * is the coldest preset in a cold room, which is the one combination nobody has a use
+     * for -- the presets exist to defend a ceiling in a <i>hot</i> room. Removing it means
+     * either un-pinning the floor, which costs real noise in the three brightness modes that
+     * live there for no cooling worth having, or pulling Cold's floor edge earlier, which
+     * puts Normal back on a rise and breaks the requirement this pinning exists to satisfy.
+     * Neither trade is worth a one-degree corner in a configuration that makes no sense.
+     *
+     * Away from those two the steep rise is harmless because nothing rests on it: each
+     * preset's own operating point sits on its shelf or above, and the rise is only ever
+     * traversed on the way past.
+     *
+     * The alternative -- offsetting the floor too, so every segment is congruent -- was
+     * built first and rejected, because it made the three brightness modes that live on the
+     * floor louder for no cooling worth having. See {@link #PRESET_OFFSETS}.
+     *
+     * <h3>Where the tail flattens, and why that is still safe</h3>
+     * The offsets clip at 83, so the top of the curve is the one place the four shapes are
+     * not congruent: Quiet, Balanced and Cool all reach full speed at the last knee, 70 C,
+     * and only Cold gets there earlier, at 66 C. That still satisfies "reach the ceiling by
+     * a temperature the plant cannot achieve" -- the hottest degC ever recorded on this
+     * unit is 52.85 C, so every one of these curves reaches its ceiling more than thirteen
+     * degrees above anything the hardware has produced, and rule 6 holds for all four.
+     *
+     * <h3>Where they settle</h3>
+     * Solved against the measured plant by {@code tools/equilibria.py}, Presentation:
+     * <pre>
+     *              22 C ambient      24 C              26 C
+     *   Quiet      37.2 % / 50.6     38.4 % / 51.9     39.2 % / 53.4
+     *   Balanced   39.5 % / 49.2     41.6 % / 50.3     43.3 % / 51.6
+     *   Cool       42.1 % / 48.1     44.3 % / 49.2     46.9 % / 50.5
+     *   Cold       45.0 % / 46.9     47.6 % / 48.3     50.3 % / 49.6
+     * </pre>
+     * So at 24 C the cooling against Quiet is 1.6, 2.7 and 3.6 C. The offsets bite harder
+     * here than they did on the previous curve, where the same +5 bought only 1.3 C. That
+     * curve's operating point sat on a ramp, so the extra duty cooled the light engine, the
+     * cooler thermistor read further down the ramp, and the loop gave most of the offset
+     * back. Quiet's operating point is a flat shelf, so there is no ramp to walk down and
+     * the offset is spent where it was asked for. It still does not transfer 1:1, because
+     * the offset curves land back on the rise below the shelf, which is where their own
+     * feedback reappears.
+     *
+     * <h3>Quiet is the default, not a copy of it</h3>
+     * The first entry is byte-identical to what {@link #setDefaults()} encodes, so choosing
+     * Quiet and resetting to defaults are the same act. A test asserts that, because
+     * otherwise the two would drift apart silently the first time a default moved.
+     */
+    public static final String[] PRESETS = {
+            // Quiet: floor 30 to 47 C, up to the shelf by 51, then 38 rising to 40 across
+            // the 51-55 C band the machine occupies, and a backstop to 83 by 70 C.
+            "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,40,50,68,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+            // Balanced: Quiet + 5 above the floor. The top knee's 88 clips to 83.
+            "v1,47,51,55,60,66,70,30,43,45,55,73,83,30,43,45,55,73,83,30,43,45,55,73,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+            // Cool: Quiet + 10 above the floor. The top knee's 93 clips to 83.
+            "v1,47,51,55,60,66,70,30,48,50,60,78,83,30,48,50,60,78,83,30,48,50,60,78,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+            // Cold: Quiet + 15 above the floor. Its fourth knee lands exactly on 83 and the
+            // top one's 98 clips to it, so this is the one preset whose ceiling arrives
+            // early, at 66 C.
+            "v1,47,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,55,65,83,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+    };
 
     /** Fields the optional guard block adds to the encoded line. */
     public static final int GUARD_FIELDS = 5;
@@ -134,15 +281,22 @@ public final class CurveConfig {
      * This is a feedback controller closed on temperature, not a lookup table. It does not
      * need to know a unit's thermal plant: one that runs hotter simply gets more fan. The
      * measurements behind these numbers were needed to *predict* where a given unit lands,
-     * not for the controller to work. Solved against the measured plant with a synthetic
-     * penalty applied to every duty, Presentation at 24 C ambient settles at:
+     * not for the controller to work. A unit whose plant runs N degrees hotter behaves like
+     * this one in a room N degrees warmer, so Presentation at 24 C ambient settles at:
      * <pre>
-     *   unit +0 C -> duty 38, 51.9 C     unit +6 C  -> duty 45, 54.9 C  (still inside)
-     *   unit +4 C -> duty 43, 53.9 C     unit +15 C -> duty 61, 60.4 C  (loud; 15 C under
-     *                                                                    the shutdown)
+     *   unit +0 C -> duty 38, 51.9 C  (inside 55)   unit +6 C  -> duty 42, 56.1 C
+     *   unit +2 C -> duty 39, 53.4 C  (inside 55)   unit +8 C  -> duty 44, 57.2 C
+     *   unit +4 C -> duty 40, 54.9 C  (inside 55)   unit +15 C -> duty 54, 61.5 C
      * </pre>
-     * So it absorbs about 6 C of unit-to-unit variation while holding the 55 C ceiling, and
-     * past that it fails by getting louder rather than by running hot.
+     * The old curve absorbed about 6 C of unit-to-unit variation while holding the 55 C
+     * ceiling, and this one absorbs 4 C. The shelf is what spent the difference -- an
+     * operating point this flat is placed on <i>this</i> unit's measured plant, so a hotter
+     * unit slides off the top of it sooner. Half of what a flat shelf would have cost is
+     * bought back by the tilt, whose extra authority is available to a hotter unit as well
+     * as to a hotter room. The failure mode is unchanged and is the safe one:
+     * it gets louder and warmer rather than running away, and even the +15 C case sits
+     * nearly 13 C below the 75 C shutdown. On a unit nobody has measured, Balanced is the
+     * conservative starting preset.
      *
      * <h3>Why one column for all three profiles</h3>
      * The optics care about temperature, not about which brightness mode produced it, and
@@ -153,16 +307,83 @@ public final class CurveConfig {
      * 10 duty points to 1.
      *
      * <h3>The numbers</h3>
-     * Flat at 30 (inaudible) to 48 C; ~2 duty points per C through the working range;
-     * steepening to a backstop that reaches 83 by 70 C. Measured on the deployed unit:
-     * settles at duty 38 / 51.4 C, zero duty changes in six minutes. See CURVE.md.
+     * Floor at 30 (inaudible even up close) to 47 C; 2 duty points per C up to the shelf
+     * by 51 C; <b>38 rising to 40 from 51 to 55 C</b> -- half a duty point per degree,
+     * which reads as 38 % at 51, 39 % from 52 and 40 % from 54; 2 duty points per C from
+     * there to 60 C; then a backstop reaching 83 by 70 C.
+     *
+     * <h3>Why the shelf is where it is, and why it is flat</h3>
+     * The shelf is the whole design, and it is placed on measurement rather than taste.
+     * <ul>
+     *   <li><b>Duty 38</b> is the quietest flat duty that keeps the light engine under
+     *       55 C in the warmest room this machine has been measured in. Duty 37 would
+     *       breach it at 26.3 C ambient and 36 at 25.7; the room has been 26.2.</li>
+     *   <li><b>51 to 55 C</b> is the band duty 38-39 produces across most of that room.
+     *       The rise above ambient at duty 38 is 28.1 C, so the shelf holds the duty inside
+     *       a single point for every ambient from 22.9 to 27.9 C, against a measured room
+     *       of 21.9 to 26.2 C. Over the field log it gives <b>0.22 duty changes an hour
+     *       against the old curve's 1.00</b>, with the duty confined to 37-39 rather than
+     *       wandering 36-40, and every change is one point.</li>
+     *   <li><b>Why the shelf tilts instead of being flat, and why by two points.</b> A
+     *       flat 38 was built first and is quieter -- 0.14 duty changes an hour against
+     *       0.79, and only two duty values in play. It was changed on the owner's
+     *       instruction and the instruction was a good one: he does not want the light
+     *       engine above 54-55 C for lamp life, and a flat shelf serves its quietest duty
+     *       at the <i>top</i> of the band as well as the bottom, which is exactly where
+     *       that matters. He set the ceiling on the tilt himself -- "happy with the fan up
+     *       until 40" -- so the shelf spans 38 to 40 and no further.
+     *
+     *       <p>The cost is real and measured: over the field log the duty changes 0.79
+     *       times an hour rather than 0.14, still one point at a time and still inside the
+     *       old curve's 1.00. What it buys is 0.8 C at the top of the band, the 54 C line
+     *       moving from a 25.8 C room to 26.7, and -- as a side effect worth having -- the
+     *       unit-to-unit tolerance doubling from +2 C to +4 C, because the extra authority
+     *       is available to a hotter unit as well as to a hotter room.</p>
+     *
+     *       <p>The tilt is 0.5 duty/C, a quarter of the slope of the ramp this curve was
+     *       built to get off, and a twentieth of the stock ladder's step.</p></li>
+     *   <li><b>Why 92 % and not 100 %</b>, since a shelf starting at 50 C would have
+     *       covered all of it: the three constraints do not quite fit, and it is worth
+     *       recording the arithmetic rather than rediscovering it. Normal's settled reading
+     *       reaches 47.1 C, so the floor cannot end below 47. Presentation's settled reading
+     *       starts at 50.8 C, so a shelf covering all of it cannot start above 50.8. That
+     *       leaves 3.7 C for the rise between them, and <b>a rising segment needs 4 C</b> --
+     *       at 3 C the slope is 2.7 duty/C, the 0.8 C deadband then spans 2.1 duty points,
+     *       and no single duty can rest inside it. That was not reasoned: the 3 C version
+     *       was built, and {@code tools/CurveSim.java} found it hunting by 2 points at 18
+     *       and 21 C ambient where the 4 C version is steady at every pole. So the 4 C rise
+     *       is kept and the shelf starts at 51, which spends the coldest 1 C of the room's
+     *       range to buy stability everywhere. The alternative -- floor at 46, shelf at
+     *       50 -- pins 100 % of Presentation but lifts Normal off duty 30 for 96 % of its
+     *       running time, and Normal is inaudible today.</li>
+     *   <li><b>Flat</b> because the previous curve's operating point sat three to five
+     *       degrees up a 2.14 duty/C ramp, and all thirty of its settled duty changes in
+     *       thirty-six hours of field log happened on that ramp. The shelf below it
+     *       produced none. Replaying the same room closed-loop, this curve holds duty 38
+     *       for 100 % of that time with zero changes.</li>
+     *   <li><b>The floor stops at 47 C</b>, and that edge is measured on the machine
+     *       rather than taken from the plant table. The table predicts Normal at 44.1 C,
+     *       but 289 settled Normal rows in the field log read a median of <b>46.5 C</b>
+     *       with a 95th percentile of 47.1 C -- the Normal column of the plant table
+     *       under-states the rise by about 2.5 C, which is exactly the kind of error the
+     *       provenance notes in {@code tools/solve_curve.py} warn about for that column.
+     *       Placed on the table's figure the floor would have ended at 46 and lifted Normal
+     *       off duty 30 for 96 % of its running time. Placed on the measurement it ends at
+     *       47 and leaves it there for 98 %, which is what V1 achieved and worth keeping.
+     *       Eco (38.5 C) and Super Eco (34.4 C) are far below either edge.</li>
+     * </ul>
+     * The cost is stated in {@link #PRESETS} and above: a room below 22 C gets a duty a
+     * point or two above what the old ramp would have asked for, and a room above 27 C
+     * runs the light engine warmer in exchange for staying quiet.
      */
     public void setDefaults() {
-        int[] t = {42, 48, 55, 60, 65, 70};
+        int[] t = {47, 51, 55, 60, 66, 70};
         System.arraycopy(t, 0, tempC, 0, POINTS);
 
-        // 42   48   55   60   65   70      <- degrees C
-        int[] all = {30, 30, 45, 60, 74, 83};
+        // 47   51   55   60   66   70      <- degrees C
+        //       |____|     the shelf: two duty points across the whole band the machine
+        //                  occupies, so it barely moves but still cools when it is hotter
+        int[] all = {30, 38, 40, 50, 68, 83};
         System.arraycopy(all, 0, duty[PROFILE_LOW], 0, POINTS);
         System.arraycopy(all, 0, duty[PROFILE_NORMAL], 0, POINTS);
         System.arraycopy(all, 0, duty[PROFILE_HIGH], 0, POINTS);
@@ -240,6 +461,36 @@ public final class CurveConfig {
                 // is high, and tier 3 is the one whose duties are highest at every knee.
                 return PROFILE_HIGH;
         }
+    }
+
+    /** The curve for a preset. An index from nowhere falls back to the quietest. */
+    public static CurveConfig preset(int i) {
+        return decode(PRESETS[(i < 0 || i >= PRESETS.length) ? 0 : i]);
+    }
+
+    /**
+     * Which preset a stored curve is, decided by matching the encoded line. There is
+     * deliberately no preference of its own: with nothing else stored, the label and the
+     * curve cannot disagree, and the screen has no way to claim Balanced while the loop
+     * runs something else.
+     *
+     * The accepted cost is that an edit which really does change the curve reads as
+     * {@link #PRESET_CUSTOM}. Tuning the guard with {@code --ef socgain} re-encodes the
+     * whole line, so the label flips to Custom -- correctly, because what is on the unit
+     * is then no longer one of the four.
+     */
+    public static int presetOf(String encoded) {
+        for (int i = 0; i < PRESETS.length; i++) {
+            if (PRESETS[i].equals(encoded)) {
+                return i;
+            }
+        }
+        return PRESET_CUSTOM;
+    }
+
+    /** The name to show for a preset index, or "Custom" for anything that is not one. */
+    public static String presetName(int i) {
+        return (i < 0 || i >= PRESET_NAMES.length) ? "Custom" : PRESET_NAMES[i];
     }
 
     /**

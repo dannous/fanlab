@@ -33,7 +33,16 @@ continuous curve removes that failure structurally: there is no boundary left to
 
 - **A continuous temperature → fan-speed curve**, evaluated every second against the LED
   thermistor, with no thresholds and no steps.
-- **A flat shelf at 30 %** below 48 °C, so in normal use the fan does not move at all.
+- **Two flat regions, placed where the machine actually sits.** A floor at 30 % below
+  47 °C, which is where Eco, Super Eco and Normal live, and a shelf spanning two duty
+  points — 38 % to 40 % — from 51 to 55 °C, which is where Presentation lives. Nearly flat
+  means the fan speed barely depends on temperature, so five degrees of room drift move it
+  by two points. An earlier version had one flat region below 48 °C and claimed the same
+  thing; thirty-six hours of field log showed the operating point was three to five degrees
+  *above* it, on a 2.14 duty/°C ramp, where every one of its duty changes happened. The
+  shelf is now under the operating point, at 0.5 duty/°C. Above 55 °C the curve rises at
+  2 duty/°C to arrest a runaway — a slope that costs nothing below 55 °C and was validated
+  against a deliberately induced blocked-vent fault.
 - **One curve shared by all four brightness modes.** The optics care about temperature,
   not about which mode produced it, so changing brightness causes **no fan step** — the
   measured jump on a mode change is 1 duty point, against 10 for a per-mode design.
@@ -42,7 +51,7 @@ continuous curve removes that failure structurally: there is no boundary left to
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
   after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
   crawling for seven minutes.
-- **Test count: 1620**, run on the host as part of every build.
+- **Test count: 2289**, run on the host as part of every build.
 - **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
   fan only above 70 °C on the die and can never subtract any. See
   [The SoC guard](#the-soc-guard).
@@ -58,19 +67,51 @@ Steady state at 24 °C ambient, on the unit this was developed against:
 
 | mode | stock | this curve | LED temp |
 |---|---|---|---|
-| Presentation | 59, cycling to 70 | **38–40** | 52 °C |
+| Presentation | 59, cycling to 70 | **38** | 51.9 °C |
 | Normal | 48 | **30** | 44 °C |
 | Eco | 43 | **30** | 40 °C |
 | Super Eco | 43 | **30** | 35 °C |
 
-An 18-minute settle, logged on hardware, walking up as the machine warmed:
+**The shelf, measured on hardware.** Twelve minutes in Presentation while the machine
+warmed 3.3 °C, logged at 1 Hz:
 
 ```
-  0m   fan 35   50.1 C
-  3m   fan 38   51.3 C
-  8m   fan 39   52.0 C
- 18m   fan 40   52.1 C     5 changes, every one a single point
+  0m00   fan 38   50.9 C
+  4m00   fan 38   53.1 C
+  8m00   fan 38   53.8 C
+ 12m00   fan 38   54.1 C     the LED rose 3.3 C and the fan did not move once
 ```
+
+On the ramp this replaced, that same 3.3 °C would have dragged the fan through about seven
+duty points.
+
+**Against the previous curve, over 13.9 hours of real settled Presentation time**, replayed
+closed-loop against ambient inferred per sample from the field log:
+
+| | modal duty held | duty changes | range |
+|---|---|---|---|
+| previous curve | 32 % of the time | 1.00 / hour | 36–40 |
+| **this curve** | **53 %** | **0.79 / hour** | **37–39** |
+
+Every change in either case is a single duty point. What changed is that the duty now lives
+in a three-point band instead of a five-point one, and the operating point sits on flat
+ground rather than on a 2.14 duty/°C ramp.
+
+**A deliberately induced fault.** Both vents were covered with cloth until the light engine
+reached 61.3 °C — about 8 °C hotter than anything this unit had ever recorded — and then
+uncovered. Across 955 samples at 1 Hz spanning the whole excursion:
+
+```
+largest single-tick change in fan speed : 1 duty point   (never 2, either direction)
+duty direction reversals                : 0              (no hunting, under a fault)
+throttling events                       : 0
+SoC guard engagements                   : 0              (pll peaked at 61.2 C, knee is 70)
+```
+
+The fan climbed 38 → 49 and walked back down, one point at a time throughout. No fan curve
+can cool a machine whose vents are blocked, and this one cannot either — what the run
+establishes is that the controller degrades smoothly rather than oscillating when the plant
+is taken away from it.
 
 ## Install
 
@@ -231,7 +272,8 @@ heartbeat interval is.
 ```
 epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,
 profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c,
-thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore
+thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore,
+session,off_s,room_c,exclusive,catchup,duty_hold_s
 ```
 
 `adc` is the raw 12-bit thermistor count and `degC` is that count through the
@@ -254,35 +296,137 @@ could not be read, which is not the same as zero. They are sampled in every mode
 with the app not driving, so the curve can be compared against the stock controller on this
 too, and a throttled row is never decimated away by the heartbeat.
 
+The last six columns describe the circumstances rather than the measurement, and each
+exists because the first thirty-six hours of field log could not answer a question that
+was asked of it.
+
+`session` is the run. It steps once per service start and only ever goes up, so
+segmentation is exact rather than a guess about which `epoch_ms` gaps were long enough to
+count.
+
+`off_s` is non-blank on exactly one row per power-on: how long the light engine had been
+off before it came on. **The `degC` and `soc_pll_c` on that row are a direct measurement of
+the room** — the one quantity the log cannot otherwise derive, because inferring it from
+temperature needs the plant table and the plant table is what field data exists to check.
+Whether to believe the reading depends entirely on `off_s`: the thermistor is still 4.7 °C
+above its resting value five hours after the engine goes off, so this is recorded and
+graded afterwards rather than gated on a threshold that would silently pass a warm one.
+`room_c` is the same quantity stated by hand, as the independent check on it, and is blank
+until somebody states it.
+
+`exclusive` is 1 only when the curve is driving, the stock ladder is stood down, and
+nothing else has written `fan_ctrl` in the last minute. It replaces a filter that had to be
+assembled by grepping MANUAL rows, `stock_ladder->*` toggles and `reassert(was N)` events
+and then subtracting time ranges by hand. Blank means the kill switch could not be read,
+which is not the same as 0.
+
+`catchup` is 1 while the controller is still converging on the curve and 0 once it has
+arrived, and `duty_hold_s` is how long the commanded duty has sat still. A duty of 44 on
+its way down from a fail-safe 83 and a duty of 44 the curve settled on are the same number
+describing opposite situations; these two tell them apart, which is what makes creep
+answerable rather than reconstructed.
+
 If a future version adds a column, the existing file is rolled aside rather than appended
-to, so no file ever contains rows of two different widths.
+to, so no file ever contains rows of two different widths. That has now fired twice, at
+16 → 20 and at 20 → 26.
 
 ## How the curve works
 
 Every temperature has a fan speed. That is the whole controller.
 
 ```
-  fan
-  speed
-   83 |                                                                #####
-   74 |                                                     ###########
-   60 |                                           ###########
-   45 |                                ###########
-   30 |################################
-      +---------------------------------------------------------------------
-       38        43        48        53        58        63        68
-                          LED temperature, C
+  fan %
+   83 |                                                            #########
+   68 |                                                     #######
+   50 |                                        #############
+   40 |                          ##############
+   38 |                    ######
+   30 |####################
+      +--------------------------------------------------------------------
+       38       43      47    51    55        60         66        70
+                            LED thermistor, C
+       |____ floor ____|    |shelf|
+            duty 30          38-40
 ```
 
 It is a **loop**: the fan changes the temperature, and the temperature changes the fan. The
 machine slides along that line until it reaches the one point where both are true at once.
 Nobody chose 38 % — 38 is where the projector's thermal response crosses the curve.
 
-Three modes land on the flat shelf, so their fan speed is pinned and their temperature
-floats. Presentation lands on the slope, so it trims itself a little as the room changes.
+The shape is **two flat regions joined by a rise**, and both flats are placed on measured
+operating points rather than round numbers:
+
+- **Normal, Eco and Super Eco land on the floor.** Their settled thermistor readings are
+  46.5, 38.5 and 34.4 °C, all inside it, so all three sit at 30 % and never move.
+- **Presentation lands on the shelf**, which spans a single 2-point band across the whole
+  51–55 °C range the machine occupies. Five degrees of room drift move the fan two points.
+- **Above 55 °C the curve rises at 2 duty/°C** to arrest a runaway. That segment is never
+  reached below about a 28 °C room, so it costs nothing in normal use.
+
+The floor edge is at 47 °C rather than 46 because Normal's settled reading reaches 47.1 °C
+at its 95th percentile — a floor ending at 46 lifts Normal off 30 % for 96 % of its running
+time. That edge comes from the field log, not from the plant table, whose Normal column
+reads about 2.5 °C low.
 
 Full derivation, the measured thermal plant, and the stability analysis:
 **[docs/curve.md](docs/curve.md)**.
+
+## The four presets
+
+The curve ships as four, selectable on the main screen or by broadcast. Each is the base
+curve with a constant added to every knee **above the floor**, clipped at 83 %:
+
+| preset | fan on the shelf | LED at 24 °C | holds ≤54 °C to | holds ≤55 °C to |
+|---|---|---|---|---|
+| **Quiet** (default) | 38–40 % | 51.9 °C | 26.7 °C room | 28.0 °C room |
+| Balanced | 43–45 % | 50.3 °C | 28.8 °C room | 30.0 °C room |
+| Cool | 48–50 % | 49.2 °C | 30.1 °C room | 31.2 °C room |
+| Cold | 53–55 % | 48.3 °C | 31.5 °C room | 32.6 °C room |
+
+Two design points worth stating, because both were arrived at the hard way:
+
+**The floor is not offset.** All four presets idle at 30 %. Below 47 °C the light engine is
+cool enough that extra fan buys almost nothing — measured, Cold's +15 bought 3.4 °C in Super
+Eco on a thermistor already sitting at 35 °C. Since Normal, Eco and Super Eco spend their
+whole lives on the floor, offsetting it would make them louder for no useful cooling. The
+offset applies only where the ceiling is actually in question.
+
+**A uniform offset above the floor keeps the geometry.** Adding a constant leaves every
+segment's width and slope untouched, so the shelf and everything above it inherit the base
+curve's stability rather than needing a fresh argument. The one exception is the rise from
+the pinned floor to the shelf, which climbs further in the same 4 °C — 5.75 duty/°C on Cold
+— and that was not assumed safe: all four were driven through `tools/CurveSim.java` across
+15–35 °C ambient at four thermal poles.
+
+**A curve cannot hold a hard temperature ceiling**, and it is worth being explicit about
+why. To pin the LED at exactly 55 °C the curve would have to command 38.2 % in a 27 °C room
+and 44.8 % in a 30 °C one — two different duties at the same input. A curve is a function of
+temperature, so no shape does that. Above the shelf it climbs and the light engine settles a
+little over instead. Holding a *temperature* rather than a fan speed is what LINEAR is for.
+
+## LINEAR mode
+
+An alternative controller, installed but not the default. Where the curve holds a fan speed
+and lets the temperature float, LINEAR holds a temperature and lets the fan float: it steps
+the duty one point at a time until the light engine sits at a ceiling, and never stops
+stepping. It has no plant model, so a hotter room, a hotter unit or a brighter picture is
+not a case it has to have been measured in. The cost is fan speed in a hot room.
+
+Its critical parameter is how fast it steps, and that is measured rather than chosen.
+Settled swing scales as step rate times plant lag:
+
+| decay interval | measured swing | verdict |
+|---|---|---|
+| 1 s | 39 points, growing | limit cycle |
+| 5 s | 14 points | audible |
+| 60 s | **3 points** | not noticed by ear |
+
+A 3-point swing needs a 60 s decay; giving back a 6-point overshoot at that rate takes six
+minutes. No single rate satisfies both, so there are three: attack 5 s while above the
+ceiling, decay 60 s within 1 °C of it, and decay 10 s with more headroom than that — fast
+where dropping is free, slow where it costs an audible swing.
+
+**LINEAR has not been exercised in the field.** The curve has; this has not.
 
 ## What the reverse-engineering established
 
@@ -373,7 +517,7 @@ variant on first run.
 | `app/` | the application: source, manifests, resources, host tests, build script |
 | `tools/` | measurement and deployment tooling — see [docs/measuring.md](docs/measuring.md) |
 | `docs/` | curve derivation, findings, safety, deployment, measuring, measurement conditions |
-| `release/` | the signed APK |
+| `release/` | the signed APKs — `fanlab-system.apk` (platform-signed, the one to install) and `fanlab-plain.apk` (debug-signed, observe-only) |
 | `final_curve.txt` | the deployed curve, in the app's own encoding |
 
 ## Licence

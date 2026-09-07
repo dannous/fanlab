@@ -3,9 +3,13 @@ import com.daleygames.fanlab.CurveConfig;
 import com.daleygames.fanlab.ExpFit;
 import com.daleygames.fanlab.FanCurve;
 import com.daleygames.fanlab.FanIo;
+import com.daleygames.fanlab.FanLinear;
 import com.daleygames.fanlab.HoldSession;
 import com.daleygames.fanlab.Json;
+import com.daleygames.fanlab.LinearConfig;
+import com.daleygames.fanlab.Mode;
 import com.daleygames.fanlab.PicoReg;
+import com.daleygames.fanlab.Provenance;
 import com.daleygames.fanlab.Sample;
 import com.daleygames.fanlab.SweepEngine;
 import com.daleygames.fanlab.SweepPlan;
@@ -38,6 +42,16 @@ public final class FanLabTest {
     private static int passed;
     private static int failed;
     private static final List<String> failures = new ArrayList<String>();
+
+    /**
+     * The columns as they shipped before 2026-09-07. Written out in full rather than
+     * derived from the current header, so the schema-revision test is driven by the exact
+     * bytes sitting in the file on the device rather than by an assumption about them.
+     */
+    private static final String OLD_HEADER_20 =
+            "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
+                    + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c"
+                    + ",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore";
 
     // ----------------------------------------------------------------- harness
 
@@ -91,7 +105,13 @@ public final class FanLabTest {
         testFailSafe();
         testConfigRoundTrip();
         testSocGuard();
+        testLinearController();
+        testLinearConfigRoundTrip();
+        testLinearConvergence();
+        testOffDuration();
+        testExclusiveControl();
         testCsvLogger();
+        testProvenanceColumns();
         testClosedLoopVsStock();
 
         // ---- AUTO and VERIFY ----
@@ -370,11 +390,16 @@ public final class FanLabTest {
             check(inRange, CurveConfig.PROFILE_NAMES[p]
                     + ": every output over -100..200 C is a writable duty");
         }
-        // interpolation really is linear: the shipped 48->55 C segment runs 30->45, so
-        // its midpoint 51.5 C must be 37.5, rounding to 38 -- which is also, not by
-        // coincidence, where the deployed projector settles.
+        // interpolation really is linear: the shipped 47->51 C segment runs 30->38, two
+        // duty points per degree, so 48 C is 32 and the midpoint 49 C is 34.
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 48), 32,
+                "Presentation one degree up the 47 (30) to 51 (38) rise is 32");
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 49), 34,
+                "and its midpoint is 34");
+        // and 51.5 C is on the shelf, so it is 38 exactly rather than interpolated -- which
+        // is also, not by coincidence, where the deployed projector settles.
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 51.5), 38,
-                "Presentation halfway between 48 (30) and 55 (45) is 38");
+                "Presentation on the 50-55 C shelf is 38");
         // clamps are honoured
         c.maxDuty = 40;
         c.sanitise();
@@ -383,6 +408,129 @@ public final class FanLabTest {
         c.minDuty = 70;
         c.sanitise();
         eq(c.dutyAt(CurveConfig.PROFILE_LOW, 30), 70, "the hard minimum lifts the curve");
+
+        // The presets are offered to a user who cannot inspect them, so every one of them
+        // is held to the rules the shipped curve was built on rather than only the default.
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            String name = CurveConfig.PRESET_NAMES[i];
+            CurveConfig p = CurveConfig.preset(i);
+            int[] high = p.duty[CurveConfig.PROFILE_HIGH];
+
+            for (int k = 1; k < CurveConfig.POINTS; k++) {
+                check(p.tempC[k] > p.tempC[k - 1], name + ": knee " + k + " ("
+                        + p.tempC[k] + " C) is hotter than knee " + (k - 1));
+            }
+            eq(high[CurveConfig.POINTS - 1], 83,
+                    name + ": the last knee reaches the stock maximum");
+            for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
+                for (int k = 1; k < CurveConfig.POINTS; k++) {
+                    check(p.duty[prof][k] >= p.duty[prof][k - 1], name + " "
+                            + CurveConfig.PROFILE_NAMES[prof] + ": duty does not fall "
+                            + "between knee " + (k - 1) + " and " + k);
+                }
+                // Identical columns, so a brightness change is not a tier change and
+                // FanCurve's immediate-jump exception never fires.
+                for (int k = 0; k < CurveConfig.POINTS; k++) {
+                    eq(p.duty[prof][k], high[k], name + ": "
+                            + CurveConfig.PROFILE_NAMES[prof]
+                            + " matches Presentation at knee " + k);
+                }
+            }
+            // The stability criterion is geometric: a rising segment several times the
+            // deadband cannot be a boundary the machine parks on. 4 C is five deadbands.
+            //
+            // This bound was relaxed to 3 C while placing the shelf, because Normal's
+            // settled reading (47.1 C) and Presentation's (50.8 C) leave only 3.7 C
+            // between them and a 3 C rise would have pinned 100 % of Presentation rather
+            // than 92 %. It was put straight back, because the relaxed version was built
+            // and measured rather than argued about: at 3 C the slope is 2.7 duty/C, the
+            // 0.8 C deadband then spans 2.1 duty points, no single duty can rest inside
+            // it, and tools/CurveSim.java found it hunting by 2 points at 18 and 21 C
+            // ambient where every 4 C version is steady at every pole. The 8 % of
+            // Presentation time is the cheaper thing to give up.
+            for (int k = 1; k < CurveConfig.POINTS; k++) {
+                if (high[k] > high[k - 1]) {
+                    check(p.tempC[k] - p.tempC[k - 1] >= 4, name + ": the rising segment "
+                            + p.tempC[k - 1] + "-" + p.tempC[k] + " C is at least 4 C wide "
+                            + "against a " + p.hysteresisC + " C deadband");
+                }
+            }
+        }
+
+        // Every preset is Quiet plus a constant at every knee ABOVE THE FLOOR, and the
+        // constant is the design rather than an implementation detail: identical knees plus
+        // a uniform offset leave the shelf's width and slope equal to Quiet's, so the
+        // margin against the deadband cannot have moved there. Assert the transform, not
+        // the resulting numbers, because it is the transform that carries the argument.
+        //
+        // The floor is deliberately NOT offset. Below 47 C the light engine is cool enough
+        // that extra fan buys almost nothing -- measured, Cold's +15 bought 3.4 C in Super
+        // Eco on a thermistor already at 35 C -- and Normal, Eco and Super Eco spend their
+        // whole lives there. So every preset idles at 30, and the offset applies only where
+        // the ceiling is actually in question.
+        //
+        // Driven off the published PRESET_OFFSETS rather than a copy of it here, so a fifth
+        // curve added without an offset for it fails rather than going unchecked.
+        int[] offsets = CurveConfig.PRESET_OFFSETS;
+        eq(offsets.length, CurveConfig.PRESETS.length,
+                "there is an offset here for every preset on offer");
+        eq(offsets.length, CurveConfig.PRESET_NAMES.length,
+                "and a name for every one of them");
+        eq(offsets[0], 0, "Quiet is the unshifted curve");
+        int[] knees = CurveConfig.preset(0).tempC;
+        int[] quiet = CurveConfig.preset(0).duty[CurveConfig.PROFILE_HIGH];
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            String name = CurveConfig.PRESET_NAMES[i];
+            CurveConfig p = CurveConfig.preset(i);
+            if (i > 0) {
+                check(offsets[i] > offsets[i - 1], name + " is a bigger offset than "
+                        + CurveConfig.PRESET_NAMES[i - 1] + ", so the list runs quietest "
+                        + "first");
+            }
+            for (int k = 0; k < CurveConfig.POINTS; k++) {
+                eq(p.tempC[k], knees[k], name + ": knee " + k + " is at Quiet's "
+                        + knees[k] + " C, so the segment widths are Quiet's too");
+                // Knee 0 is the floor and is never offset. Above it, 83 is the ceiling, so
+                // the offset clips there rather than running past it.
+                int want = (k == 0) ? quiet[0] : Math.min(83, quiet[k] + offsets[i]);
+                for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
+                    eq(p.duty[prof][k], want, name + " "
+                            + CurveConfig.PROFILE_NAMES[prof] + ": knee " + k
+                            + (k == 0 ? " is the shared floor, " + quiet[0]
+                                      : " is Quiet's " + quiet[k] + " + " + offsets[i]
+                                        + ", capped at 83"));
+                }
+            }
+            // Stated as its own assertion rather than left implicit in the loop above,
+            // because it is the owner's requirement in his own words: "i want the floor to
+            // be 30 for every curve mode and every projector mode". The second half is
+            // rule 4 -- identical columns -- which is checked separately, and together they
+            // mean every preset idles at 30 in every brightness mode.
+            for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
+                eq(p.duty[prof][0], 30, name + " " + CurveConfig.PROFILE_NAMES[prof]
+                        + ": idles at 30, the floor every preset shares");
+                eq(p.dutyAt(prof, 20.0), 30, name + " " + CurveConfig.PROFILE_NAMES[prof]
+                        + ": and commands 30 at any temperature below the floor edge");
+            }
+        }
+
+        // Rule 6: the ceiling has to arrive above anything the plant can produce. Clipping
+        // moves that temperature down for the two biggest offsets -- Quiet and Balanced
+        // reach 83 at the last knee, Cool and Cold at the one before it -- so it is worth
+        // saying where each one lands rather than trusting that "83 somewhere" is enough.
+        // 52.85 C is the hottest degC ever recorded on this unit.
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            CurveConfig p = CurveConfig.preset(i);
+            int[] high = p.duty[CurveConfig.PROFILE_HIGH];
+            int at = -1;
+            for (int k = 0; k < CurveConfig.POINTS && at < 0; k++) {
+                if (high[k] >= 83) {
+                    at = p.tempC[k];
+                }
+            }
+            check(at >= 60, CurveConfig.PRESET_NAMES[i] + ": reaches 83 by " + at
+                    + " C, far above the 52.85 C this unit has ever recorded");
+        }
     }
 
     private static void testCurveVsStockAtRungs() {
@@ -408,11 +556,41 @@ public final class FanLabTest {
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 70), 83,
                 "at 70 C the curve reaches the same 83 stock uses for its top rung");
 
-        // The shelf is the whole point: nothing moves at all below its edge.
-        for (int t = 0; t <= 48; t++) {
+        // The floor is flat to its edge. Normal's settled thermistor median is 46.5 C and
+        // Eco's is 38.5 C -- both measured in the field, not taken from the plant table,
+        // whose Normal column reads about 2.5 C low. Both sit inside this floor.
+        for (int t = 0; t <= 47; t++) {
             eq(c.dutyAt(CurveConfig.PROFILE_HIGH, t), c.minDuty,
                     "flat at the floor at " + t + " C");
         }
+        // And the shelf -- the operating point in Presentation -- spans a single duty
+        // point right across the band the machine occupies. This is the property the whole
+        // curve exists for, so it is asserted rather than left to the equilibrium solver.
+        //
+        // It tilts rather than being flat deliberately: the owner asked for slightly more
+        // fan when the light engine is hotter, and 38->40 across four degrees buys 0.8 C at
+        // the top of the band. 40 is the top because that is where he stops calling it
+        // silent -- "happy with the fan up until 40". What must not regress is the SPAN: a
+        // shelf that moved more than two points would be a ramp again, and the whole curve
+        // exists to get the operating point off a ramp.
+        for (int h = 1020; h <= 1100; h++) {
+            double t = h / 20.0;
+            int d = c.dutyAt(CurveConfig.PROFILE_HIGH, t);
+            check(d >= 38 && d <= 40, "the shelf at " + t + " C is 38..40, not " + d);
+        }
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 51), 38, "the shelf starts at 38");
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 55), 40, "and ends two points higher, at 40");
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 52), 39, "reading 39 from 52 C");
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 53), 39, "still 39 at 53 C");
+        eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 54), 40, "and 40 from 54 C");
+        // Half a duty point per degree. Asserted as arithmetic on the knees so that moving
+        // one without the other cannot quietly turn the shelf back into a ramp.
+        int lo = c.duty[CurveConfig.PROFILE_HIGH][1];
+        int hi = c.duty[CurveConfig.PROFILE_HIGH][2];
+        int span = c.tempC[2] - c.tempC[1];
+        check(hi - lo <= 2, "the shelf spans at most two duty points, not " + (hi - lo));
+        check((hi - lo) * 10 / span <= 5,
+                "so its slope is at most 0.5 duty/C, an eighth of the 2.14 it replaced");
 
         // Identical columns are what removes the mode-change jump (FanCurve bypasses the
         // slew limiter on an upward tier change, so unequal floors step audibly).
@@ -433,13 +611,22 @@ public final class FanLabTest {
             prev = d;
         }
         check(monotone, "the curve never commands less fan for a higher temperature");
-        // the stock dead zone exists and the curve does not have it
+        // The stock dead zone exists and the curve does not have it. Stock returns -1 at
+        // 53 and 54 C, meaning it writes nothing and the fan keeps whatever the last rung
+        // left it at; the curve always has a definite answer. Note the curve's answer here
+        // is deliberately the SAME at 52, 53 and 54 -- that is the shelf, not a dead zone.
+        // The two are opposites: a dead zone is the controller declining to say, and the
+        // shelf is it saying the same thing on purpose.
         eq(FanCurve.stockLadder(CurveConfig.PROFILE_HIGH, 53, 63), -1,
                 "the stock ladder writes nothing at 53 C");
         eq(FanCurve.stockLadder(CurveConfig.PROFILE_HIGH, 54, 63), -1,
                 "the stock ladder writes nothing at 54 C");
-        check(c.dutyAt(CurveConfig.PROFILE_HIGH, 53) > c.dutyAt(CurveConfig.PROFILE_HIGH, 52),
-                "the curve keeps rising through 53 C");
+        for (int t = 53; t <= 54; t++) {
+            check(FanIo.valid(c.dutyAt(CurveConfig.PROFILE_HIGH, t)),
+                    "the curve commands a writable duty at " + t + " C, where stock does not");
+        }
+        check(c.dutyAt(CurveConfig.PROFILE_HIGH, 56) > c.dutyAt(CurveConfig.PROFILE_HIGH, 55),
+                "and above the shelf it starts rising again");
     }
 
     private static void testHysteresis() {
@@ -793,6 +980,40 @@ public final class FanLabTest {
                 "a pre-guard curve loads and picks up the default guard");
         eq(old1.duty[CurveConfig.PROFILE_HIGH][3], fresh.duty[CurveConfig.PROFILE_HIGH][3],
                 "and its own duties are not disturbed");
+
+        // ---- the presets ----
+        // A preset that does not survive the trip through decode/sanitise/encode would
+        // have ConfigReceiver answer curve(REPAIRED) for a curve the app itself shipped,
+        // and the label would never match the stored line again.
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            String name = CurveConfig.PRESET_NAMES[i];
+            String s = CurveConfig.PRESETS[i];
+            CurveConfig p = CurveConfig.decode(s);
+            check(p.encode().equals(s), name + " round trips byte for byte");
+            p.sanitise();
+            check(p.encode().equals(s), name + " needs no repair: sanitise() is a no-op");
+            eq(CurveConfig.presetOf(s), i, name + " is recognised as preset " + i);
+            check(CurveConfig.presetName(i).equals(name), name + " names itself");
+        }
+
+        // Quiet is the default curve, not a copy of it. The row and the reset button would
+        // otherwise disagree the first time a default moved.
+        check(CurveConfig.PRESETS[0].equals(new CurveConfig().encode()),
+                "Quiet is byte-identical to what setDefaults() encodes to");
+
+        // Matching the whole line is what makes the label honest: there is no stored index
+        // that could go on claiming Balanced after the curve had moved.
+        String tweaked = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
+        check(!tweaked.equals(CurveConfig.PRESETS[1]), "the mutated line really differs");
+        eq(CurveConfig.presetOf(tweaked), CurveConfig.PRESET_CUSTOM,
+                "a curve that is none of the four reads as Custom");
+        eq(CurveConfig.presetOf(null), CurveConfig.PRESET_CUSTOM, "and so does no curve");
+        check(CurveConfig.presetName(CurveConfig.PRESET_CUSTOM).equals("Custom"),
+                "which is the word the row shows");
+        check(CurveConfig.preset(-1).encode().equals(CurveConfig.PRESETS[0]),
+                "an index from nowhere falls back to Quiet");
+        check(CurveConfig.preset(99).encode().equals(CurveConfig.PRESETS[0]),
+                "at either end");
     }
 
     // ----------------------------------------------------------------- soc guard
@@ -1002,7 +1223,7 @@ public final class FanLabTest {
 
             check(CsvLogger.HEADER.contains(",soc_pll_c,soc_ddr_c,soc_sar_c"),
                     "the SoC zones are logged");
-            check(CsvLogger.HEADER.endsWith(",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore"),
+            check(CsvLogger.HEADER.contains(",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore"),
                     "and so is what the thermal governor is doing about them");
 
             // a row must have exactly as many fields as the header promises, or every
@@ -1010,8 +1231,12 @@ public final class FanLabTest {
             Sample blank = new Sample();
             eq(blank.toCsv().split(",", -1).length, CsvLogger.HEADER.split(",", -1).length,
                     "an empty sample still fills every column");
-            check(blank.toCsv().endsWith(",,,,"),
-                    "unread cooling devices are blank, not zero -- 0 means 'not throttling'");
+            String[] blankFields = blank.toCsv().split(",", -1);
+            for (int i = 0; i < Sysfs.COOLING_NAMES.length; i++) {
+                check(blankFields[16 + i].length() == 0,
+                        "unread cooling device " + Sysfs.COOLING_NAMES[i]
+                                + " is blank, not zero -- 0 means 'not throttling'");
+            }
             check(!blank.throttling(), "and an unread device does not read as throttling");
 
             Sample hot = new Sample();
@@ -1025,9 +1250,174 @@ public final class FanLabTest {
             check(CsvLogger.q("a,b").equals("\"a,b\""), "commas are quoted");
             check(CsvLogger.q("a\"b").equals("\"a\"\"b\""), "quotes are doubled");
             check(CsvLogger.q("plain").equals("plain"), "plain text is untouched");
+
+            testExport(base);
         } finally {
             rmrf(base);
         }
+    }
+
+    /**
+     * The backlog export: a stick inserted after the fact has to end up with the history,
+     * and a stick inserted again tomorrow has to gain the tail rather than a second copy
+     * of everything. Pure java.io, so the whole thing runs here.
+     */
+    private static void testExport(File base) throws Exception {
+        section("csv export: additive by watermark, and outside the sink namespace");
+
+        File sink = new File(base, "sink");
+        File out = new File(base, "export");
+        sink.mkdirs();
+        List<File> sinkOnly = new ArrayList<File>();
+        sinkOnly.add(sink);
+
+        // a live log, written exactly the way the service writes one
+        CsvLogger live = new CsvLogger("fanlab.csv");
+        live.setDirs(sinkOnly);
+        live.append("1000,a");
+        live.append("2000,b");
+        live.append("3000,c");
+
+        File src = new File(sink, "fanlab.csv");
+        List<File> srcs = new ArrayList<File>();
+        srcs.add(src);
+        eq((int) CsvLogger.firstEpochMs(src), 1000, "the first row is the file's identity");
+        eq((int) CsvLogger.lastEpochMs(src), 3000, "and the last row is the watermark");
+
+        CsvLogger.Export e1 = CsvLogger.exportBacklog(out, srcs);
+        eq(e1.filesWritten, 1, "a fresh export writes one file");
+        eq((int) e1.rowsCopied, 3, "and copies every row");
+        File dst = new File(out, "fanlab-1000.csv");
+        check(dst.isFile(), "named after the first row's epoch_ms, not after the source");
+        eq(countLines(read(dst)), 4, "header plus three rows");
+        check(read(dst).startsWith(CsvLogger.HEADER + "\n"), "the header comes across");
+
+        // the live file keeps growing under the same name, which is exactly why a
+        // filename-based dedupe cannot work
+        live.append("4000,d");
+        live.append("5000,e");
+        CsvLogger.Export e2 = CsvLogger.exportBacklog(out, srcs);
+        eq(e2.filesWritten, 1, "a grown source lands on the same destination");
+        eq((int) e2.rowsCopied, 2, "and only the rows past the watermark are copied");
+        eq(countLines(read(dst)), 6, "header plus five rows, each of them once");
+        eq(count(read(dst), "3000,c"), 1, "no row is copied twice");
+        File[] once = out.listFiles();
+        eq(once == null ? 0 : once.length, 1,
+                "yesterday's file is added to, not left beside a second copy");
+
+        // nothing new: no read of the destination turns into a write of it
+        CsvLogger.Export e3 = CsvLogger.exportBacklog(out, srcs);
+        eq(e3.filesWritten, 0, "an unchanged source writes nothing");
+        eq((int) e3.rowsCopied, 0, "and copies no rows");
+        eq(e3.upToDate, 1, "it reports the destination as already up to date");
+        eq(countLines(read(dst)), 6, "the destination is untouched");
+        check(!new File(out, "fanlab-1000.csv.part").exists(),
+                "and no half-written temporary is left behind");
+
+        // The stick in the field holds 13-column files where this build writes 20. Two
+        // schemas in one file is the outcome to refuse.
+        File oldSink = new File(base, "old-sink");
+        oldSink.mkdirs();
+        List<File> oldOnly = new ArrayList<File>();
+        oldOnly.add(oldSink);
+        CsvLogger old = new CsvLogger("fanlab.csv", "epoch_ms,degC,fan_ctrl");
+        old.setDirs(oldOnly);
+        old.append("1000,41,30");
+        old.close();
+        List<File> oldSrc = new ArrayList<File>();
+        oldSrc.add(new File(oldSink, "fanlab.csv"));
+        CsvLogger.Export e4 = CsvLogger.exportBacklog(out, oldSrc);
+        eq(e4.filesWritten, 1, "a differently-headed source still exports");
+        File sib = new File(out, "fanlab-1000-v2.csv");
+        check(sib.isFile(), "into a sibling, since its first row carries the same epoch");
+        check(read(sib).startsWith("epoch_ms,degC,fan_ctrl\n"),
+                "the sibling keeps the header it was written under");
+        eq(countLines(read(dst)), 6, "and the 20-column file is not appended to");
+        eq(count(read(dst), "epoch_ms,degC,fan_ctrl\n"), 0, "no mixed schemas anywhere");
+
+        // A row without its newline is being written right now. append() flushes every
+        // complete line, so stopping short of it loses nothing.
+        File growing = new File(base, "growing");
+        File gout = new File(base, "export-growing");
+        write(new File(growing, "fanlab.csv"),
+                CsvLogger.HEADER + "\n7000,x\n8000,y\n9000,z");
+        List<File> gsrc = new ArrayList<File>();
+        gsrc.add(new File(growing, "fanlab.csv"));
+        CsvLogger.Export e5 = CsvLogger.exportBacklog(gout, gsrc);
+        eq((int) e5.rowsCopied, 2, "the half-written last row is left for next time");
+        File gdst = new File(gout, "fanlab-7000.csv");
+        check(read(gdst).endsWith("8000,y\n"), "the copy stops one line short");
+        eq((int) CsvLogger.lastEpochMs(gdst), 8000, "so the watermark resumes there");
+        write(new File(growing, "fanlab.csv"),
+                CsvLogger.HEADER + "\n7000,x\n8000,y\n9000,z\n");
+        CsvLogger.Export e6 = CsvLogger.exportBacklog(gout, gsrc);
+        eq((int) e6.rowsCopied, 1, "and it comes across once the row is finished");
+        eq(countLines(read(gdst)), 4, "leaving one header and three rows");
+
+        // The two internal sinks are identical copies that rolled under different
+        // timestamps. Keying on the first row collapses them; the watermark makes the
+        // second a no-op.
+        File collideOut = new File(base, "export-collide");
+        String rolled = CsvLogger.HEADER + "\n4100,p\n4200,q\n";
+        File r1 = new File(base, "sink-a/fanlab-1111111111111.csv");
+        File r2 = new File(base, "sink-b/fanlab-2222222222222.csv");
+        write(r1, rolled);
+        write(r2, rolled);
+        List<File> both = new ArrayList<File>();
+        both.add(r1);
+        both.add(r2);
+        CsvLogger.Export e7 = CsvLogger.exportBacklog(collideOut, both);
+        File[] made = collideOut.listFiles();
+        eq(made == null ? 0 : made.length, 1,
+                "two rolled copies of one log make one destination");
+        eq((int) e7.rowsCopied, 2, "whose rows are copied once, not twice");
+        eq(e7.upToDate, 1, "the duplicate is recognised as having nothing to add");
+        check(new File(collideOut, "fanlab-4100.csv").isFile(),
+                "named after the first row, not after either rolled name");
+
+        // ---- the reason the destination is not a sink ----
+        // prune() deletes <stem>-*.csv in its target's own directory, so an export named
+        // fanlab-<epoch>.csv written into a sink is indistinguishable from a rolled file.
+        File hazard = new File(base, "hazard");
+        File safe = new File(base, "export-safe");
+        hazard.mkdirs();
+        safe.mkdirs();
+        for (int i = 1; i <= 8; i++) {
+            write(new File(hazard, "fanlab-" + i + "000.csv"),
+                    CsvLogger.HEADER + "\n" + i + "000,x\n");
+            write(new File(safe, "fanlab-" + i + "000.csv"), CsvLogger.HEADER + "\n");
+        }
+        // an old-schema live file, so opening the sink rolls it and therefore prunes
+        write(new File(hazard, "fanlab.csv"), "epoch_ms,degC\n1,2\n");
+        CsvLogger pruner = new CsvLogger("fanlab.csv");
+        List<File> hazardOnly = new ArrayList<File>();
+        hazardOnly.add(hazard);
+        pruner.setDirs(hazardOnly);
+        pruner.append("1,2,3");
+        pruner.close();
+        int inSink = 0;
+        int inExport = 0;
+        for (int i = 1; i <= 8; i++) {
+            if (new File(hazard, "fanlab-" + i + "000.csv").exists()) {
+                inSink++;
+            }
+            if (new File(safe, "fanlab-" + i + "000.csv").exists()) {
+                inExport++;
+            }
+        }
+        check(inSink < 8, "prune() really does delete fanlab-<n>.csv inside a sink ("
+                + inSink + " of 8 left)");
+        eq(inExport, 8, "the same names in a directory of their own all survive it");
+
+        CsvLogger.Export e8 = CsvLogger.exportBacklog(safe, srcs);
+        eq(e8.filesWritten, 1, "and an export into that directory still works");
+        File written = new File(safe, "fanlab-1000.csv");
+        check(written.isFile()
+                        && written.getName().startsWith("fanlab-")
+                        && written.getName().endsWith(".csv"),
+                "under exactly the name prune() would have matched in a sink");
+        check(!new File(safe, "fanlab.csv").exists(),
+                "and never under the live log's own name");
     }
 
     // ----------------------------------------------------------------- closed loop
@@ -2091,6 +2481,749 @@ public final class FanLabTest {
             }
         }
         return false;
+    }
+
+    // ----------------------------------------------------------------- linear
+
+    /**
+     * Measured LED rise above ambient in Presentation, duty by duty -- the same table
+     * {@code tools/CurveSim.java} runs on.
+     *
+     * Interpolated rather than fitted to a line on purpose. The plant is roughly ten times
+     * more responsive at duty 35 than at 80 (0.60 against 0.06 C per duty point), and an
+     * earlier straight-line model was three times too gentle exactly where the quiet end
+     * operates, which made every ramp look stable.
+     */
+    private static final int[] RISE_DUTY = {30, 35, 40, 45, 50, 55, 60, 70, 83};
+    private static final double[] RISE_PRES =
+            {33.76, 29.92, 26.91, 24.9, 23.7, 22.3, 21.5, 20.2, 19.4};
+
+    private static double presentationRise(int duty) {
+        if (duty <= RISE_DUTY[0]) {
+            return RISE_PRES[0];
+        }
+        if (duty >= RISE_DUTY[RISE_DUTY.length - 1]) {
+            return RISE_PRES[RISE_PRES.length - 1];
+        }
+        for (int i = 1; i < RISE_DUTY.length; i++) {
+            if (duty <= RISE_DUTY[i]) {
+                double f = (duty - RISE_DUTY[i - 1])
+                        / (double) (RISE_DUTY[i] - RISE_DUTY[i - 1]);
+                return RISE_PRES[i - 1] + f * (RISE_PRES[i] - RISE_PRES[i - 1]);
+            }
+        }
+        return RISE_PRES[RISE_PRES.length - 1];
+    }
+
+    /**
+     * The controller is a pure function of temperature, duty and the clock, so it is driven
+     * directly here rather than through anything that needs a device.
+     *
+     * The clock never starts at 0 in these tests. Both controllers use 0 to mean "no
+     * previous step" -- the same convention {@link FanCurve} has always used for its slew --
+     * and on hardware the argument is {@code elapsedRealtime()}, which is only 0 at the
+     * instant of boot, minutes before the service exists.
+     */
+    private static void testLinearController() {
+        section("linear: walks toward the ceiling and never stops walking");
+        LinearConfig cfg = new LinearConfig();
+        eq((int) Math.round(cfg.ceilingC * 10), 520, "the ceiling defaults to 52.0 C");
+        eq((int) cfg.upStepMs, 5000, "rising, a step every 5 s");
+        eq((int) cfg.downStepMs, 60000, "falling near the ceiling, every 60 s");
+        eq((int) cfg.downFastMs, 10000, "falling with headroom, every 10 s");
+        eq((int) Math.round(cfg.nearC * 10), 10, "and near means within 1.0 C");
+        check(cfg.downStepMs > cfg.upStepMs, "the decay is slower than the attack, which "
+                + "is the asymmetry the 3-point swing was measured on");
+        check(cfg.downFastMs <= cfg.downStepMs, "and the headroom clock is the fast one");
+        eq(cfg.minDuty, 30, "the floor is 30");
+        eq(cfg.maxDuty, 83, "the ceiling duty is 83");
+
+        // ---- direction ----
+        FanLinear f = new FanLinear();
+        f.resync(50);
+        long ms = 10000L;
+        f.step(cfg, 52.0, true, ms);                     // the look-before-moving tick
+        ms += cfg.upStepMs;
+        eq(f.step(cfg, 52.5, true, ms), 51, "above the ceiling, one point up");
+        ms += cfg.downStepMs;
+        eq(f.step(cfg, 51.0, true, ms), 50, "below it, one point down");
+        ms += cfg.upStepMs;
+        // Exactly on the ceiling steps UP. With no resting state there is no "on the
+        // boundary and therefore fine", and if a branch has to own the exact value it
+        // should be the one that cools.
+        eq(f.step(cfg, 52.0, true, ms), 51, "exactly at the ceiling, up");
+
+        // ---- it never holds ----
+        // The property the whole design rests on: there is no third branch, so every
+        // decision moves the duty unless it is clamped. A hold zone would stop the walk
+        // above the quietest duty that holds the ceiling, which is what it exists to find.
+        FanLinear nh = new FanLinear();
+        nh.resync(55);
+        long t = 10000L;
+        nh.step(cfg, 52.0, true, t);
+        int held = 0;
+        int decisions = 0;
+        int prev = nh.baseDuty();
+        for (int i = 0; i < 200; i++) {
+            // The slowest of the three intervals, so a decision is guaranteed to be due
+            // whichever branch this temperature selects.
+            t += cfg.downStepMs;
+            // A temperature that wanders either side of the ceiling without ever settling
+            // on a duty: the point is that no input value produces a hold.
+            double c = 52.0 + (i % 7 - 3) * 0.3;
+            nh.step(cfg, c, true, t);
+            int now = nh.baseDuty();
+            decisions++;
+            if (now == prev && now > cfg.minDuty && now < cfg.maxDuty) {
+                held++;
+            }
+            prev = now;
+        }
+        eq(decisions, 200, "200 decisions were taken");
+        eq(held, 0, "and not one of them held the duty still away from a limit");
+
+        // ---- the step interval is respected ----
+        FanLinear r = new FanLinear();
+        r.resync(50);
+        long base = 10000L;
+        r.step(cfg, 60.0, true, base);
+        int before = r.baseDuty();
+        for (long d = 1; d < cfg.upStepMs; d++) {
+            r.step(cfg, 60.0, true, base + d);
+        }
+        eq(r.baseDuty(), before, "4999 calls inside one step interval move nothing at all");
+        eq(r.step(cfg, 60.0, true, base + cfg.upStepMs), before + 1,
+                "and the call that crosses it moves exactly one point");
+
+        // ---- and WHICH interval is chosen by where the temperature is ----
+        // This is the fix for the one thing about this mode the owner rejected by ear. A
+        // single 5 s interval measured a 14-point settled swing and he heard it climbing;
+        // 60 s measured 3 and he did not notice it. Descending is therefore slow near the
+        // ceiling, where precision is the whole job, and fast below it, where dropping
+        // quickly cannot overshoot anything. Asserted directly, because the schedule is
+        // invisible in the settled behaviour these tests otherwise check.
+        //
+        // 51.0 C is exactly the edge with the default 1.0 C band: it is NOT more than
+        // nearC below the ceiling, so it takes the slow clock. The boundary belongs to the
+        // careful side.
+        FanLinear sched = new FanLinear();
+        sched.resync(50);
+        long sb = 10000L;
+        sched.step(cfg, 51.0, true, sb);
+        eq(sched.step(cfg, 51.0, true, sb + cfg.downFastMs), 50,
+                "one degree below the ceiling, the fast interval is not enough");
+        eq(sched.step(cfg, 51.0, true, sb + cfg.downStepMs), 49,
+                "it takes the slow one, and then moves a single point");
+
+        FanLinear far = new FanLinear();
+        far.resync(50);
+        long fb = 10000L;
+        far.step(cfg, 45.0, true, fb);
+        eq(far.step(cfg, 45.0, true, fb + cfg.downFastMs), 49,
+                "seven degrees below it, the fast interval is the one that applies");
+
+        // The interval is re-read every tick rather than latched at the start of a
+        // descent, so a temperature drifting back up towards the ceiling slows the walk
+        // before it arrives rather than after.
+        FanLinear drift = new FanLinear();
+        drift.resync(50);
+        long db = 10000L;
+        drift.step(cfg, 45.0, true, db);
+        eq(drift.step(cfg, 45.0, true, db + cfg.downFastMs), 49, "a fast step with headroom");
+        db += cfg.downFastMs;
+        eq(drift.step(cfg, 51.5, true, db + cfg.downFastMs), 49,
+                "and then, close to the ceiling, the same gap buys nothing");
+
+        // A long gap buys one step, not one per interval that elapsed. A catch-up burst
+        // after a resume would be the audible jump the walk exists to avoid.
+        FanLinear g = new FanLinear();
+        g.resync(40);
+        g.step(cfg, 60.0, true, 10000L);
+        eq(g.step(cfg, 60.0, true, 10000L + 3600000L), 41,
+                "an hour-long suspend buys one duty point, not seven hundred");
+
+        // ---- the limits, and saturation on the edge ----
+        FanLinear hot = new FanLinear();
+        hot.resync(82);
+        long h = 10000L;
+        hot.step(cfg, 60.0, true, h);
+        h += cfg.upStepMs;
+        eq(hot.step(cfg, 60.0, true, h), 83, "it reaches the ceiling duty");
+        check(!hot.saturated(), "arriving at 83 is not saturation: it had a point to give");
+        int edges = 0;
+        boolean was = hot.saturated();
+        for (int i = 0; i < 50; i++) {
+            h += cfg.upStepMs;
+            eq(hot.step(cfg, 60.0, true, h), 83, "and stays there");
+            if (hot.saturated() != was) {
+                edges++;
+                was = hot.saturated();
+            }
+        }
+        check(hot.saturated(), "83 and still too hot is out of authority");
+        eq(edges, 1, "which becomes true once and stays true, so the log notes it once");
+        // ...and clears as soon as it has somewhere to go, so a note is not left standing.
+        // 40 C is far below the ceiling, so this is the headroom clock, not the attack one.
+        h += cfg.downFastMs;
+        eq(hot.step(cfg, 40.0, true, h), 82, "a cool reading walks it back down");
+        check(!hot.saturated(), "and clears the saturation");
+
+        FanLinear cold = new FanLinear();
+        cold.resync(31);
+        long k = 10000L;
+        cold.step(cfg, 40.0, true, k);
+        k += cfg.downFastMs;
+        eq(cold.step(cfg, 40.0, true, k), 30, "it reaches the floor");
+        check(!cold.saturated(), "arriving at 30 is not saturation either");
+        k += cfg.downFastMs;
+        eq(cold.step(cfg, 40.0, true, k), 30, "and stays there");
+        check(cold.saturated(), "30 and still too cold is out of authority");
+
+        // ---- engine off ----
+        FanLinear idle = new FanLinear();
+        idle.resync(45);
+        eq(idle.step(cfg, 52.0, false, 10000L), cfg.idleDuty,
+                "the light engine off commands idleDuty");
+        check(!idle.saturated(), "and is never saturation");
+        eq(idle.baseDuty(), 45,
+                "the integrator keeps its duty, so coming back on does not re-walk from 10");
+
+        // ---- resync adopts rather than jumping ----
+        FanLinear a = new FanLinear();
+        a.resync(59);
+        eq(a.baseDuty(), 59, "resync adopts the duty actually on the node");
+        a.resync(-1);
+        eq(a.baseDuty(), FanIo.FAIL_SAFE_DUTY,
+                "an unreadable fan_ctrl adopts 83: not knowing where the fan is never "
+                        + "lowers it");
+
+        // ---- fail safe ----
+        FanLinear bad = new FanLinear();
+        bad.resync(40);
+        bad.step(cfg, 52.0, true, 10000L);
+        eq(bad.step(cfg, Double.NaN, true, 20000L), FanIo.FAIL_SAFE_DUTY,
+                "a NaN reading -> 83");
+        eq(bad.step(cfg, Double.POSITIVE_INFINITY, true, 30000L), FanIo.FAIL_SAFE_DUTY,
+                "an infinite reading -> 83");
+        eq(bad.step(null, 52.0, true, 40000L), FanIo.FAIL_SAFE_DUTY,
+                "a missing config -> 83");
+        // A tick with no usable measurement is not a decision, so it must not consume one
+        // and must not move the duty. Otherwise a sensor that failed for a minute would
+        // leave the walk twelve points from where it was last justified in being.
+        eq(bad.baseDuty(), 40, "and none of them moved the integrator");
+        eq(bad.step(cfg, 60.0, true, 45000L), 41,
+                "the first good reading afterwards steps once, from where it was");
+
+        // ---- the SoC guard is additive on top, and can only raise ----
+        CurveConfig guard = new CurveConfig();
+        FanLinear sg = new FanLinear();
+        sg.resync(40);
+        sg.step(cfg, guard, 52.0, 60.0, true, 10000L);
+        eq(sg.step(cfg, guard, 52.0, 60.0, true, 15000L), 41,
+                "a cool die adds nothing");
+        eq(sg.guardBoost(), 0, "and reports no boost");
+        int guarded = sg.step(cfg, guard, 52.0, 74.0, true, 20000L);
+        check(guarded > sg.baseDuty(), "a hot die raises the duty above the walk's own");
+        check(sg.guardBoost() > 0, "and says by how much");
+        // Never downward. A monitoring sensor must not be able to argue down the sensor the
+        // safety case rests on.
+        boolean everLower = false;
+        FanLinear mono = new FanLinear();
+        mono.resync(50);
+        long q = 10000L;
+        mono.step(cfg, guard, 52.0, 50.0, true, q);
+        for (int soc = 40; soc <= 100; soc++) {
+            q += cfg.downStepMs;
+            int withGuard = mono.step(cfg, guard, 52.0, soc, true, q);
+            if (withGuard < mono.baseDuty()) {
+                everLower = true;
+            }
+        }
+        check(!everLower, "at no SoC temperature does the guard lower the commanded duty");
+
+        // ---- the mode plumbing ----
+        check(Mode.writes(Mode.LINEAR), "LINEAR writes fan_ctrl");
+        check(Mode.controls(Mode.LINEAR),
+                "and is a temperature controller, so the stock ladder stands down for it");
+        check(Mode.controls(Mode.CURVE), "as it does for CURVE");
+        check(!Mode.controls(Mode.MANUAL),
+                "but not for MANUAL, which has no temperature logic to supervise it");
+        check(!Mode.controls(Mode.OFF), "nor for OFF");
+        check(Mode.name(Mode.LINEAR).equals("LINEAR"), "and it has a name for the log");
+        eq(Provenance.exclusive(Mode.LINEAR, false, "0", 100000L, 0L), 1,
+                "a LINEAR row with the ladder down and no foreign write is exclusive");
+        eq(Provenance.exclusive(Mode.MANUAL, false, "0", 100000L, 0L), 0,
+                "a MANUAL row is not");
+    }
+
+    private static void testLinearConfigRoundTrip() {
+        section("linear: config survives the trip, and repairs what it cannot accept");
+        LinearConfig d = new LinearConfig();
+        check(d.encode().equals("l2,52.0,5000,60000,10000,1.0,10,30,83"),
+                "the defaults encode to the line the reply quotes  (got " + d.encode() + ")");
+        check(LinearConfig.decode(d.encode()).encode().equals(d.encode()),
+                "encode/decode round trips byte for byte");
+        d.sanitise();
+        check(d.encode().equals("l2,52.0,5000,60000,10000,1.0,10,30,83"),
+                "and sanitise() is a no-op on them");
+
+        LinearConfig e = new LinearConfig();
+        e.ceilingC = 47.5;
+        e.upStepMs = 3000L;
+        e.downStepMs = 30000L;
+        e.downFastMs = 6000L;
+        e.nearC = 2.5;
+        e.idleDuty = 12;
+        e.minDuty = 35;
+        e.maxDuty = 80;
+        String line = e.encode();
+        LinearConfig back = LinearConfig.decode(line);
+        check(back.encode().equals(line), "an edited config round trips");
+        eq((int) Math.round(back.ceilingC * 10), 475, "a fractional ceiling survives");
+        eq((int) back.upStepMs, 3000, "the attack interval survives");
+        eq((int) back.downStepMs, 30000, "the decay interval survives");
+        eq((int) back.downFastMs, 6000, "the headroom interval survives");
+        eq((int) Math.round(back.nearC * 10), 25, "and the band survives");
+        eq(back.minDuty, 35, "the floor survives");
+        eq(back.maxDuty, 80, "the ceiling survives");
+
+        check(LinearConfig.decode(null).encode().equals(new LinearConfig().encode()),
+                "a missing config falls back to the defaults");
+        check(LinearConfig.decode("").encode().equals(new LinearConfig().encode()),
+                "an empty config falls back to the defaults");
+        check(LinearConfig.decode("l2,not,a,number,x,y,z,p,q").encode()
+                        .equals(new LinearConfig().encode()),
+                "an unparseable config falls back to the defaults");
+        check(LinearConfig.decode("z9,1,2,3,4,5,6,7,8").encode()
+                        .equals(new LinearConfig().encode()),
+                "an unknown version falls back to the defaults");
+        check(LinearConfig.decode("l2,52.0,5000").encode()
+                        .equals(new LinearConfig().encode()),
+                "a truncated line falls back to the defaults");
+
+        // ---- the superseded single-interval line is still read, and read SAFELY ----
+        // l1 existed while this mode was being tuned, and its one interval applied in both
+        // directions -- which is the 14-point-swing configuration the owner rejected. So a
+        // stored l1 maps onto the attack interval and lets the two decay intervals default,
+        // rather than reinstating a symmetric 5 s walk without saying so.
+        LinearConfig legacy = LinearConfig.decode("l1,47.5,3000,12,35,80");
+        eq((int) Math.round(legacy.ceilingC * 10), 475, "an l1 ceiling is read");
+        eq((int) legacy.upStepMs, 3000, "its single interval becomes the attack interval");
+        eq((int) legacy.downStepMs, 60000,
+                "and the decay takes the default 60 s rather than that interval");
+        eq((int) legacy.downFastMs, 10000, "as does the headroom interval");
+        eq(legacy.minDuty, 35, "the rest of the l1 line is read normally");
+        eq(legacy.maxDuty, 80, "all of it");
+        check(legacy.encode().startsWith("l2,"), "and it is re-encoded in the new format");
+
+        // ---- the step interval is repaired, not accepted ----
+        // This is the parameter the plant's measured lag bounds, so a value from outside
+        // the range has to be clamped rather than obeyed. One point per second was measured
+        // building a growing limit cycle; nothing should be able to store faster.
+        LinearConfig fast = new LinearConfig();
+        fast.upStepMs = 10L;
+        fast.downStepMs = 10L;
+        fast.downFastMs = 10L;
+        fast.sanitise();
+        eq((int) fast.upStepMs, (int) LinearConfig.MIN_STEP_MS,
+                "10 ms is repaired up to the minimum");
+        eq((int) fast.downStepMs, (int) LinearConfig.MIN_STEP_MS, "on every interval");
+        eq((int) fast.downFastMs, (int) LinearConfig.MIN_STEP_MS, "all three of them");
+        LinearConfig slow = new LinearConfig();
+        slow.upStepMs = 999999999L;
+        slow.downStepMs = 999999999L;
+        slow.downFastMs = 999999999L;
+        slow.sanitise();
+        eq((int) slow.upStepMs, (int) LinearConfig.MAX_STEP_MS,
+                "and a step interval of eleven days down to the maximum");
+        eq((int) slow.downStepMs, (int) LinearConfig.MAX_STEP_MS, "on every interval too");
+        LinearConfig neg = new LinearConfig();
+        neg.upStepMs = -5000L;
+        neg.downStepMs = -5000L;
+        neg.downFastMs = -5000L;
+        neg.sanitise();
+        eq((int) neg.upStepMs, (int) LinearConfig.MIN_STEP_MS,
+                "a negative interval is repaired, not treated as fast");
+        check(LinearConfig.MIN_STEP_MS == 1000L && LinearConfig.MAX_STEP_MS == 120000L,
+                "the range is the specified 1000..120000 ms");
+
+        // ---- an inverted schedule is repaired, not obeyed ----
+        // downFastMs is the fast one by definition. A config asking for slow-with-headroom
+        // and fast-at-the-ceiling would invert the whole design: it would crawl where
+        // dropping is free and sprint where it costs an audible swing.
+        LinearConfig inverted = new LinearConfig();
+        inverted.downStepMs = 5000L;
+        inverted.downFastMs = 90000L;
+        inverted.sanitise();
+        check(inverted.downFastMs <= inverted.downStepMs,
+                "the headroom interval is never slower than the near-ceiling one");
+        eq((int) inverted.downFastMs, 5000, "it is pulled back to it rather than rejected");
+
+        // ---- the band is repaired ----
+        LinearConfig wide = new LinearConfig();
+        wide.nearC = 500.0;
+        wide.sanitise();
+        eq((int) Math.round(wide.nearC), (int) LinearConfig.MAX_NEAR_C,
+                "an absurd band is clamped");
+        LinearConfig nb = new LinearConfig();
+        nb.nearC = -3.0;
+        nb.sanitise();
+        eq((int) Math.round(nb.nearC), (int) LinearConfig.MIN_NEAR_C,
+                "and a negative one becomes zero, which simply disables the schedule");
+        LinearConfig nanb = new LinearConfig();
+        nanb.nearC = Double.NaN;
+        nanb.sanitise();
+        eq((int) Math.round(nanb.nearC * 10), 10, "NaN restores the default band");
+
+        // ---- the ceiling is repaired ----
+        LinearConfig low = new LinearConfig();
+        low.ceilingC = 5.0;
+        low.sanitise();
+        eq((int) Math.round(low.ceilingC), (int) LinearConfig.MIN_CEILING_C,
+                "an unreachably low ceiling is clamped, and merely over-cools");
+        LinearConfig high = new LinearConfig();
+        high.ceilingC = 95.0;
+        high.sanitise();
+        eq((int) Math.round(high.ceilingC), (int) LinearConfig.MAX_CEILING_C,
+                "a ceiling above the 75 C shutdown is clamped well short of it");
+        LinearConfig nan = new LinearConfig();
+        nan.ceilingC = Double.NaN;
+        nan.sanitise();
+        eq((int) Math.round(nan.ceilingC * 10), 520, "NaN restores the default");
+
+        // --ef arrives as a float, so 52.3 reaches the receiver as 52.29999923706055. The
+        // snap to a tenth is what stops that appearing in the stored line and in every
+        // reply that echoes it -- and what lets the round trip be byte-identical at all.
+        LinearConfig snap = new LinearConfig();
+        snap.ceilingC = (double) 52.3f;
+        snap.sanitise();
+        check(snap.encode().equals("l2,52.3,5000,60000,10000,1.0,10,30,83"),
+                "a float ceiling snaps to a tenth  (got " + snap.encode() + ")");
+        check(LinearConfig.decode(snap.encode()).encode().equals(snap.encode()),
+                "and then round trips");
+
+        // A hostile config must not be able to command something unwritable.
+        LinearConfig bad = new LinearConfig();
+        bad.ceilingC = -1000.0;
+        bad.upStepMs = -1L;
+        bad.downStepMs = -1L;
+        bad.downFastMs = -1L;
+        bad.nearC = Double.NEGATIVE_INFINITY;
+        bad.idleDuty = 0;
+        bad.minDuty = -50;
+        bad.maxDuty = 900;
+        bad.sanitise();
+        check(FanIo.valid(bad.minDuty) && FanIo.valid(bad.maxDuty)
+                        && FanIo.valid(bad.idleDuty),
+                "sanitise() leaves only writable duties behind");
+        check(bad.maxDuty >= bad.minDuty, "and a ceiling that is not below the floor");
+        FanLinear hf = new FanLinear();
+        hf.resync(40);
+        long hm = 10000L;
+        boolean allValid = true;
+        for (int i = 0; i < 500; i++) {
+            hm += bad.upStepMs;
+            if (!FanIo.valid(hf.step(bad, 20.0 + i * 0.2, true, hm))) {
+                allValid = false;
+            }
+        }
+        check(allValid, "and the controller running on it only ever commands a legal duty");
+    }
+
+    /**
+     * The controller against the measured plant with one thermal pole.
+     *
+     * What this establishes and what it does not. It establishes that the walk converges
+     * from the floor, that it arrives where the plant says it should, and that the residual
+     * oscillation is bounded -- a regression guard on the controller's own logic. It is
+     * <b>not</b> evidence of field stability: one pole cannot produce the growing limit
+     * cycle that duty-per-second was actually measured producing on hardware, which is why
+     * {@code tools/CurveSim.java} sweeps two. Anyone tempted to lower {@link
+     * LinearConfig#downStepMs} on the strength of this test should read that field's comment
+     * and repeat the step test instead.
+     */
+    private static void testLinearConvergence() {
+        section("linear: converges on the ceiling and stays within a bounded swing");
+        LinearConfig cfg = new LinearConfig();
+        double tau = 120.0;                 // the measured fast pole: 115 s down, 133 s up
+        int[] ambients = {22, 24, 26, 30};
+        for (int a = 0; a < ambients.length; a++) {
+            double ambient = ambients[a];
+            FanLinear f = new FanLinear();
+            f.resync(cfg.minDuty);
+            double temp = ambient + presentationRise(cfg.minDuty);
+            int duty = cfg.minDuty;
+            long ms = 10000L;
+            int lo = 999;
+            int hi = -999;
+            double tlo = 999;
+            double thi = -999;
+            int settledAt = -1;
+            for (int s = 0; s < 14400; s++) {
+                duty = f.step(cfg, temp, true, ms);
+                temp += (ambient + presentationRise(duty) - temp) / tau;
+                ms += 1000L;
+                if (settledAt < 0 && Math.abs(temp - cfg.ceilingC) <= 0.5) {
+                    settledAt = s;
+                }
+                // The second half only: the first is the walk getting there.
+                if (s >= 7200) {
+                    lo = Math.min(lo, duty);
+                    hi = Math.max(hi, duty);
+                    tlo = Math.min(tlo, temp);
+                    thi = Math.max(thi, temp);
+                }
+            }
+            boolean reachable = ambient + presentationRise(cfg.maxDuty) <= cfg.ceilingC;
+            if (reachable) {
+                check(settledAt >= 0 && settledAt < 7200, ambient
+                        + " C: reaches the ceiling's neighbourhood, in " + settledAt + " s");
+                eq(thi - tlo, 0.0, 1.0, ambient
+                        + " C: and thereafter holds it to within a degree");
+                // The swing is set by decay rate against plant lag, and this is where
+                // the split earns its keep. A single 5 s interval swung twelve points here
+                // and fourteen on hardware, which the owner heard; a 60 s decay measured
+                // three on hardware and the bound below is the simulated equivalent. If
+                // this test starts failing upward, the asymmetry has been weakened.
+                check(hi - lo <= 4, ambient + " C: the duty swing is " + (hi - lo)
+                        + " points, inside the handful a 60 s decay implies");
+                check(lo >= cfg.minDuty && hi <= cfg.maxDuty,
+                        ambient + " C: and stays between the floor and the ceiling duty");
+            } else {
+                // At 30 C ambient the plant's minimum rise is 19.4 C, so 52 C is only just
+                // reachable and a cooler ceiling would not be. A correct controller pegs
+                // the fan and says so rather than pretending.
+                eq(hi, cfg.maxDuty, ambient
+                        + " C: an unreachable ceiling pegs the duty at the maximum");
+                check(f.saturated(), "and reports being out of authority");
+            }
+        }
+
+        // The ceiling was chosen so that LINEAR and CURVE/Quiet agree at 24 C, which is
+        // what makes an A/B of the two a comparison of controllers rather than of targets.
+        // Quiet settles at 38.0 % and 52.1 C there; this lands within a couple of points.
+        FanLinear m = new FanLinear();
+        m.resync(cfg.minDuty);
+        double temp = 24.0 + presentationRise(cfg.minDuty);
+        int duty = cfg.minDuty;
+        long ms = 10000L;
+        int lo = 999;
+        int hi = -999;
+        for (int s = 0; s < 14400; s++) {
+            duty = m.step(cfg, temp, true, ms);
+            temp += (24.0 + presentationRise(duty) - temp) / tau;
+            ms += 1000L;
+            if (s >= 7200) {
+                lo = Math.min(lo, duty);
+                hi = Math.max(hi, duty);
+            }
+        }
+        eq((lo + hi) / 2.0, 38.0, 3.0,
+                "at 24 C it settles where CURVE with the Quiet preset does, 38 %");
+    }
+
+    // ----------------------------------------------------------------- provenance
+
+    /**
+     * The off-duration is the entire basis of the power-on ambient reading, and it has two
+     * cases that look nothing like each other. Answering from the wrong one is not a
+     * rounding error: it is the difference between a settled 27.9 C and a reading four
+     * degrees warm, and the log would carry no sign of which had happened.
+     */
+    private static void testOffDuration() {
+        section("ambient: how long the projector had been off, both cases");
+
+        long hour = 3600000L;
+        long boot = 1000000000000L;
+
+        // A true power-down. Android was not running for the thirteen hours, so this boot
+        // began after the gap and elapsedRealtime knows nothing whatever about it -- the
+        // persisted wall instant is the only witness there is. The previous boot's
+        // monotonic reading is deliberately smaller than this gap: a cross-check that
+        // failed to test the boot identity first would report eight hours here.
+        long onWall = boot + 40000L;
+        long stampWall = boot - 13 * hour;
+        long stampBoot = stampWall - 2 * hour;
+        eq((int) (Provenance.offDurationMs(onWall, 40000L, stampWall, 8 * hour,
+                        stampBoot, boot) / 1000L),
+                (int) ((13 * hour + 40000L) / 1000L),
+                "a power-down is measured from the last engine-on sighting, across the boot");
+        check(Provenance.OFF_BOOT.equals(Provenance.offSource(stampWall, stampBoot, boot)),
+                "and is reported as the power-down case");
+
+        // Standby: Android stayed up, so no boot intervened and the monotonic clock spans
+        // the whole gap. Nothing derived from boot time could answer this -- it would
+        // report the twenty hours of uptime instead of the three the engine was off.
+        long mono = 20 * hour;
+        eq((int) (Provenance.offDurationMs(boot + mono, mono, boot + 17 * hour,
+                        17 * hour, boot, boot) / 1000L),
+                (int) ((3 * hour) / 1000L),
+                "standby is measured inside one boot, with no reboot in the gap");
+        check(Provenance.OFF_STANDBY.equals(
+                        Provenance.offSource(boot + 17 * hour, boot, boot)),
+                "and is reported as the standby case");
+
+        // Same boot, but the wall clock was corrected forward by a year after the stamp
+        // was taken. The monotonic witness is the shorter of the two and therefore wins,
+        // which is the point of taking the shorter: it can only grade the reading as less
+        // settled, never as more.
+        long year = 365L * 24 * hour;
+        eq((int) (Provenance.offDurationMs(boot + mono + year, mono, boot + 17 * hour,
+                        17 * hour, boot, boot) / 1000L),
+                (int) ((3 * hour) / 1000L),
+                "a clock correction inside one boot cannot inflate the gap");
+
+        // Nothing persisted: a fresh install, or pm clear.
+        eq((int) Provenance.offDurationMs(onWall, 40000L, 0L, 0L, 0L, boot), -1,
+                "with no stamp the off-duration is unknown, which is not zero");
+        check(Provenance.OFF_NONE.equals(Provenance.offSource(0L, 0L, boot)),
+                "and it says so rather than naming a case");
+        eq((int) Provenance.offDurationMs(onWall, 40000L, onWall + hour, 0L,
+                        stampBoot, boot), -1,
+                "a clock that moved backwards is unknown, not a negative duration");
+
+        check(Provenance.sameBoot(boot, boot + 30000L),
+                "half a minute of clock drift is still the same boot");
+        check(!Provenance.sameBoot(boot, boot + 5 * 60000L),
+                "five minutes apart is not");
+    }
+
+    /**
+     * The exclusive-control flag stands in for a filter that was assembled by hand out of
+     * three different notes, so the transitions it reports have to be the ones that used
+     * to be found by grep -- including the two that are easy to get backwards, MANUAL and
+     * a running session.
+     */
+    private static void testExclusiveControl() {
+        section("exclusive control: one column instead of three greps");
+
+        long t = 5000000L;
+        eq(Provenance.exclusive(Mode.CURVE, false, "0", t, 0L), 1,
+                "the curve driving, the ladder stood down, nothing else on the node");
+        eq(Provenance.exclusive(Mode.MANUAL, false, "0", t, 0L), 0,
+                "MANUAL is never exclusive -- it leaves the stock ladder armed by design");
+        eq(Provenance.exclusive(Mode.OFF, false, "0", t, 0L), 0,
+                "nor is OFF, which is not driving at all");
+        eq(Provenance.exclusive(Mode.CURVE, true, "0", t, 0L), 0,
+                "a running session owns the node, but it has a trace file of its own");
+        eq(Provenance.exclusive(Mode.CURVE, false, "1", t, 0L), 0,
+                "an armed stock ladder counts whether or not it has written yet");
+        eq(Provenance.exclusive(Mode.CURVE, false, "0\n", t, 0L), 1,
+                "a property read back with its newline is still a zero");
+        eq(Provenance.exclusive(Mode.CURVE, false, null, t, 0L), -1,
+                "an unreadable kill switch is 'cannot say', which the CSV writes blank");
+
+        // The quiet window, which is the part with a number in it: a foreign write
+        // disqualifies the row and keeps doing so until the window has closed.
+        eq(Provenance.exclusive(Mode.CURVE, false, "0", t, t), 0,
+                "a foreign write this second is not exclusive");
+        eq(Provenance.exclusive(Mode.CURVE, false, "0",
+                        t + Provenance.FOREIGN_QUIET_MS - 1, t), 0,
+                "and still is not, a millisecond short of the window");
+        eq(Provenance.exclusive(Mode.CURVE, false, "0",
+                        t + Provenance.FOREIGN_QUIET_MS, t), 1,
+                "the window closing restores it");
+        check(Provenance.FOREIGN_QUIET_MS >= 4 * 15000L,
+                "and the window is at least four of the stock ladder's poll periods wide");
+    }
+
+    /**
+     * The six columns the field questions needed, and the property that matters more than
+     * any of them: a field nothing could read comes out blank, never as a zero and never
+     * as an exception. Then the revision itself, because a header change has already
+     * fired unattended once and is about to again.
+     */
+    private static void testProvenanceColumns() throws Exception {
+        section("csv: the ambient and provenance columns, blank against zero");
+
+        String[] cols = CsvLogger.HEADER.split(",", -1);
+        eq(cols.length, 26, "the schema is twenty-six columns");
+        check(CsvLogger.HEADER.startsWith(OLD_HEADER_20),
+                "the twenty that were there are unchanged and still in that order");
+        check(CsvLogger.HEADER.endsWith(
+                        ",session,off_s,room_c,exclusive,catchup,duty_hold_s"),
+                "and the six new ones are on the end, so no existing column index moved");
+        check(SweepReport.TRACE_HEADER.startsWith(CsvLogger.HEADER + ","),
+                "the sweep trace grew with them rather than shifting underneath its reader");
+
+        // Nothing read at all. Every new field has to be empty rather than a 0 or a -1,
+        // or a downstream mean is quietly wrong instead of loudly absent.
+        Sample blank = new Sample();
+        String[] f = blank.toCsv().split(",", -1);
+        eq(f.length, cols.length, "an unpopulated sample still fills every column");
+        for (int i = 20; i < f.length; i++) {
+            check(f[i].length() == 0, "column " + cols[i] + " is blank when nothing was "
+                    + "read, got '" + f[i] + "'");
+        }
+
+        Sample s = new Sample();
+        s.session = 7;
+        s.offMs = 47880000L;
+        s.exclusive = 0;
+        s.catchingUp = 0;
+        s.dutyHoldMs = 95500L;
+        f = s.toCsv().split(",", -1);
+        eq(f.length, cols.length, "and so does a populated one");
+        check(f[20].equals("7"), "session is the run number, got '" + f[20] + "'");
+        check(f[21].equals("47880"), "off_s is whole seconds, got '" + f[21] + "'");
+        check(f[22].length() == 0,
+                "a room temperature of 0 means not stated and logs blank, not as a zero");
+        check(f[23].equals("0"),
+                "where exclusive=0 is a real answer and does log as a zero");
+        check(f[24].equals("0"), "and so does catchup=0 -- converged, not unknown");
+        check(f[25].equals("95"), "duty_hold_s is whole seconds, got '" + f[25] + "'");
+
+        s.roomC = 23;
+        check(s.toCsv().split(",", -1)[22].equals("23"),
+                "a stated room temperature is the number itself");
+
+        // The revision. A file left on the device under the old twenty columns must be
+        // rolled aside rather than appended to: this fired for real, unattended, when the
+        // header went 16 -> 20, and the same thing has to happen at 20 -> 26.
+        File base = new File(System.getProperty("java.io.tmpdir"),
+                "fanlab-schema-" + System.nanoTime());
+        File dir = new File(base, "sink");
+        dir.mkdirs();
+        try {
+            List<File> one = new ArrayList<File>();
+            one.add(dir);
+            CsvLogger old = new CsvLogger("fanlab.csv", OLD_HEADER_20);
+            old.setDirs(one);
+            old.append("1757000000000,2026-09-06 12:00:00,1900,52.20,52,40,3,1,"
+                    + "Presentation,CURVE,40,,,64.2,67.3,59.2,0,0,0,0");
+            old.close();
+
+            CsvLogger fresh = new CsvLogger("fanlab.csv");
+            fresh.setDirs(one);
+            eq(fresh.append(new Sample().toCsv()), 1,
+                    "a row still reaches the destination across the revision");
+            fresh.close();
+
+            String live = read(new File(dir, "fanlab.csv"));
+            check(live.startsWith(CsvLogger.HEADER + "\n"),
+                    "the live file carries the new header");
+            eq(countLines(live), 2, "and holds its header and the new row, nothing else");
+            File[] kept = dir.listFiles();
+            eq(kept == null ? 0 : kept.length, 2,
+                    "the twenty-column data is renamed aside, not thrown away");
+            for (int i = 0; kept != null && i < kept.length; i++) {
+                if (!kept[i].getName().equals("fanlab.csv")) {
+                    check(read(kept[i]).startsWith(OLD_HEADER_20 + "\n"),
+                            "and keeps the header it was actually written under");
+                }
+            }
+
+            // Reopening on the new header has to append, or every service start would
+            // roll the file and the cap would stop meaning anything again.
+            CsvLogger again = new CsvLogger("fanlab.csv");
+            again.setDirs(one);
+            again.append(new Sample().toCsv());
+            again.close();
+            eq(countLines(read(new File(dir, "fanlab.csv"))), 3,
+                    "the new header round-trips: reopening appends rather than rolling");
+        } finally {
+            rmrf(base);
+        }
     }
 
     private static void write(File f, String content) throws Exception {

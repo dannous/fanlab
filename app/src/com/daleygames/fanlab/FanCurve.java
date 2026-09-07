@@ -132,6 +132,19 @@ public final class FanCurve {
     }
 
     /**
+     * Is the output still converging on what the curve asks for?
+     *
+     * The distinction the log needs and could not previously make: a duty of 44 that is
+     * on its way down from a fail-safe 83 and a duty of 44 the curve has settled on are
+     * the same number describing opposite situations, and telling them apart by eye off
+     * the trace is how "creep" and "still warming up" get confused. The controller has
+     * always known; nothing asked it.
+     */
+    public boolean isCatchingUp() {
+        return catchingUp;
+    }
+
+    /**
      * Advance the controller one step.
      *
      * @param cfg       the curve; must already have been {@link CurveConfig#sanitise}d.

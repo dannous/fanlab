@@ -46,12 +46,16 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private TextView bannerView;
 
     private StepRow modeRow;
+    private StepRow presetRow;
+    private StepRow ceilingRow;
     private StepRow reassertRow;
     private StepRow loggingRow;
     private StepRow autostartRow;
     private StepRow takeoverRow;
     private StepRow restoreRow;
     private StepRow storageRow;
+    private StepRow exportRow;
+    private StepRow roomRow;
     private SeekBar slider;
     private TextView sliderValue;
 
@@ -199,6 +203,31 @@ public class MainActivity extends Activity implements StepRow.Listener {
         // ---- controls ----
         root.addView(Ui.heading(c, "Control"), Ui.wrap());
         modeRow = addRow(root, new StepRow(c, "Mode").button().tag("mode", 0));
+        presetRow = addRow(root, new StepRow(c, "Curve preset — CURVE mode").button()
+                .tag("preset", 0));
+        root.addView(Ui.body(c,
+                "Four curves: the shipped one, then the same curve with 5, 10 and 15 duty "
+                        + "points added at every knee and clipped at 83 %. At 24 °C in "
+                        + "Presentation they settle at 38 % and 51.9 °C, 42 % and 50.3 °C, "
+                        + "44 % and 49.2 °C, and 48 % and 48.3 °C — so Balanced, Cool and "
+                        + "Cold buy 1.6, 2.7 and 3.6 °C against Quiet. Each cools by less "
+                        + "than was added to it: the extra fan drops the light engine onto "
+                        + "the rise below Quiet's shelf, where the loop asks for less "
+                        + "again."),
+                Ui.wrap());
+        ceilingRow = addRow(root, new StepRow(c, "Temperature ceiling — LINEAR mode")
+                .range((int) LinearConfig.MIN_CEILING_C, (int) LinearConfig.MAX_CEILING_C)
+                .steps(1, 5).tag("ceiling", 0));
+        root.addView(Ui.body(c,
+                "CURVE holds a fan speed and lets the temperature float; LINEAR holds the "
+                        + "temperature and lets the fan float. At 52 °C the two land on the "
+                        + "same point in a 24 °C room — 38 % — and diverge either side of "
+                        + "it: CURVE lets the light engine reach 54.1 °C at 26 °C ambient "
+                        + "and 56.6 °C at 30 °C, where LINEAR holds 52 °C and pays 42 % for "
+                        + "it at 26 °C and 57 % at 30 °C. LINEAR never stops adjusting, by "
+                        + "design: that is how it keeps testing whether one point less would "
+                        + "do."),
+                Ui.wrap());
         reassertRow = addRow(root, new StepRow(c,
                 "Re-assert every second (beat the stock controller)").button()
                 .tag("reassert", 0));
@@ -230,6 +259,22 @@ public class MainActivity extends Activity implements StepRow.Listener {
         release.tint(0xFF5A1F1F).valueColour(Ui.DANGER).display("▶");
         addRow(root, release);
 
+        // Here rather than only on the AUTO screen. It was on the sweep's confirmation
+        // page, where it became a line in the sweep report and never reached fanlab.csv --
+        // so a month of ordinary use carried no ambient at all and the first field log had
+        // to have it supplied by word of mouth.
+        root.addView(Ui.heading(c, "Room temperature"), Ui.wrap());
+        roomRow = addRow(root, new StepRow(c, "Room temperature").range(0, 40)
+                .steps(1, 5).tag("room", 0));
+        root.addView(Ui.body(c,
+                "Goes on every CSV row, blank until you set it — and blank means not "
+                        + "stated, not zero. This is the one number the log cannot work "
+                        + "out for itself: inferring the room from the LED temperature "
+                        + "needs the plant table, which is the thing field data exists to "
+                        + "check. The app also takes its own reading at every power-on and "
+                        + "records how long the projector had been off beforehand; this is "
+                        + "the independent cross-check on that."), Ui.wrap());
+
         root.addView(Ui.heading(c, "Logging"), Ui.wrap());
         loggingRow = addRow(root, new StepRow(c, "Write CSV telemetry").button()
                 .tag("logging", 0));
@@ -238,12 +283,18 @@ public class MainActivity extends Activity implements StepRow.Listener {
         storageRow = addRow(root, new StepRow(c,
                 "Also copy to /storage/emulated/0/FanLab (asks for permission)")
                 .button().tag("storage", 0));
+        exportRow = addRow(root, new StepRow(c,
+                "COPY ALL LOGS to a USB stick now").button().tag("export", 0));
+        exportRow.tint(0xFF14313F).valueColour(Ui.ACCENT).display("▶");
         addRow(root, new StepRow(c, "Diagnostics…").button().tag("diag", 0));
         root.addView(Ui.body(c,
-                "The CSV always goes to this app's own folder on internal storage and on "
-                        + "any USB stick that is plugged in — no permission needed. Look "
-                        + "for Android/data/" + getPackageName() + "/files/fanlab/ on the "
-                        + "stick."), Ui.wrap());
+                "New rows go to this app's own folder on internal storage and to any USB "
+                        + "stick that is plugged in at the time — no permission needed. A "
+                        + "stick only receives what is written while it is in, so use COPY "
+                        + "ALL LOGS to collect the history: it writes " + FanService.EXPORT_DIR
+                        + "/ at the top level of the stick, adds to what is already there, "
+                        + "and copies nothing twice. Live rows land in Android/data/"
+                        + getPackageName() + "/files/fanlab/."), Ui.wrap());
 
         if (systemVariant) {
             root.addView(Ui.heading(c, "System build only — permanent changes"), Ui.wrap());
@@ -281,8 +332,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + FanIo.FAIL_SAFE_DUTY + " % on the way out. The 75 °C shutdown "
                         + "and the kernel fan-stall watchdog are untouched. After the "
                         + "projector wakes from standby the driver puts the fan back to "
-                        + "55 % by itself; this app notices within a second and ramps "
-                        + "back to where the curve wants it."), Ui.wrap());
+                        + "55 % by itself; this app notices within a second, adopts that "
+                        + "value and moves off it gradually rather than stepping."),
+                Ui.wrap());
 
         return scroll;
     }
@@ -307,7 +359,34 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     ? "Mode — OFF: observing only, the fan is not touched"
                     : mode == Mode.MANUAL
                     ? "Mode — MANUAL: holding the slider value"
+                    : mode == Mode.LINEAR
+                    ? "Mode — LINEAR: holding the temperature ceiling, fan free to move"
                     : "Mode — CURVE: following the temperature curve");
+        }
+        if (presetRow != null) {
+            // The colour tracks the noise, not the state: green for the quietest, amber
+            // for the two whose operating point reaches the owner's "just acceptable" 50 in
+            // a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 % -- and dim for a
+            // curve that is none of them and therefore has nothing to say about how loud it
+            // is.
+            //
+            // Dimmed outside CURVE, because a value the loop is not currently using should
+            // not look like one it is.
+            int preset = Prefs.preset(this);
+            presetRow.display(CurveConfig.presetName(preset));
+            presetRow.valueColour(mode != Mode.CURVE ? Ui.DIM
+                    : preset == 0 ? Ui.GOOD
+                    : preset == 1 ? Ui.ACCENT
+                    : (preset == 2 || preset == 3) ? Ui.WARN : Ui.DIM);
+        }
+        if (ceilingRow != null) {
+            LinearConfig lin = Prefs.linear(this);
+            ceilingRow.set((int) Math.round(lin.ceilingC));
+            ceilingRow.display(Sample.fmt1(lin.ceilingC) + " °C");
+            // Dim unless LINEAR is the thing running, for the same reason the preset row
+            // dims outside CURVE: a value the loop is not currently using should not look
+            // like one it is.
+            ceilingRow.valueColour(mode == Mode.LINEAR ? Ui.ACCENT : Ui.DIM);
         }
         if (reassertRow != null) {
             boolean r = Prefs.reassert(this);
@@ -328,6 +407,12 @@ public class MainActivity extends Activity implements StepRow.Listener {
             boolean g = storageGranted();
             storageRow.display(g ? "GRANTED" : "not granted");
             storageRow.valueColour(g ? Ui.GOOD : Ui.DIM);
+        }
+        if (roomRow != null) {
+            int r = Prefs.roomC(this);
+            roomRow.set(r);
+            roomRow.display(r == 0 ? "not stated" : r + " °C");
+            roomRow.valueColour(r == 0 ? Ui.DIM : Ui.ACCENT);
         }
         if (slider != null) {
             int duty = Prefs.manualDuty(this);
@@ -399,6 +484,20 @@ public class MainActivity extends Activity implements StepRow.Listener {
         } else if (FanService.throttledSec > 0) {
             sb.append("   throttled ").append(FanService.throttledSec).append("s so far");
         }
+        if (Prefs.mode(this) == Mode.LINEAR) {
+            LinearConfig lin = Prefs.linear(this);
+            sb.append("\nLINEAR  ceiling ").append(Sample.fmt1(lin.ceilingC))
+                    .append(" C   ").append(lin.upStepMs / 1000).append(" s up, ")
+                    .append(lin.downStepMs / 1000).append(" s down within ")
+                    .append(Sample.fmt1(lin.nearC)).append(" C, ")
+                    .append(lin.downFastMs / 1000).append(" s below that");
+            // Named rather than implied. A duty pinned at 83 with nothing to explain it
+            // looks like a fault; saying the ceiling is out of reach says it is not.
+            if (FanService.linearSaturated) {
+                sb.append("   ● OUT OF AUTHORITY — the ceiling cannot be reached "
+                        + "at this room temperature");
+            }
+        }
         if (s.note != null && s.note.length() > 0) {
             sb.append("\n").append(s.note);
         }
@@ -418,7 +517,18 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 ps.append(paths[i]);
             }
         }
+        ps.append("\nExport → ").append(FanService.exportStatus);
         pathsView.setText(ps.toString());
+
+        if (exportRow != null) {
+            boolean busy = FanService.exporting;
+            exportRow.display(busy ? "copying…"
+                    : FanService.exportFiles > 0
+                    ? FanService.exportFiles + " file"
+                      + (FanService.exportFiles == 1 ? "" : "s") : "▶");
+            exportRow.valueColour(busy ? Ui.WARN
+                    : FanService.exportFiles > 0 ? Ui.GOOD : Ui.ACCENT);
+        }
     }
 
     private static String levelName(int level) {
@@ -443,15 +553,41 @@ public class MainActivity extends Activity implements StepRow.Listener {
         try {
             if ("mode".equals(row.tagName)) {
                 int mode = Prefs.mode(this);
-                // OFF -> CURVE -> MANUAL -> CURVE -> ... The two driving modes toggle
-                // between each other, because going from one driver to the other has no
+                // OFF -> CURVE -> LINEAR -> MANUAL -> CURVE -> ... The driving modes cycle
+                // among themselves, because going from one driver to another has no
                 // business routing through a handback: OFF writes the fail-safe 83 and
                 // re-arms the stock controller, which then has to be undone. Reaching OFF
                 // is a deliberate act with its own control (RESTORE STOCK), not something
                 // to stumble into while auditioning a duty.
-                int next = mode == Mode.OFF ? Mode.CURVE
-                        : mode == Mode.CURVE ? Mode.MANUAL : Mode.CURVE;
+                //
+                // CURVE and LINEAR are adjacent on purpose. Comparing them by ear is what
+                // LINEAR is for, and the two are one button press apart with no fail-safe
+                // burst in between, so the comparison is of the controllers rather than of
+                // how each of them recovers from 83.
+                int next = mode == Mode.CURVE ? Mode.LINEAR
+                        : mode == Mode.LINEAR ? Mode.MANUAL : Mode.CURVE;
                 Prefs.setMode(this, next);
+                FanService.poke(this, FanService.ACTION_REFRESH);
+                syncControlsFromPrefs();
+            } else if ("preset".equals(row.tagName)) {
+                // Quiet -> Balanced -> Cool -> Cold -> Quiet. Custom is a state to arrive
+                // in, not one to cycle to: it has no curve of its own, so PRESET_CUSTOM
+                // being -1 lands the next press on Quiet, which is the only sensible place
+                // to go from a curve the four names do not describe.
+                int next = Prefs.preset(this) + 1;
+                if (next >= CurveConfig.PRESET_NAMES.length) {
+                    next = 0;
+                }
+                Prefs.setPreset(this, next);
+                FanService.poke(this, FanService.ACTION_REFRESH);
+                syncControlsFromPrefs();
+            } else if ("ceiling".equals(row.tagName)) {
+                // Poked, unlike the room temperature: this one is an input to the
+                // controller, so the loop should pick it up as a settings change and resync
+                // rather than discovering it a tick later mid-walk.
+                LinearConfig lin = Prefs.linear(this);
+                lin.ceilingC = row.get();
+                Prefs.setLinear(this, lin);
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("reassert".equals(row.tagName)) {
@@ -463,8 +599,17 @@ public class MainActivity extends Activity implements StepRow.Listener {
             } else if ("autostart".equals(row.tagName)) {
                 Prefs.setAutostart(this, !Prefs.autostart(this));
                 syncControlsFromPrefs();
+            } else if ("room".equals(row.tagName)) {
+                // No poke: the loop picks this up on its next tick, and re-syncing the
+                // controller because the room was typed in would be a resync for nothing.
+                int v = row.get();
+                Prefs.setRoomC(this, v);
+                row.display(v == 0 ? "not stated" : v + " °C");
+                row.valueColour(v == 0 ? Ui.DIM : Ui.ACCENT);
             } else if ("storage".equals(row.tagName)) {
                 requestStoragePermission();
+            } else if ("export".equals(row.tagName)) {
+                doExport();
             } else if ("curve".equals(row.tagName)) {
                 startActivity(new Intent(this, CurveActivity.class));
             } else if ("auto".equals(row.tagName)) {
@@ -487,6 +632,29 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
+
+    /**
+     * Copy the backlog now, whether or not this boot already did.
+     *
+     * The automatic export fires once per volume per boot, which is right for a stick
+     * left in the socket and wrong for someone standing in front of the projector holding
+     * one. This forces it. The result cannot be reported here -- the copy runs on its own
+     * thread precisely so that it is not waited on -- so the row and the line under the
+     * CSV paths report it as it happens.
+     */
+    private void doExport() {
+        FanService s = FanService.instance;
+        if (s == null) {
+            toastLike("The service is not running, so nothing knows which volumes are "
+                    + "mounted. Set Mode to CURVE or MANUAL and try again.");
+            return;
+        }
+        s.exportBacklogAsync(true);
+        toastLike("Copying every log to " + FanService.EXPORT_DIR + "/ on each USB stick. "
+                + "It runs in the background — the row shows the result when it finishes, "
+                + "and Diagnostics lists the destinations.\n\n"
+                + "Already-copied rows are skipped, so doing this twice costs nothing.");
+    }
 
     private void doRelease() {
         FanService s = FanService.instance;

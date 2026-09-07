@@ -209,10 +209,14 @@ public class AutoActivity extends Activity implements StepRow.Listener {
 
         col.addView(Ui.heading(c, "Room temperature — optional, but it is the biggest "
                 + "thing we cannot measure"), Ui.wrap());
+        // The same stored value the main screen edits, so a figure typed in either place
+        // reaches both the sweep report and every row of fanlab.csv. It used to live only
+        // in the sweep's own metadata and go no further.
         ambientRow = new StepRow(c, "Room temperature").range(0, 40).steps(1, 5)
                 .tag("ambient", 0);
-        ambientRow.set(0);
-        ambientRow.display("not stated");
+        int amb = Prefs.roomC(c);
+        ambientRow.set(amb);
+        ambientRow.display(amb == 0 ? "not stated" : amb + " °C");
         addRow(col, ambientRow);
 
         confirmTemp = Ui.body(c, "");
@@ -309,6 +313,7 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                 finish();
             } else if ("ambient".equals(row.tagName)) {
                 int v = row.get();
+                Prefs.setRoomC(this, v);
                 row.display(v == 0 ? "not stated" : v + " °C");
             }
         } catch (Throwable t) {

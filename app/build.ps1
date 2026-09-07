@@ -123,6 +123,14 @@ New-Item -ItemType Directory -Force $OutDir   | Out-Null
 $PureSources = @(
     'Thermistor.java', 'Sysfs.java', 'FanIo.java', 'CurveConfig.java',
     'FanCurve.java', 'Mode.java', 'Sample.java', 'CsvLogger.java', 'SysProps.java',
+    # LINEAR: the ceiling-holding controller and its config. Pure like FanCurve, and for
+    # the same reason -- it is the half of the app that decides how fast the fan goes, so
+    # it belongs where the host test can drive it directly.
+    'LinearConfig.java', 'FanLinear.java',
+    # Provenance: how long the projector had been off before a reading, and whether
+    # anything else was writing the fan while it was taken. Judgements, not plumbing,
+    # so they sit on the pure side where the host test can actually check them.
+    'Provenance.java',
     # AUTO and VERIFY: the schedule, the exponential fit, the state machines, the
     # DLPC command channel and the report writer are all on the pure side of the
     # seam, so the headless test drives an entire sweep without a device.

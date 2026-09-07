@@ -50,6 +50,38 @@ public final class Sample {
      */
     public int[] throttle = {-1, -1, -1, -1};
 
+    /**
+     * Which run this row belongs to, from {@link Prefs#session}; -1 before it is known.
+     * Segmentation stops being a guess about {@code epoch_ms} gaps.
+     */
+    public int session = -1;
+
+    /**
+     * How long the light engine had been off before it came on, milliseconds, or -1 on
+     * every row that is not the first sample of a power-on.
+     *
+     * Non-blank marks the row as an ambient measurement: {@code degC} and
+     * {@code soc_pll_c} on this same row <i>are</i> the power-on readings, so they are
+     * not repeated here -- the marker is a column on the row precisely so that they do
+     * not have to be. The note says the same thing in words, for grepping.
+     */
+    public long offMs = -1L;
+
+    /** The stated room temperature, or 0 for "not stated", which logs as a blank. */
+    public int roomC;
+
+    /**
+     * Was this app alone on {@code fan_ctrl} for this row? 1 yes, 0 no, -1 not
+     * determinable, which logs as a blank rather than as a 0.
+     */
+    public int exclusive = -1;
+
+    /** Is the controller still converging on the curve? 1, 0, or -1 for "not driving". */
+    public int catchingUp = -1;
+
+    /** Milliseconds since the commanded duty last moved, or -1 if nothing is commanded. */
+    public long dutyHoldMs = -1L;
+
     /** Is the thermal governor actively throttling anything? */
     public boolean throttling() {
         for (int i = 0; i < throttle.length; i++) {
@@ -97,6 +129,12 @@ public final class Sample {
         for (int i = 0; i < throttle.length; i++) {
             sb.append(',').append(throttle[i] < 0 ? "" : Integer.toString(throttle[i]));
         }
+        sb.append(',').append(session < 0 ? "" : Integer.toString(session));
+        sb.append(',').append(offMs < 0 ? "" : Long.toString(offMs / 1000L));
+        sb.append(',').append(roomC <= 0 ? "" : Integer.toString(roomC));
+        sb.append(',').append(exclusive < 0 ? "" : Integer.toString(exclusive));
+        sb.append(',').append(catchingUp < 0 ? "" : Integer.toString(catchingUp));
+        sb.append(',').append(dutyHoldMs < 0 ? "" : Long.toString(dutyHoldMs / 1000L));
         return sb.toString();
     }
 

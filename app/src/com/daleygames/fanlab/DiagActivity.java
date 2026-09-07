@@ -136,6 +136,19 @@ public class DiagActivity extends Activity {
                 .append("   write failures ").append(FanService.writeFailures)
                 .append('\n');
         sb.append("  status: ").append(FanService.statusLine).append('\n');
+
+        // Separate from the sinks above, and it has to be: a sink receives new rows, the
+        // export carries the history, and only the second one answers "is the whole log
+        // on the stick I am about to walk away with".
+        sb.append("\n--- backlog export ---\n");
+        sb.append("  ").append(FanService.exporting ? "COPYING NOW  " : "")
+                .append(FanService.exportStatus).append('\n');
+        sb.append("  files ").append(FanService.exportFiles)
+                .append("   rows ").append(FanService.exportRows).append('\n');
+        String[] dests = FanService.exportDirs;
+        for (int i = 0; i < dests.length; i++) {
+            sb.append("  -> ").append(dests[i]).append('\n');
+        }
         return sb.toString();
     }
 
