@@ -1,12 +1,29 @@
 # Safety
 
-Read this before installing. It is short, and none of it is boilerplate.
+## The short version
+
+If you just want the answer: **it is safe, and it runs your projector warmer than Philips
+does.** That is the whole trade. A slower fan moves less air.
+
+The projector's own protections are untouched and cannot be switched off by an app — there
+is a shutdown at 75 °C and a watchdog that reacts if the fan ever stalls. In normal use with
+this app the light engine sits around 52–55 °C, so there is plenty of room. Every way this
+app can fail sends the fan to maximum and hands control back to Philips, never the other way
+round.
+
+The one thing that can genuinely catch you out is uninstalling without pressing **RESTORE
+STOCK FAN CONTROL** first, which leaves nothing watching the temperature. That is explained
+in the README and again below.
+
+The rest of this document is the long version: what was measured, what could not be
+measured, and where the limits of the argument are. It is worth reading if you are going to
+run the projector hard, and it does not pull its punches.
 
 ## What this actually does to your projector
 
 It runs it **hotter than Philips does**. That is the trade, stated plainly: quieter fan,
 warmer machine. On the unit this was developed against, Presentation settles at about
-**52 °C** where the stock controller holds **44–46 °C**.
+**52 °C** where Philips' controller holds **44–46 °C**.
 
 Everything below is about whether that is a sensible trade and where its limits are.
 

@@ -1,251 +1,261 @@
 # FanLab
 
-A replacement fan controller for the **Philips Screeneo U4** (model SCN350, firmware 1.7.1).
+**A quieter fan for the Philips Screeneo U4 projector.**
 
-The stock projector runs its fan at 59–70 % in Presentation mode and audibly cycles between
-those two speeds. This replaces that with a curve that holds a **steady 38–40 %** in the
-same conditions, and **30 %** — inaudible at arm's length — in every other brightness mode.
+If your Screeneo U4 sounds like it can't make its mind up, this fixes it. The fan stops
+surging up and down and settles at one speed, and that speed is a lot lower than the one it
+keeps jumping to.
 
-It installs as an ordinary app from a USB stick. Nothing is flashed, no partition is
-written, and it is removable from Settings.
+It's an ordinary app. You install it from a USB stick, the same way you'd install anything
+else on the projector. Nothing is flashed, no firmware is replaced, and you can remove it
+again from Settings.
+
+For the Screeneo U4 (model SCN350) on firmware 1.7.1.
 
 ---
 
-## The problem
+## What's actually wrong with the fan
 
-The Screeneo U4's fan controller is a five-rung staircase, polled every 15 seconds, with
-**no hysteresis** — it uses the same thresholds going up as coming down. Its first rung
-fires at 46 °C and jumps Presentation straight from its floor to 70 %.
+Philips' fan control is a set of five fixed speeds, and it checks the temperature every
+fifteen seconds to decide which one to use. The problem is that it uses the same
+temperature to step up as it does to step down, with no gap between them.
 
-The machine's natural equilibrium in a normal room lands almost exactly on that 46 °C
-boundary. So it crosses it, jumps to 70, cools, drops back, warms, and crosses again —
-indefinitely. Measured over a simulated hour against the real thermal response:
+In Presentation mode the projector naturally settles at almost exactly the temperature where
+one of those steps sits. So it gets a little too warm, jumps to a much higher fan speed,
+cools down, drops back to a low speed, warms up again, and repeats. Forever.
 
-```
-stock ladder : 232 duty changes, 232 of them >= 5 points, worst jump 15 points
-this curve   :  25 duty changes,   0 of them >= 5 points, worst jump  1 point
-```
+That's the noise you're hearing. It isn't that the fan is too fast. It's that it keeps
+changing, and a fan that changes is far more noticeable than a fan that's simply on.
 
-**The complaint is not that the fan is too fast. It is that the fan is indecisive.** A
-continuous curve removes that failure structurally: there is no boundary left to cross.
+FanLab replaces the five fixed speeds with a smooth curve. There are no steps left to trip
+over, so there's nothing to surge between.
 
-## What it does
+## What you'll notice
 
-- **A continuous temperature → fan-speed curve**, evaluated every second against the LED
-  thermistor, with no thresholds and no steps.
-- **Two flat regions, placed where the machine actually sits.** A floor at 30 % below
-  47 °C, which is where Eco, Super Eco and Normal live, and a shelf spanning two duty
-  points — 38 % to 40 % — from 51 to 55 °C, which is where Presentation lives. Nearly flat
-  means the fan speed barely depends on temperature, so five degrees of room drift move it
-  by two points. An earlier version had one flat region below 48 °C and claimed the same
-  thing; thirty-six hours of field log showed the operating point was three to five degrees
-  *above* it, on a 2.14 duty/°C ramp, where every one of its duty changes happened. The
-  shelf is now under the operating point, at 0.5 duty/°C. Above 55 °C the curve rises at
-  2 duty/°C to arrest a runaway — a slope that costs nothing below 55 °C and was validated
-  against a deliberately induced blocked-vent fault.
-- **One curve shared by all four brightness modes.** The optics care about temperature,
-  not about which mode produced it, so changing brightness causes **no fan step** — the
-  measured jump on a mode change is 1 duty point, against 10 for a per-mode design. The
-  four `Bright` presets are the one place the columns differ, and only above 51 °C — an
-  Eco → Presentation switch is still stepless there, and a Normal → Presentation one
-  reaches 2 points at the warmest room this unit has recorded.
-- **A 0.8 °C deadband and a 1-point-per-4-seconds rate limit**, so even a real change is
-  inaudible as a change. Rate limiting exists to hide drift the listener did not cause, so
-  it is deliberately bypassed when the controller is *handed* a duty someone else chose —
-  after a reboot, a mode change, or a fail-safe — converging in about 15 seconds instead of
-  crawling for seven minutes.
-- **Test count: 3532**, run on the host as part of every build.
-- **An SoC guard**, because the sensor driving the fan cannot see the processor. It adds
-  fan only above 70 °C on the die and can never subtract any. See
-  [The SoC guard](#the-soc-guard).
-- **Fail-safe high.** Every error path writes 83 %, never a low value.
-- **Automatic handback.** The app owns the switch that disables the stock controller and
-  re-arms it whenever it stops driving, so the projector cannot be left unmanaged.
-- **Optional CSV telemetry** to internal storage and any mounted USB stick at once,
-  size-capped and self-pruning. See [Telemetry](#telemetry).
-- **No display-controller switches.** Three were offered — CAIC, LABB and the Looks — and
-  all three were measured on the projector and taken away. None of them helps, and the
-  numbers are under
-  [The three display-controller features, and why none of them is here](#the-three-display-controller-features-and-why-none-of-them-is-here).
+In Presentation mode, in a normal room, at the projector's standard brightness:
 
-## Measured results
+| | Philips' controller | FanLab |
+|---|---|---|
+| Fan speed | jumps between 59 % and 70 % | steady at 38–40 % |
+| How often it changes | constantly | typically not at all |
+| Other brightness modes | varies | 30 %, which you can't hear from a sofa |
 
-Steady state at 24 °C ambient, on the unit this was developed against:
+Measured over an hour against the projector's real thermal behaviour, Philips' controller
+made 232 speed changes and FanLab made 25 — and none of FanLab's were bigger than a single
+percent, where 232 of Philips' were five percent or more.
 
-| mode | stock | this curve | LED temp |
-|---|---|---|---|
-| Presentation | 59, cycling to 70 | **38** | 51.9 °C |
-| Normal | 48 | **30** | 44 °C |
-| Eco | 43 | **30** | 40 °C |
-| Super Eco | 43 | **30** | 35 °C |
+The projector will run slightly warmer than it did. That's the trade: a slower fan moves
+less air. The section on safety below explains why that's fine, and what protects you if it
+ever isn't.
 
-**The shelf, measured on hardware.** Twelve minutes in Presentation while the machine
-warmed 3.3 °C, logged at 1 Hz:
+## Is it safe?
 
-```
-  0m00   fan 38   50.9 C
-  4m00   fan 38   53.1 C
-  8m00   fan 38   53.8 C
- 12m00   fan 38   54.1 C     the LED rose 3.3 C and the fan did not move once
-```
+Short answer: yes, and here's exactly why rather than just a reassurance.
 
-On the ramp this replaced, that same 3.3 °C would have dragged the fan through about seven
-duty points.
+**The projector's own protections are untouched.** There's a temperature cut-out at 75 °C
+built into the projector, and a separate watchdog that reacts if the fan ever stalls.
+FanLab doesn't and can't disable either. They sit underneath everything it does. In normal
+use with FanLab the light engine runs around 52–55 °C, so there's a wide margin.
 
-**Against the previous curve, over 13.9 hours of real settled Presentation time**, replayed
-closed-loop against ambient inferred per sample from the field log:
+**If anything goes wrong, the fan goes to maximum, not to minimum.** Every failure path
+was written that way deliberately. If the temperature sensor stops responding, if the app
+crashes, if the projector's screen turns off mid-measurement, if you force-stop it — the
+fan goes to 83 % and Philips' controller is handed back. A quiet fan is never the fallback.
 
-| | modal duty held | duty changes | range |
-|---|---|---|---|
-| previous curve | 32 % of the time | 1.00 / hour | 36–40 |
-| **this curve** | **53 %** | **0.79 / hour** | **37–39** |
+**Nothing permanent is changed.** No firmware, no system partition, no bootloader. It's an
+app in the ordinary sense and it uninstalls like one.
 
-Every change in either case is a single duty point. What changed is that the duty now lives
-in a three-point band instead of a five-point one, and the operating point sits on flat
-ground rather than on a 2.14 duty/°C ramp.
+**One thing genuinely can catch you out**, and it's worth knowing before you start rather
+than after. Taking over the fan sets a hidden system setting that tells Philips' controller
+to stand down, and that setting survives uninstalling the app. If you just delete FanLab
+without pressing **RESTORE STOCK FAN CONTROL** first, nothing is left watching the
+temperature. The projector still won't cook itself, because the 75 °C cut-out is still
+there, but you'd be running with no thermostat. See [Removing it](#removing-it) — it's one
+button, and it's easy as long as you know.
 
-**A deliberately induced fault.** Both vents were covered with cloth until the light engine
-reached 61.3 °C — about 8 °C hotter than anything this unit had ever recorded — and then
-uncovered. Across 955 samples at 1 Hz spanning the whole excursion:
+This was all worked out on one projector by measuring it, not by reading a manual. If yours
+behaves differently, [docs/safety.md](docs/safety.md) is the honest, complete version of
+this section.
 
-```
-largest single-tick change in fan speed : 1 duty point   (never 2, either direction)
-duty direction reversals                : 0              (no hunting, under a fault)
-throttling events                       : 0
-SoC guard engagements                   : 0              (pll peaked at 61.2 C, knee is 70)
-```
+## What you need
 
-The fan climbed 38 → 49 and walked back down, one point at a time throughout. No fan curve
-can cool a machine whose vents are blocked, and this one cannot either — what the run
-establishes is that the controller degrades smoothly rather than oscillating when the plant
-is taken away from it.
+- A Philips Screeneo U4 (SCN350)
+- A USB stick
+- Nothing else. No PC, no cable, no adb, no unlocking anything.
 
-## Install
+## Installing it
 
-**No PC, no cable, no flashing.** The projector has an APK installer built in, and the app
-installs like any other. Nothing is written to a system partition and it uninstalls from
-Settings like any other app.
+1. Copy **`release/fanlab-system.apk`** onto a USB stick.
+2. Plug the stick into the projector.
+3. On the projector, open **AppInstaller** from the launcher and choose that file.
+4. Open **FanLab** from the launcher.
+5. Change **Mode** from `OFF` to `CURVE`.
 
-**Which file:** `release/fanlab-system.apk`. That is the one to install.
+That's it. Choosing `CURVE` hands the fan over automatically — there's a separate **Take
+over** button but you don't need it.
 
-There are two builds in `release/` and only the first is useful on a projector:
+The fan takes about fifteen seconds to come down from wherever Philips had it, and then it
+should stay put.
 
-| file | what it is |
-|---|---|
-| **`fanlab-system.apk`** | **the one you want.** Platform-signed, so it can write the fan node and disable the stock controller |
-| `fanlab-plain.apk` | debug-signed, observe-only. It can read and log but cannot drive the fan. For development on a device without the platform key |
+Leave **Start automatically after a reboot** switched on. It's on by default. If you turn
+it off, Philips' controller takes back over the next time you switch the projector on.
 
-### Steps
-
-1. Copy `release/fanlab-system.apk` onto a USB stick
-2. Plug the stick into the projector
-3. From the launcher open **AppInstaller** and pick the file
-4. Open **FanLab** from the launcher
-5. Set **Mode** to `CURVE`
-
-That is the whole install. Choosing `CURVE` disables the stock fan controller for you —
-there is a separate **Take over** button but you do not need to press it. The fan takes
-about fifteen seconds to come down from wherever the stock controller had it, and then it
-should not move again.
-
-**Leave `Start automatically after a reboot` on** (it is on by default). Without it the
-stock controller takes back over on the next power cycle.
+> **Two files, and you want the first one.** `fanlab-system.apk` is the real one.
+> `fanlab-plain.apk` can only watch and log — it can't actually control the fan. It exists
+> for development. If you install the wrong one, nothing bad happens, it just won't do
+> anything.
 
 ## Using it
 
-The main screen is a list you move through with the remote's up/down, changing a value with
-left/right and pressing a button row with OK.
+The main screen is a list. Move up and down with the remote, change a setting with left and
+right, and press OK on a button.
 
-### The controls that matter
+Most of it you can ignore. Three settings matter:
+
+**Mode.** Set this to `CURVE` and leave it there. `OFF` just watches without doing
+anything. The other two, `MANUAL` and `LINEAR`, are for experimenting and are described
+further down.
+
+**Curve preset.** Four choices, quietest first: `Quiet`, `Balanced`, `Cool`, `Cold`. Start
+on `Quiet`, which is the default. Each step up settles about 3 % higher on the fan and takes
+roughly 1 °C off the light engine. Move up only if you'd rather have it cooler than
+quieter.
+
+**Start automatically after a reboot.** Leave it on.
+
+Everything else has a sensible default. The full list is in
+[All the settings](#all-the-settings) further down if you're curious.
+
+### Your settings are remembered
+
+Switch the projector off and on and it comes back exactly as you left it — same mode, same
+preset, same everything. You don't need to set it up again.
+
+One thing that isn't FanLab's to remember is the **brightness mode** — Presentation, Normal,
+Eco, Super Eco. That belongs to the projector, not to this app, and it behaves the same
+whether FanLab is installed or not. Whatever mode you come back in, FanLab notices within a
+second and uses the right part of the curve for it.
+
+## Making the picture brighter (optional)
+
+There's a setting called **LED drive**, and it's off by default. Turning it on runs the
+light engine harder than Philips does, so the picture is noticeably brighter.
+
+It costs you the quiet. More light means more heat, which means more fan. With it on,
+Presentation settles around 51–52 % instead of 38–40 %, and the dimmer modes stop being
+silent — Normal and Eco both come off their 30 % floor in any normal room.
+
+If you turn it on, the preset list changes to `Bright Quiet`, `Bright Balanced`,
+`Bright Cool` and `Bright Cold`. These are the same four steps, redrawn for the extra heat.
+You don't choose between the two sets; whichever is right for your brightness setting is the
+one you're offered, and switching the LED drive moves you across automatically. That's
+deliberate — running the ordinary curve at the higher brightness gets hot enough that the
+projector quietly drops back to standard brightness on its own, with nothing on screen to
+explain why.
+
+It's brighter, and it's louder. Try it and see which you prefer. Turning it off puts
+everything back.
+
+## Removing it
+
+There are two different buttons here and they do different things. This is the one part of
+the app worth reading carefully.
+
+**To stop it driving the fan for now:** press **RELEASE CONTROL**, or set Mode to `OFF`.
+Philips' controller takes over again straight away. Expect a few seconds of loud fan while
+it hands back — it deliberately goes to 83 % during the handover so that nothing is ever
+left unmanaged in between.
+
+**To uninstall it properly:**
+
+1. Press **RESTORE STOCK FAN CONTROL** in the app.
+2. Then uninstall FanLab from Settings, like any other app.
+
+Do those in that order. The reason is the hidden setting mentioned earlier: taking over the
+fan tells Philips' controller to stand down, and that instruction lives outside the app. The
+app puts it back whenever it gets the chance — when you stop it, change mode, force-stop it,
+even if it crashes. But uninstalling doesn't run any of the app's code, so it can't put it
+back on the way out.
+
+| how you stop it | is Philips' controller handed back? |
+|---|---|
+| Mode → OFF, RELEASE CONTROL, force-stop, crash, reboot | yes |
+| uninstalling without pressing RESTORE first | **no** |
+
+If you've already uninstalled without pressing it, don't panic. The 75 °C cut-out and the
+fan-stall watchdog are both still there, and the fan sits at the projector's own default
+speed rather than stopping. But nothing is responding to temperature any more. Reinstall
+FanLab and press **RESTORE STOCK FAN CONTROL**, and you're back to normal.
+
+## If something looks wrong
+
+**The fan is loud and won't come down.** Check Mode is `CURVE` and not `OFF`. If you've just
+switched it on, give it fifteen seconds.
+
+**The fan jumps every time I change brightness.** That's the projector's own brightness code
+slamming a fan speed in, and FanLab puts it back within a second. Make sure **Re-assert
+every second** is on; it's on by default.
+
+**The picture suddenly went back to normal brightness on its own.** The LED drive has a
+safety cut-out at 60 °C, and it's latched off until you change brightness mode or a setting.
+Your room is probably warmer than usual. Either accept it, pick a cooler preset, or turn the
+LED drive off.
+
+**It looks like nothing happened after installing.** Check you installed
+`fanlab-system.apk` and not `fanlab-plain.apk`. The plain one can't control the fan.
+
+**The projector shut down.** That's the 75 °C cut-out, and it means something is physically
+wrong — a blocked vent, a failing fan, a very hot room. FanLab doesn't disable that cut-out
+and can't. Check the vents are clear before anything else.
+
+---
+
+# How it works
+
+Everything above is what you need to use it. The rest of this file is the engineering: what
+was measured, why the curve is the shape it is, and what was tried and rejected. None of it
+is required reading.
+
+The deeper material lives in `docs/`:
+
+| document | what's in it |
+|---|---|
+| [docs/safety.md](docs/safety.md) | the complete safety argument, and every failure path |
+| [docs/curve.md](docs/curve.md) | how the curve was derived, and the measurements behind it |
+| [docs/findings.md](docs/findings.md) | what taking the projector's firmware apart established |
+| [docs/measuring.md](docs/measuring.md) | how to measure your own projector and re-derive the curve |
+| [docs/measurement-conditions.md](docs/measurement-conditions.md) | the exact conditions everything was measured in |
+| [docs/deploy.md](docs/deploy.md) | driving the app over adb, for development |
+| [docs/hacking.md](docs/hacking.md) | notes for anyone working on the code, and the traps in it |
+
+## All the settings
+
+Everything on the main screen, in the order it appears. Most of it can be left alone.
 
 | control | what it does |
 |---|---|
-| **Mode** | `OFF` observes only. `CURVE` is the fan curve — **this is the one to use**. `MANUAL` holds one fixed speed. `LINEAR` holds a temperature instead of a speed (see below) |
-| **Curve preset** | four steps, quietest first: `Quiet` / `Balanced` / `Cool` / `Cold`. Quiet is the default; each step adds 5 % fan and buys about 1.5 °C. With the LED drive on you get the same four steps as `Bright Quiet` / `Bright Balanced` / `Bright Cool` / `Bright Cold` instead, and the standard four are not offered — the drive decides the family and the button cycles inside it. See [The two preset families](#the-two-preset-families) |
-| **Room temperature** | optional. Tells the log what the room actually is, so later analysis is not guessing |
-| **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
-| **Start automatically after a reboot** | leave this on |
-| **Re-assert every second** | leave this on. The projector's own brightness code slams a fan preset on brightness changes; this puts it back. It is not cosmetic — see [Warnings](#warnings) |
-| **LED drive** | off by default. Raises the light engine above the brightness mode's stock drive — `Bright` is 35/55/75/90 for Super Eco/Eco/Normal/Presentation against a stock 20/40/55/76. It only applies while the app is actually driving the fan, so light output can never outrun cooling, and it moves your curve preset to the Bright version of the same step. See [The LED drive override](#the-led-drive-override) |
-| **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed and the app stops driving |
-| **RESTORE STOCK FAN CONTROL** | the permanent undo. Clears the setting that disables the stock controller. **Press this before uninstalling** — see below |
+| **Mode** | `OFF` watches without driving. `CURVE` is the fan curve, and the one to use. `MANUAL` holds one fixed speed. `LINEAR` holds a temperature instead of a speed, described under [LINEAR mode](#linear-mode) |
+| **Curve preset** | four steps, quietest first: `Quiet`, `Balanced`, `Cool`, `Cold`. Each step settles about 3 % higher on the fan and buys about 1 °C.  Measured at 24 °C: 38.4 %, 41.6 %, 44.3 %, 47.6 %. With the LED drive on you get `Bright Quiet` through `Bright Cold` instead, and the plain four are not offered. See [The two preset families](#the-two-preset-families) |
+| **Room temperature** | optional, and only recorded in the log. Nothing in the fan control reads it. Leave it at "not stated" unless you know the figure, because a stale number is worse than none |
+| **Write CSV telemetry** | logging on or off. On by default and self-pruning. See [Telemetry](#telemetry) |
+| **Start automatically after a reboot** | leave this on, or Philips' controller takes over at the next power-on |
+| **Re-assert every second** | leave this on. The projector's own brightness code slams a fan speed in whenever you change brightness, and this puts it back within a second |
+| **LED drive** | off by default. Runs the light engine brighter than Philips does, at 35/55/75/90 for Super Eco/Eco/Normal/Presentation against Philips' 20/40/55/76. It only applies while the app is actually driving the fan, so brightness can never outrun cooling. See [The LED drive override](#the-led-drive-override) |
+| **RELEASE CONTROL** | hands the fan back for now, and the app goes back to watching |
+| **RESTORE STOCK FAN CONTROL** | the permanent undo. Press this before uninstalling. See [Removing it](#removing-it) |
 
-### Which preset
-
-Start on **Quiet** and only move up if the light engine runs hotter than you want it to.
-The figures are in [The two preset families](#the-two-preset-families); the short version
-is that Quiet keeps the light engine under 55 °C up to a 28 °C room, and each step up
-extends that by about 2 °C at the cost of 5 % more fan.
-
-**A fresh install is Quiet, in the Curve family, with the LED drive off.** Nothing in the
-Bright family runs until you deliberately turn the drive on: `ledDriveOn` defaults to false
-and the drive levels default to the factory table, so the app out of the box is the measured
-curve at Philips' own brightness and nothing else.
-
-**You do not choose the family — the LED drive does.** With the override off the button
-offers Quiet, Balanced, Cool and Cold; with it on, the four Bright versions of the same
-steps and nothing else. Switching the override keeps the step you are on and swaps the
-family, so Quiet becomes Bright Quiet and back again. A curve you have edited by hand is
-left exactly as it is, because there is no Bright version of it to swap to.
-
-### CURVE or LINEAR
-
-**Use CURVE.** It is the default, it has thirty-six hours of field logging behind it, and
-it is the quieter of the two in any room you are likely to be sitting in.
-
-LINEAR holds a *temperature* rather than a fan speed. It is the right choice only if you
-care more about a temperature ceiling than about noise — it is quieter than CURVE below
-about 24 °C and considerably louder above it. Read
-[Read this before choosing it](#read-this-before-choosing-it) first.
-
-### Undoing it
-
-There are two different controls and they do different things. Confusing them is the one
-way to leave the projector worse off than you found it.
-
-**To stop the app driving, for now:** press **RELEASE CONTROL**. The stock controller is
-re-armed immediately and the app goes back to observing. Expect a few seconds of loud fan —
-it hands back at 83 % on purpose, so the machine is never unmanaged in between. Setting
-**Mode** to `OFF` does the same thing.
-
-**To uninstall:** press **RESTORE STOCK FAN CONTROL** *first*, then uninstall from Settings.
-
-That second control matters because taking over sets a property,
-`persist.sys.fanctrl.by.temperatue = 0`, which lives in `/data` and **survives a reboot and
-survives uninstalling the app**. The app re-arms the stock controller on every path where it
-gets to run code — a normal stop, a mode change, a force-stop, a crash — but an uninstall
-runs no code at all and never returns. So:
-
-| how the app stops | stock controller handed back? |
-|---|---|
-| Mode → OFF, RELEASE CONTROL, mode change, force-stop, crash | **yes** |
-| **uninstall** | **no** |
-
-If it has already happened, the projector is not in danger — the 75 °C over-temperature
-shutdown and the kernel's fan-stall watchdog are both untouched, and the fan holds the
-kernel's own default rather than stopping. But nothing is responding to temperature. One
-line fixes it:
-
-```bash
-adb shell setprop persist.sys.fanctrl.by.temperatue 1
-```
-
-[docs/safety.md](docs/safety.md) has the full account.
-
-### Driving it from a PC
+## Driving it from a PC
 
 Everything above is also settable over adb, which is how it is developed and how the curve
 is deployed. The full reference is in [docs/deploy.md](docs/deploy.md). The two commands
 worth knowing:
 
 ```bash
-ADB="C:/Users/Gamer/AppData/Local/Android/Sdk/platform-tools/adb.exe"
-
 # read the current state, changes nothing
-"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
 
 # switch preset -- "bright quiet", "brightquiet" and "bright-quiet" all work too
-"$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
     --es preset quiet
 ```
 
@@ -275,7 +285,7 @@ one broadcast. The reply carries three fields answering three different question
 `leddrivestate=` what is actually on the hardware right now, which is the only one of the
 three that accounts for the mode, the fail-safe and the temperature trip.
 
-### The LED drive override
+## The LED drive override
 
 **Off by default.** The kernel maps each brightness mode to a fixed LED drive, as a
 percentage of the driver's own per-channel maximum — Super Eco 20, Eco 40, Normal 55,
@@ -333,7 +343,7 @@ prediction. Any field above 100 is a failed SPI read, not a level.
 drifts cool as the red channel droops faster than green and blue. Neither is a temperature
 question and neither can be answered from a log — put up a white field and look.
 
-### If something looks wrong
+### If the LED drive looks wrong
 
 | symptom | what it is |
 |---|---|
@@ -957,7 +967,7 @@ variant on first run.
 |---|---|
 | `app/` | the application: source, manifests, resources, host tests, build script |
 | `tools/` | measurement and deployment tooling — see [docs/measuring.md](docs/measuring.md) |
-| `docs/` | curve derivation, findings, safety, deployment, measuring, measurement conditions |
+| `docs/` | safety, curve derivation, findings, measuring, deployment, and notes for working on the code |
 | `release/` | the signed APKs — `fanlab-system.apk` (platform-signed, the one to install) and `fanlab-plain.apk` (debug-signed, observe-only) |
 | `final_curve.txt` | the deployed curve, in the app's own encoding |
 
