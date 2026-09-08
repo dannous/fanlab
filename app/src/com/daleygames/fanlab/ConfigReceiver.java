@@ -29,11 +29,20 @@ import android.util.Log;
  * parsing is needed.
  *
  * <table>
- *   <tr><td>{@code --es preset <s>}</td><td>a name from {@link CurveConfig#PRESET_NAMES}
- *       -- {@code quiet}, {@code balanced}, {@code cool}, {@code cold} or {@code bright} --
- *       any case; {@code --ei preset <n>} takes the index into the same list. Applied
- *       <i>before</i> {@code curve}, so sending both lands on the hand-written curve and a
- *       curve that is none of the presets stays possible</td></tr>
+ *   <tr><td>{@code --es preset <s>}</td><td>a name from {@link CurveConfig#PRESET_NAMES} --
+ *       {@code quiet}, {@code balanced}, {@code cool}, {@code cold}, and the four the LED
+ *       drive override takes, {@code "bright quiet"}, {@code "bright balanced"},
+ *       {@code "bright cool"} and {@code "bright cold"}. Case, spaces and punctuation are
+ *       ignored, so {@code brightquiet} and {@code bright-quiet} are the same preset;
+ *       {@code --ei preset <n>} takes the index into the same list. <b>A preset from the
+ *       wrong family is refused rather than applied</b> -- the drive state decides which
+ *       four are selectable, and the reply names the one that was probably meant:
+ *       {@code preset(REFUSED: Quiet is a standard preset and the LED drive is on; use
+ *       Bright Quiet or turn the drive off)}. The state judged against is the one the
+ *       command <i>ends</i> in, so {@code --es preset "bright quiet" --ez leddriveon true}
+ *       in one line is accepted even though the drive is still off when the preset is read.
+ *       Applied <i>before</i> {@code curve}, so sending both lands on the hand-written curve
+ *       and a curve that is none of the presets stays possible</td></tr>
  *   <tr><td>{@code --es curve <s>}</td><td>a {@link CurveConfig#encode()} string</td></tr>
  *   <tr><td>{@code --ei mode <n>}</td><td>0 OFF, 1 MANUAL, 2 CURVE, 3 LINEAR</td></tr>
  *   <tr><td>{@code --ef ceiling <f>}</td><td>LINEAR's temperature ceiling in C, held to
@@ -60,7 +69,7 @@ import android.util.Log;
  *       of {@code linup} and is still accepted</td></tr>
  *   <tr><td>{@code --es leddrive <s>}</td><td>the four LED drive levels, Super Eco / Eco /
  *       Normal / Presentation. {@code stock} is the kernel's own 20/40/55/76, {@code bright}
- *       is the one-press preset 35/55/75/95, and a {@link LedDrive.Config#encode()} string
+ *       is the one-press preset 35/55/75/90, and a {@link LedDrive.Config#encode()} string
  *       sets them individually. Every level is held to
  *       {@link LedDrive#MIN_LEVEL}..{@link LedDrive#MAX_LEVEL} -- <b>97, not 100</b>,
  *       because the driver's DAC clamp drops an over-request to about 40 % instead of
@@ -72,7 +81,10 @@ import android.util.Log;
  *       the fail-safe clear -- because Presentation-class LED heat under the Eco fan ladder
  *       is the one combination this project must not create; see {@link LedDrive}. Switching
  *       it on while LINEAR's ceiling is still the untouched 52.0 also raises that ceiling to
- *       54.0, which the reply says out loud</td></tr>
+ *       54.0, which the reply says out loud. It also <b>moves the stored curve to the Bright
+ *       preset of the same rung</b> and back again when switched off, so a curve can never
+ *       be left paired with a drive level it was not drawn for; a hand-edited curve has no
+ *       counterpart and is left as it is</td></tr>
  *   <tr><td>{@code --ei manual <n>}</td><td>MANUAL duty, 1..100</td></tr>
  *   <tr><td>{@code --ez autostart <b>}</td><td>come back after a reboot</td></tr>
  *   <tr><td>{@code --ez reassert <b>}</td><td>defend the node against other writers</td></tr>
@@ -153,16 +165,32 @@ public class ConfigReceiver extends BroadcastReceiver {
             // --ei is what a script does, and neither should have to know about the other.
             String name = intent.getStringExtra("preset");
             int given = intent.getIntExtra("preset", CurveConfig.PRESET_CUSTOM);
-            int i = name == null ? given : presetIndexFor(name);
+            int i = name == null ? given : CurveConfig.presetNamed(name);
             if (i < 0 || i >= CurveConfig.PRESET_NAMES.length) {
                 // Spelled out from the list itself, so the error cannot go on naming four
-                // presets after a fifth has been added.
+                // presets after a fifth has been added, and now names all eight.
                 return "ERROR preset must be " + presetWords() + ", or 0.."
                         + (CurveConfig.PRESET_NAMES.length - 1) + ", got "
                         + (name == null ? Integer.toString(given) : name.trim());
             }
-            Prefs.setPreset(context, i);
-            did.append(" preset");
+            // Judged against the drive state this command ENDS in, not the one it starts
+            // in. The extras are applied in a fixed order with the preset near the front,
+            // and `--es preset "bright quiet" --ez leddriveon true` is the natural way to
+            // ask for both at once -- refusing it because the drive had not been switched
+            // on yet would be the receiver's own ordering leaking out as a rule.
+            //
+            // Refused rather than substituted, and the difference matters: turning the
+            // override on migrates a curve the caller was not thinking about, but naming a
+            // preset is an explicit request for that exact curve, and answering it with a
+            // different one while saying "preset" would be a lie. The state is reported
+            // either way, so the reply always shows what is actually loaded.
+            String refusal = CurveConfig.wrongFamilyRefusal(i, endingBoostOn(context, intent));
+            if (refusal != null) {
+                did.append(" preset(REFUSED: ").append(refusal).append(")");
+            } else {
+                Prefs.setPreset(context, i);
+                did.append(" preset");
+            }
         }
         if (intent.hasExtra("curve")) {
             String s = intent.getStringExtra("curve");
@@ -265,14 +293,7 @@ public class ConfigReceiver extends BroadcastReceiver {
         if (intent.hasExtra("leddrive")) {
             String s = intent.getStringExtra("leddrive");
             String want = s == null ? "" : s.trim();
-            LedDrive.Config cfg;
-            if ("stock".equalsIgnoreCase(want)) {
-                cfg = new LedDrive.Config();
-            } else if ("bright".equalsIgnoreCase(want)) {
-                cfg = LedDrive.Config.bright();
-            } else {
-                cfg = LedDrive.Config.decode(want);
-            }
+            LedDrive.Config cfg = ledDriveNamed(want);
             Prefs.setLedDrive(context, cfg);
             // Same discipline as the curve: decode() falls back to stock on anything
             // malformed and sanitise() clamps every level to MAX_LEVEL, so compare what was
@@ -342,20 +363,44 @@ public class ConfigReceiver extends BroadcastReceiver {
         return "OK applied:" + (did.length() == 0 ? " (nothing)" : did) + " | " + state(context);
     }
 
-    /**
-     * A preset by the name it is shown under, so the words this accepts cannot drift from
-     * the words on screen. Anything else is not a preset.
-     */
-    private static int presetIndexFor(String name) {
-        for (int i = 0; i < CurveConfig.PRESET_NAMES.length; i++) {
-            if (CurveConfig.PRESET_NAMES[i].equalsIgnoreCase(name.trim())) {
-                return i;
-            }
+    /** The table a {@code --es leddrive} value asks for: a keyword, or an encoded line. */
+    private static LedDrive.Config ledDriveNamed(String want) {
+        if ("stock".equalsIgnoreCase(want)) {
+            return new LedDrive.Config();
         }
-        return CurveConfig.PRESET_CUSTOM;
+        if ("bright".equalsIgnoreCase(want)) {
+            return LedDrive.Config.bright();
+        }
+        return LedDrive.Config.decode(want);
     }
 
-    /** "quiet, balanced, cool, cold or bright" -- the accepted words, as the list has them. */
+    /**
+     * Will the override be asking for anything once this whole command has been applied?
+     *
+     * The same question {@link Prefs#ledBoostOn} answers -- switched on <i>and</i> a table
+     * that is not the kernel's own -- but asked of the state the command is heading for
+     * rather than the state it found. Only the preset gate needs it, and it needs it because
+     * the preset is applied before the two extras that can move it. Anything not mentioned in
+     * this command keeps whatever is stored, which is why the reset above having already run
+     * is load-bearing: by here, {@link Prefs} is telling the truth about the parts this
+     * command is not changing.
+     */
+    private static boolean endingBoostOn(Context context, Intent intent) {
+        boolean on = intent.hasExtra("leddriveon")
+                ? intent.getBooleanExtra("leddriveon", false)
+                : Prefs.ledDriveOn(context);
+        LedDrive.Config table;
+        if (intent.hasExtra("leddrive")) {
+            String s = intent.getStringExtra("leddrive");
+            table = ledDriveNamed(s == null ? "" : s.trim());
+            table.sanitise();
+        } else {
+            table = Prefs.ledDrive(context);
+        }
+        return on && !table.isStock();
+    }
+
+    /** Every accepted word, as the list has them -- both families, in {@code --ei} order. */
     private static String presetWords() {
         StringBuilder sb = new StringBuilder();
         int n = CurveConfig.PRESET_NAMES.length;
@@ -409,7 +454,14 @@ public class ConfigReceiver extends BroadcastReceiver {
                 + " session=" + Prefs.session(context)
                 + " fan_ctrl=" + FanIo.readDuty()
                 + " export=" + (FanService.exporting ? "running" : FanService.exportStatus)
+                // The preset, and then the four that can be asked for right now. Which
+                // family is selectable is decided by the drive rather than by the caller, so
+                // a reply that named only the loaded preset would leave the next command to
+                // be guessed at -- and a refusal is the one answer this receiver gives that
+                // a caller cannot work out from the rest of the line.
                 + " preset=" + CurveConfig.presetName(Prefs.preset(context))
+                + " presetfamily=" + (boost ? "Bright" : "standard")
+                + " presetsallowed=" + CurveConfig.familyWords(boost)
                 + " curve=" + c.encode()
                 + " linear=" + storedLinear;
     }

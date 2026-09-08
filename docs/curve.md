@@ -34,14 +34,19 @@ Encoded, for `tools/deploy.sh` and `ConfigReceiver`:
 v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,40,50,68,83,0.8,0.25,0.12,10,30,83
 ```
 
-There are five presets. Four of them — Quiet, Balanced, Cool, Cold — are this curve with 0,
-5, 10 and 15 added to every knee duty above the floor, clipped at 83; a uniform offset
-leaves every segment's width and slope untouched, so the stability argument is made once
-and inherited. Cold additionally starts its rise at 43 °C rather than 47, which is the one
-place that argument does not reach — the reasoning is against its line in `CurveConfig`. The
-fifth, **Bright**, is not an offset at all: it keeps Quiet's knees and Quiet's rows in Normal
-and Eco / Super Eco, and draws its own Presentation row for a machine running a raised LED
-drive. See [The Bright preset](#the-bright-preset).
+There are eight presets, which are four steps run twice. The **standard** four — Quiet,
+Balanced, Cool, Cold — are this curve with 0, 5, 10 and 15 added to every knee duty above the
+floor, clipped at 83; a uniform offset leaves every segment's width and slope untouched, so
+the stability argument is made once and inherited. Cold additionally starts its rise at 43 °C
+rather than 47, which is the one place that argument does not reach — the reasoning is against
+its line in `CurveConfig`.
+
+The **Bright** four are the same steps for a machine running a raised LED drive. Each keeps
+its standard counterpart's knees and its rows in Normal and Eco / Super Eco, and draws its own
+Presentation row. **The LED drive override decides which family is selectable**, because
+pairing a standard step with the raised drive is measurably worse than the alternative and
+fails in a way nobody would diagnose. See
+[The Bright preset family](#the-bright-preset-family).
 
 ### Why one curve for all three modes
 
@@ -237,7 +242,9 @@ Presentation moves by two duty points across 23 to 28 °C — five degrees of ro
 two points of fan — and the light engine, not the fan, takes up the rest. The three dimmer
 modes are on the floor and read 30 throughout the room's real range.
 
-**How far each preset holds a ceiling**, which is the number to choose a preset by:
+**How far each standard preset holds a ceiling**, which is the number to choose a step by.
+The Bright four are not on this table because it is solved against the stock plant and they
+are not for it — see [Where they settle](#where-they-settle):
 
 | preset | fan at 24 °C | holds LED ≤ 54 °C to | holds LED ≤ 55 °C to |
 |---|---|---|---|
@@ -265,102 +272,133 @@ speed but buys only about 3 °C, because the light engine is already close to th
 there is little left for the fan to take — so the presets are worth much more in
 Presentation than below it.
 
-Bright is not on those tables because it is not for this machine as measured — it is for the
-same machine with its LED drive raised, where the plant is different. On the *stock* drive it
-lands within half a duty point of Quiet (37.2 % at 22 °C, 39.0 % at 24 °C, 41.0 % at 26 °C),
-which is worth knowing mainly as a reassurance: choosing it without the drive override is
-pointless, not dangerous. Its own numbers are in the next section.
+The Bright steps are not on those tables because they are not for this machine as measured —
+they are for the same machine with its LED drive raised, where the plant is different. On the
+*stock* drive Bright Quiet lands within half a duty point of Quiet (37.2 % at 22 °C, 39.0 % at
+24 °C, 41.0 % at 26 °C), which is worth knowing for one reason only: the drive can trip off
+under a Bright curve, and when it does the curve stays. That state is harmless. The reverse —
+a standard curve under a raised drive — is the one the family gate makes unreachable. Their own
+numbers are in the next section.
 
 Stock, for comparison, runs Presentation at a floor of 59 and oscillates to 70 — because
 its first rung fires at 46 °C with **no hysteresis**, and the equilibrium parks on that
 boundary. That oscillation is the original complaint and a continuous curve removes it
 structurally.
 
-## The Bright preset
+## The Bright preset family
 
-> **Every number in this section about a raised LED drive is INFERRED.** Nothing has ever
-> been held at drive 90 — not one hold, not one minute. The plant it is solved against is
-> the measured Presentation column multiplied by 1.1735, and that factor comes from a fitted
-> line, not from a measurement. See [What confirms it](#what-confirms-it) for the single
-> twelve-minute hold that turns this from a prediction into a number.
+> **What is measured and what is not.** The Presentation plant at drive 90 is the measured
+> drive-76 column **×1.208 — MEASURED**, and that is the scaling every stability verdict
+> below was run at. The Normal, Eco and Super Eco scalings are **INFERRED**: they are still
+> the fitted rise-vs-drive line and nothing has been held at a raised drive in those modes.
+> The equilibrium tables under [Where they settle](#where-they-settle) were solved earlier at
+> the *fitted* Presentation ×1.1735 and have not been re-solved at ×1.208, so they read about
+> half a degree low; they are marked where they appear.
 
-### Why it exists
+### Why the family exists, and why it is a gate
 
-The owner is raising the LED drive on all four brightness modes — the percentage of the
-driver's maximum current the light engine is run at:
+The owner raises the LED drive on all four brightness modes — the percentage of the driver's
+maximum current the light engine is run at:
 
-| mode | stock drive | raised to |
-|---|---:|---:|
-| Presentation | 76 % | **90 %** |
-| Normal | 55 % | 70 % |
-| Eco | 40 % | 50 % |
-| Super Eco | 20 % | 30 % |
+| mode | stock drive | raised to | plant scaling |
+|---|---:|---:|---|
+| Presentation | 76 % | **90 %** | **×1.208, MEASURED** |
+| Normal | 55 % | 70 % | ×1.2513, inferred |
+| Eco | 40 % | 50 % | ×1.2238, inferred |
+| Super Eco | 20 % | 30 % | ×1.4052, inferred |
 
-More drive is more light and more heat. Quiet's shelf — flat-ish at 38–40 % across
+More drive is more light and more heat. Each standard step's shelf — flat-ish across
 51–55 °C — was placed on this unit's plant *as measured at drive 76*, and the whole point of
 a shelf is that it is indifferent to temperature. That is the right instinct when the
 operating point sits in the middle of the band and the wrong one when the raised drive has
-pushed it up against the ceiling. Solved against the inferred raised plant, **Quiet settles
-at 40.6 % / 55.3 °C in a 24 °C room** — already over the 55 °C ceiling, and it crosses 55 °C
-at a room of only 23.5 °C.
+pushed it up against the ceiling.
 
-So Presentation gets a curve of its own. The owner's brief, in his words: *use existing
-numbers, keep the same curve steps, increase the fan speed where that keeps it within the
-curve temps* — and rest **under duty 50**, which he has tested by ear and calls "the border
-of acceptable".
+**The pairing that had to be made unreachable.** Nothing used to stop a standard step running
+with the drive on. At drive 90 in a 28 °C room, **Quiet settles at 58 °C** against **Bright
+Quiet's 56 °C**. `CurveSim` reproduces both against the measured ×1.208 plant — Quiet rests
+at duty 46 / 57.79 °C, Bright Quiet at duty 52 / 55.95 °C, six more duty points for 1.8 °C.
+The override's own cut-out is at 60 °C, so the standard pairing sits 2.2 °C under a trip that
+the Bright one clears by 4.0 — and the trip **drops the drive without announcing it**, so the
+symptom a user sees is the picture reverting to stock brightness on its own with nothing on
+screen to explain it.
 
-### The curve
+That is why the override selects the family rather than recommending one. Turning it on moves
+the stored curve to the Bright preset of the same rung; turning it off moves it back; the
+screen's preset button cycles only inside the family the drive allows; and a broadcast naming
+a preset from the wrong family is refused with the counterpart named. `CurveConfig.curveForDrive`
+is the single place that decides it, and `Prefs` routes all three LED-drive writers through it.
+A hand-edited curve is in neither family and is left exactly as it is, because there is no
+counterpart to move it to.
 
-Same knees as Quiet. Same hysteresis, same slew, same SoC guard. Normal and Eco / Super Eco
-keep **Quiet's duty row, untouched**. Only the Presentation row changes:
+### The four curves
+
+Same knees as the standard rung, floor edge included. Same hysteresis, same slew, same SoC
+guard. Normal and Eco / Super Eco keep the **standard rung's own duty rows, untouched** —
+taken from that rung's `PresetShape` rather than retyped, so the two cannot drift. Only the
+Presentation row changes:
 
 ```
-tempC   =  47   51   55   60   66   70
-Quiet   =  30   38   40   50   68   83     <- Bright keeps this in Normal and Eco/Super Eco
-Bright  =  30   38   46   56   70   83     <- Presentation only
-                 |____|
-                 Quiet is flat here; Bright keeps climbing
+tempC            =  47   51   55   60   66   70    (knee 0 is 43 on Cold and Bright Cold)
+
+Quiet            =  30   38   40   50   68   83
+Bright Quiet     =  30   38   50   62   76   83
+Balanced         =  30   43   45   55   73   83
+Bright Balanced  =  30   43   55   67   81   83
+Cool             =  30   48   50   60   78   83
+Bright Cool      =  30   48   60   72   83   83
+Cold             =  30   53   55   65   83   83
+Bright Cold      =  30   53   65   77   83   83
+                          |____|
+                          the standard rung is flat here; the Bright one keeps climbing
 ```
+
+**It is one edit, four times.** A Bright Presentation row is its standard counterpart's plus
+**0, 0, 10, 12, 8, 0 at the six knees, clipped at 83**. The clip bites twice — Bright Cool's
+86 and Bright Cold's 91 at knee 4 both become 83, exactly where Cool's and Cold's own offsets
+already clip. The host suite asserts that uniformity rather than describing it, because a
+comment claiming the family is uniform beside a table where one rung is not would be worse
+than no comment.
+
+Knee 1 is deliberately untouched, which is what keeps all three brightness columns identical
+at and below 51 °C. Above it, 51–55 °C becomes a 3.0 duty/°C rise and 55–60 °C a 2.4, in every
+rung. The 83-by-70 °C backstop is unchanged, as is the floor: 30 % below the floor edge, in
+every mode.
 
 Encoded:
 
 ```
-v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,46,56,70,83,0.8,0.25,0.12,10,30,83
+v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,50,62,76,83,0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5
+v1,47,51,55,60,66,70,30,43,45,55,73,83,30,43,45,55,73,83,30,43,55,67,81,83,0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5
+v1,47,51,55,60,66,70,30,48,50,60,78,83,30,48,50,60,78,83,30,48,60,72,83,83,0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5
+v1,43,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,65,77,83,83,0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5
 ```
-
-**There is no new slope anywhere in it.** 47 → 55 °C is a single 2.0 duty/°C rise, and
-2.0 duty/°C is exactly what Quiet already does over 47–51 °C and again over 55–60 °C. What
-Bright does is spend Quiet's own slope across the four degrees where Quiet is flat. The
-83-by-70 °C backstop is unchanged, as is the floor: 30 % below 47 °C, in every mode.
 
 ### How the raised plant was derived
 
-The rise-above-ambient column for a new drive level is the measured column times the ratio
-of two fitted rises. The fit is across all four brightness modes at duty 40:
+The rise-above-ambient column for a new drive level was originally the measured column times
+the ratio of two fitted rises, the fit being across all four brightness modes at duty 40:
 
 ```
 rise@duty40  ≈  1.60 + 0.342 × drive        reproduces Normal and Eco to about 1 K
 ```
 
-and the duty dependence is a single multiplicative shape — the four sensors agree on it
-within 3 %. So:
-
-| mode | scale |
-|---|---:|
-| Presentation 76 → 90 | **×1.1735** |
-| Normal 55 → 70 | ×1.2513 |
-| Eco 40 → 50 | ×1.2238 |
-| Super Eco 20 → 30 | ×1.4052 |
+which gave Presentation 76 → 90 as ×1.1735. **That factor has since been superseded for
+Presentation by a measurement of ×1.208**, about 3 % higher than the fit predicted — the fit
+was mildly optimistic, in the direction that matters. The other three modes have no such
+measurement and still carry the fitted ratios, so every number in this document that depends
+on Normal, Eco or Super Eco at a raised drive remains an inference.
 
 `tools/solve_curve.py`, `tools/equilibria.py` and `tools/CurveSim.java` all take the drive
-level directly — `--drive Presentation=90,Normal=70,Eco=50,SuperEco=30` — and every one of
-them prints a line saying the plant has been adjusted and that the adjustment is inferred.
+level directly — `--drive Presentation=90,…` for the fitted ratio — and `CurveSim` also takes
+the measured factor outright, `--scale high=1.208`, which is what the stability runs below
+use. Every one of them prints a line saying the plant has been adjusted.
 
-### Where it settles
+### Where they settle
 
-`equilibria.py` against the inferred raised plant, Presentation:
+**Solved at the fitted ×1.1735, not the measured ×1.208 — these read about half a degree
+low.** `equilibria.py` against the raised plant, Presentation, Bright Quiet:
 
-| room | **Bright** | Quiet, same plant | what Bright buys |
+| room | **Bright Quiet** | Quiet, same plant | what it buys |
 |---|---|---|---|
 | 21 °C | **40.6 % / 52.3 °C** | 39.1 % / 53.2 °C | −0.9 °C for +1.5 % fan |
 | 24 °C | **43.7 % / 53.8 °C** | 40.6 % / 55.3 °C | −1.5 °C for +3.1 % fan |
@@ -368,46 +406,65 @@ them prints a line saying the plant has been adjusted and that the adjustment is
 | 30 °C | **51.0 % / 57.5 °C** | 47.2 % / 58.6 °C | −1.1 °C for +3.8 % fan |
 | 33 °C | **54.6 % / 59.3 °C** | 51.2 % / 60.4 °C | −1.1 °C for +3.4 % fan |
 
-Driven through the shipping controller by `CurveSim`, which writes whole duty points, the
-same rooms read 41, 44, 48, 51 and 55.
+The Quiet column is what the gate now prevents. It is kept here because it is the measurement
+of what the gate is worth, not a configuration anyone can still reach.
 
-**Against the owner's duty-50 line:** Bright rests at 40.6 % at 21 °C and 47.2 % at 27 °C,
-and does not reach 50 until about a **29.2 °C room**. This unit's measured room range is
-21.9–26.2 °C, where Bright is 41.5–46.2 %. Under 50 with room to spare, which is what was
-asked for.
+**Against the owner's duty-50 line:** he has tested 50 by ear and calls it the border of
+acceptable. Bright Quiet rests at 40.6 % at 21 °C and 47.2 % at 27 °C, and does not reach 50
+until about a **29.2 °C room** on the fitted plant. This unit's measured room range is
+21.9–26.2 °C. At the measured ×1.208 it is a little louder than that: `CurveSim` has it at
+duty 52 in a 28 °C room. The louder rungs reach 50 sooner by construction — anyone choosing
+Bright Cold is not asking for the quietest fan.
 
-**Against the 55 °C ceiling:** Bright holds ≤ 54 °C to a 24.4 °C room and ≤ 55 °C to a
-26.1 °C room. Quiet on the same raised plant manages 22.1 and 23.5. On the stock drive Quiet
-holds 55 °C to 28.1 °C — so raising the drive costs about two degrees of room even with
-Bright, and about 4.5 without it.
+### Stability of the Bright family
 
-### Stability
-
-`CurveSim`, the real `FanCurve` against the two-pole plant, four slow poles, 15–35 °C:
+`CurveSim`, the real `FanCurve` against the two-pole plant, four slow poles, 14–34 °C, at the
+**measured** `--scale high=1.208`:
 
 ```
-Bright, stock plant        81 of 84 runs steady   (16 C: duty 31..33)
-Bright, raised plant       81 of 84 runs steady   (17 C: duty 36..38)
-Quiet,  raised plant       81 of 84 runs steady   (17 C: duty 36..38)  <- identical
+Bright Quiet       81 of 84 runs steady   (16 C: duty 36..38, by 2)
+Bright Balanced    84 of 84 runs steady
+Bright Cool        81 of 84 runs steady   (14 C: duty 35..38, by 3)
+Bright Cold        84 of 84 runs steady
 ```
 
-The three non-steady runs are **the corner Quiet has always had, not a new one.** Below
-51 °C Bright *is* Quiet — same knees, same duties — so at an ambient cold enough to put the
-operating point on the 47–51 °C rise, the two are the same curve at the same point and
-wobble identically. The raised plant moves that ambient from 16 °C to 17 °C and the duty
-from 32 to 37. Two duty points, close to five degrees below the coldest room this unit has
-recorded (21.9 °C), and the host suite's bound is two.
+**Bright Quiet's three are the corner Quiet has always had, not a new one.** Below 51 °C
+Bright Quiet *is* Quiet — same knees, same duties — so at an ambient cold enough to put the
+operating point on the 47–51 °C rise, the two are the same curve at the same point and wobble
+identically. Two duty points, six degrees below the coldest room this unit has recorded
+(21.9 °C).
 
-The host suite drives Bright at every ambient from 14 to 34 °C, four slow poles, as it does
-every preset — it is driven off `PRESETS.length`, so adding the curve put it under that check
-without anyone having to remember.
+**Bright Cool's three are worse than that, and are stated rather than rounded into the same
+sentence.** They sit at 14 °C and span **three** duty points, not two. Like Bright Quiet's they
+are on shared ground rather than on the redrawn row — plain Cool on the same raised plant
+hunts by three at 14 °C run for run, identically, because below 51 °C Bright Cool is Cool. The
+corner is Cool's 4.5 duty/°C rise over 47–51 °C meeting an operating point the raised plant
+puts on it, and it extends down from 14 °C; 15 °C and every ambient above is steady. Fifteen
+degrees is nearly seven below the coldest room this unit has recorded.
+
+It was left rather than redrawn. The fix would be to move Cool's floor edge the way Cold's was
+moved, and that means changing a standard preset which is **84 of 84 on the plant it actually
+runs on** in order to improve a raised-plant simulation that no hold has yet been taken
+against. That trade is the wrong way round while the standing rule here is measure, don't
+simulate.
+
+On the **stock** plant, which is where the host suite runs, every Bright rung matches its
+counterpart exactly: Bright Quiet 81 of 84 at the shared 16 °C corner, the other three 84 of
+84. Across all eight presets, 15–35 °C, four slow poles: **666 of 672 runs steady**.
+
+The host suite drives all eight at every ambient from 14 to 34 °C on every build, bounded at
+two duty points, and all eight pass. It runs the stock plant deliberately: seven of the eight
+presets can only ever run at stock drive, the eighth pairing (a Bright preset at stock drive,
+which happens when the trip fires) is legitimate, and the pairing that is not — a standard
+preset at raised drive — is the one the gate makes unreachable.
 
 ### What it costs, stated rather than buried
 
-**1. The dim modes lose the silent floor — and that is the drive raise, not Bright.**
-Bright leaves Normal, Eco and Super Eco on Quiet's row precisely so it does not make this
-worse. It is still the price of the boost, and the owner should know it before pressing
-anything. `equilibria.py`, LOW/NORMAL rows unchanged, stock drive against raised:
+**1. The dim modes lose the silent floor — and that is the drive raise, not the preset.**
+Every Bright step leaves Normal, Eco and Super Eco on its standard counterpart's row precisely
+so it does not make this worse. It is still the price of the boost, and the owner should know
+it before pressing anything. `equilibria.py`, LOW/NORMAL rows unchanged, stock drive against
+raised — **INFERRED**, since the dim-mode scalings are the fitted line and not a measurement:
 
 | room | Normal @55 | **Normal @70** | Eco @40 | **Eco @50** | Super Eco @20 | **Super Eco @30** |
 |---|---|---|---|---|---|---|
@@ -437,12 +494,12 @@ Normal's figures carry the +2.5 °C field correction the plant table's Normal co
 Without that correction Normal still leaves the floor on the raised drive, at 32.9 % / 48.4 °C
 in a 24 °C room rather than 37 / 50.5. Either way it lifts.
 
-**2. Presentation and the dim modes no longer share a column.** Every other preset has
+**2. Presentation and the dim modes no longer share a column.** Every standard preset has
 identical duty rows in all three profiles, which is what makes a brightness change not a
-tier change and stops `FanCurve`'s deliberate immediate-jump exception ever firing. Bright
-gives that up. What is left in its place is asserted in the host suite: **the three columns
-are identical at every temperature up to 51 °C**, which is where the dim modes live, so the
-switch is made from a temperature at which nothing differs.
+tier change and stops `FanCurve`'s deliberate immediate-jump exception ever firing. The Bright
+family gives that up. What is left in its place is asserted in the host suite: **the three
+columns are identical at every temperature up to 51 °C** in every rung, which is where the dim
+modes live, so the switch is made from a temperature at which nothing differs.
 
 Measured: `CurveSim` puts the largest single-tick change on an Eco → Presentation switch at
 24 °C on the raised drive at **1 duty point**, the same as every other preset — Eco settles
@@ -465,30 +522,39 @@ modes that are *already* louder on the raised drive louder again, for a ceiling 
 question below 51 °C. The step was the cheaper thing to accept.
 
 **3. The ceiling still moves the wrong way.** At 24 °C the drive raise costs Presentation
-3.4 °C — 51.9 °C on Quiet at the stock drive, 55.3 °C on Quiet at the raised one. Bright buys
-back 1.5 of those 3.4. It does not undo it. Raising the drive means running
-the light engine hotter; the only question this preset settles is how much hotter, and how
-much fan that costs.
+3.4 °C — 51.9 °C on Quiet at the stock drive, 55.3 °C on Quiet at the raised one. Bright Quiet
+buys back 1.5 of those 3.4. It does not undo it. Raising the drive means running the light
+engine hotter; the only question this family settles is how much hotter, and how much fan that
+costs.
+
+**4. Bright Cool is measurably less stable than Cool.** Three of its 84 simulated runs at the
+measured raised plant wobble by three duty points at a 14 °C ambient, where Cool at stock
+drive is steady everywhere. It is inherited from Cool's own 47–51 °C rise rather than added by
+the redraw, and it is seven degrees below the coldest room this unit has recorded, but it is
+the one place this family is worse than the one it mirrors — see
+[Stability of the Bright family](#stability-of-the-bright-family).
 
 ### What confirms it
 
-**One twelve-minute hold at duty 45, in Presentation, at drive 90.** The scaling predicts
-**53.2 °C in a 24 °C room** (rise 29.2 °C). Hold it the way `docs/measuring.md` describes,
-with the chassis sensor logged so a still-drifting hold is visible as one, and compare.
+**Presentation is now measured; the other three modes are not.** The ×1.208 factor closed the
+question this section was originally written to pose, and it closed it in the unflattering
+direction — the fitted ×1.1735 was about 3 % optimistic. What is still open:
 
-* If it reads 53.2 ± 0.5, the ×1.1735 column is good and every number above stands.
-* If it reads high, the whole column scales by the ratio and everything above moves with it.
-  Solved: **about 1.2 duty points per °C of error** at the operating point — a 24 °C room
-  gives 43.7 % on the numbers above, 44.7 % if the plant is 1 °C hotter than predicted, 45.9 %
-  at 2 °C, 47.2 % at 3 °C.
-* **At about +3 °C the design intent breaks**, because the duty-50 line then arrives at a
-  26.2 °C room — the top of the range this unit has actually recorded — rather than at 29.2.
-  That is the case where the Presentation row wants redrawing rather than reinterpreting.
+* **The Normal, Eco and Super Eco columns at raised drive.** Every dim-mode number under
+  [What it costs](#what-it-costs-stated-rather-than-buried) rests on the fitted line, and the
+  one place the fit has been checked it read low. The claim most worth checking is that Normal
+  leaves duty 30 at an 18.8 °C room, because that is the one the owner would *hear*.
+* **The equilibrium tables**, which were solved at ×1.1735 and have not been re-solved at
+  ×1.208. They read about half a degree low and should be regenerated rather than reasoned
+  about.
+* **Bright Cool at a cold ambient.** The three-point wobble at 14 °C is simulation only, on a
+  plant whose scaling is measured but whose dynamics are not.
 
-This is not a formality. **The standing rule in this project is measure, don't simulate**, and
-it exists because two confident simulation-backed verdicts here have already turned out
-wrong — a stability claim about duty-per-°C, and a "4 °C wide is enough" rule that passed a
-curve which hunts. Bright is currently the most simulation-dependent thing in the repository.
+The standing rule in this project is **measure, don't simulate**, and it exists because two
+confident simulation-backed verdicts here have already turned out wrong — a stability claim
+about duty-per-°C, and a "4 °C wide is enough" rule that passed a curve which hunts. The
+Bright family is still the most simulation-dependent thing in the repository, but one leg of
+it now stands on a measurement.
 
 ## Stability — measured, not argued
 
@@ -519,12 +585,13 @@ ambient 33C   0 changes                    -> STEADY
 ```
 
 Not "moves smoothly" — does not move. The largest single-tick duty change anywhere in those
-runs is **1 point**, against the stock controller's 15. All five presets pass the same
-sweep: 414 of 420 runs steady over 15–35 °C at four poles each.
+runs is **1 point**, against the stock controller's 15. All eight presets pass the same
+sweep: 666 of 672 runs steady over 15–35 °C at four poles each.
 
-**One known exception, and it is narrow.** Quiet at 16 °C ambient hunts by two duty points
-on three of the four slow poles — and Bright at the same 16 °C on the same three, which is
-the same corner rather than a second one, because below 51 °C Bright is Quiet. 14, 15, 17 and 18 °C are all steady, so this is a rounding
+**One known exception on the stock plant, and it is narrow.** Quiet at 16 °C ambient hunts by
+two duty points on three of the four slow poles — and Bright Quiet at the same 16 °C on the
+same three, which is the same corner rather than a second one, because below 51 °C Bright
+Quiet is Quiet. 14, 15, 17 and 18 °C are all steady, so this is a rounding
 knife-edge at one ambient rather than a band of instability — at 16 °C the operating point
 lands almost exactly between two integers on the rise below the shelf. It is six degrees
 below the coldest room this unit has been measured in (21.9 °C), and the swing is two points
@@ -618,7 +685,9 @@ written down here and all three passed a curve that hunts. What is left is the d
 and the host suite now runs it on every build: every preset on offer through the real
 `FanCurve` against the plant at every ambient from 14 to 34 °C, failing if any settles
 outside two duty points or moves more than one point per tick. It is driven off the preset
-list rather than a copy of it, so Bright landed under it without anyone adding it.
+list rather than a copy of it, so all four Bright rungs landed under it without anyone adding
+them. It runs the stock plant; the raised one is `tools/CurveSim.java`'s business, and its
+verdicts are under [Stability of the Bright family](#stability-of-the-bright-family).
 
 Getting that test to mean anything took two attempts, which is worth recording because the
 first one looked perfectly reasonable. One pole at 120 s, no sensor noise, started at duty 40 —

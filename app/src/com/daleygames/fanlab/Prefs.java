@@ -179,6 +179,7 @@ public final class Prefs {
     public static void setLedDrive(Context c, LedDrive.Config cfg) {
         cfg.sanitise();
         get(c).edit().putString(K_LEDDRIVE, cfg.encode()).apply();
+        alignCurveToDrive(c);
     }
 
     /**
@@ -193,11 +194,45 @@ public final class Prefs {
 
     public static void setLedDriveOn(Context c, boolean v) {
         get(c).edit().putBoolean(K_LEDDRIVE_ON, v).apply();
+        alignCurveToDrive(c);
     }
 
     /** Back to stock and off, as {@code --ez reset} does alongside the curve. */
     public static void resetLedDrive(Context c) {
         get(c).edit().remove(K_LEDDRIVE).remove(K_LEDDRIVE_ON).apply();
+        alignCurveToDrive(c);
+    }
+
+    /**
+     * Move the stored curve into the preset family the override now allows, keeping the
+     * rung. <b>The gate that stops a curve running at a drive level it was not drawn for.</b>
+     *
+     * Called from all three writers above rather than from {@link #setLedDriveOn} alone,
+     * because all three can change the answer to {@link #ledBoostOn} -- switching the
+     * override off, and putting the stock table back under an override that is still on, are
+     * the same thing to the loop and must be the same thing here. Asking
+     * {@link #ledBoostOn} rather than the raw flag is what makes them agree: "on with a stock
+     * table" is off everywhere else in this app, so a curve must not be moved to the Bright
+     * family for it.
+     *
+     * The reason it is a move and not a warning is measured. Quiet with the drive at 90 in a
+     * 28 C room settles at 58 C where Bright Quiet settles at 56 -- past the margin the
+     * {@link LedDrive#DEFAULT_TRIP_C} override trip leaves itself, and the trip drops the
+     * drive without saying so, so the symptom is the picture reverting to stock brightness on
+     * its own. A pairing that fails that way is worth making unreachable rather than
+     * discouraging.
+     *
+     * A hand-edited curve is in neither family and is left exactly as it is -- see
+     * {@link CurveConfig#curveForDrive}. Nothing here can tell the owner that happened, so
+     * the screen and the broadcast reply both report the loaded curve as Custom, which is
+     * what it is.
+     */
+    private static void alignCurveToDrive(Context c) {
+        String now = curve(c).encode();
+        String want = CurveConfig.curveForDrive(now, ledBoostOn(c));
+        if (!want.equals(now)) {
+            get(c).edit().putString(K_CURVE, want).apply();
+        }
     }
 
     /**

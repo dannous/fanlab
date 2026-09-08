@@ -46,9 +46,9 @@ continuous curve removes that failure structurally: there is no boundary left to
 - **One curve shared by all four brightness modes.** The optics care about temperature,
   not about which mode produced it, so changing brightness causes **no fan step** — the
   measured jump on a mode change is 1 duty point, against 10 for a per-mode design. The
-  `Bright` preset is the one place the columns differ, and only above 51 °C — an Eco →
-  Presentation switch is still stepless there, and a Normal → Presentation one reaches 2
-  points at the warmest room this unit has recorded.
+  four `Bright` presets are the one place the columns differ, and only above 51 °C — an
+  Eco → Presentation switch is still stepless there, and a Normal → Presentation one
+  reaches 2 points at the warmest room this unit has recorded.
 - **A 0.8 °C deadband and a 1-point-per-4-seconds rate limit**, so even a real change is
   inaudible as a change. Rate limiting exists to hide drift the listener did not cause, so
   it is deliberately bypassed when the controller is *handed* a duty someone else chose —
@@ -161,26 +161,27 @@ left/right and pressing a button row with OK.
 | control | what it does |
 |---|---|
 | **Mode** | `OFF` observes only. `CURVE` is the fan curve — **this is the one to use**. `MANUAL` holds one fixed speed. `LINEAR` holds a temperature instead of a speed (see below) |
-| **Curve preset** | `Quiet` / `Balanced` / `Cool` / `Cold` / `Bright`. Quiet is the default and the quietest; each of the next three adds 5 % fan and buys about 1.5 °C. `Bright` is not a fifth step up — it is a separate curve for a raised LED drive, and it is only worth choosing with that override on. See [The five presets](#the-five-presets) |
+| **Curve preset** | four steps, quietest first: `Quiet` / `Balanced` / `Cool` / `Cold`. Quiet is the default; each step adds 5 % fan and buys about 1.5 °C. With the LED drive on you get the same four steps as `Bright Quiet` / `Bright Balanced` / `Bright Cool` / `Bright Cold` instead, and the standard four are not offered — the drive decides the family and the button cycles inside it. See [The two preset families](#the-two-preset-families) |
 | **Room temperature** | optional. Tells the log what the room actually is, so later analysis is not guessing |
 | **Write CSV telemetry** | logging on/off. On by default, self-pruning, see [Telemetry](#telemetry) |
 | **Start automatically after a reboot** | leave this on |
 | **Re-assert every second** | leave this on. The projector's own brightness code slams a fan preset on brightness changes; this puts it back. It is not cosmetic — see [Warnings](#warnings) |
-| **LED drive** | off by default. Raises the light engine above the brightness mode's stock drive — `Bright` is 35/55/75/95 for Super Eco/Eco/Normal/Presentation against a stock 20/40/55/76. It only applies while the app is actually driving the fan, so light output can never outrun cooling. See [The LED drive override](#the-led-drive-override) |
+| **LED drive** | off by default. Raises the light engine above the brightness mode's stock drive — `Bright` is 35/55/75/90 for Super Eco/Eco/Normal/Presentation against a stock 20/40/55/76. It only applies while the app is actually driving the fan, so light output can never outrun cooling, and it moves your curve preset to the Bright version of the same step. See [The LED drive override](#the-led-drive-override) |
 | **RELEASE CONTROL** | hands the fan back for now. The stock controller is re-armed and the app stops driving |
 | **RESTORE STOCK FAN CONTROL** | the permanent undo. Clears the setting that disables the stock controller. **Press this before uninstalling** — see below |
 
 ### Which preset
 
 Start on **Quiet** and only move up if the light engine runs hotter than you want it to.
-The figures are in [The five presets](#the-five-presets); the short version is that Quiet
-keeps the light engine under 55 °C up to a 28 °C room, and each step up extends that by
-about 2 °C at the cost of 5 % more fan.
+The figures are in [The two preset families](#the-two-preset-families); the short version
+is that Quiet keeps the light engine under 55 °C up to a 28 °C room, and each step up
+extends that by about 2 °C at the cost of 5 % more fan.
 
-**Use `Bright` only with the LED drive override on.** It is drawn for a machine running
-Presentation at 90 % drive rather than the stock 76, and on the stock drive it is Quiet to
-within half a duty point — harmless, but pointless. The one-press override now goes to 95
-rather than 90, so Bright covers a little less of the rise than it was drawn to.
+**You do not choose the family — the LED drive does.** With the override off the button
+offers Quiet, Balanced, Cool and Cold; with it on, the four Bright versions of the same
+steps and nothing else. Switching the override keeps the step you are on and swaps the
+family, so Quiet becomes Bright Quiet and back again. A curve you have edited by hand is
+left exactly as it is, because there is no Bright version of it to swap to.
 
 ### CURVE or LINEAR
 
@@ -238,7 +239,7 @@ ADB="C:/Users/Gamer/AppData/Local/Android/Sdk/platform-tools/adb.exe"
 # read the current state, changes nothing
 "$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver
 
-# switch preset
+# switch preset -- "bright quiet", "brightquiet" and "bright-quiet" all work too
 "$ADB" shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
     --es preset quiet
 ```
@@ -248,7 +249,19 @@ ADB="C:/Users/Gamer/AppData/Local/Android/Sdk/platform-tools/adb.exe"
 broadcast to the wrong one reports `result=0` and silently does nothing.
 
 The reply is the resulting state, so diff it against what you sent. It says
-`curve(REPAIRED)` or `linear(REPAIRED)` when a value was clamped rather than accepted.
+`curve(REPAIRED)` or `linear(REPAIRED)` when a value was clamped rather than accepted, and
+`preset(REFUSED: ...)` when a preset is asked for from the wrong family:
+
+```
+preset(REFUSED: Quiet is a standard preset and the LED drive is on; use Bright Quiet or
+turn the drive off)
+```
+
+Refused rather than substituted, because naming a preset is a request for that exact curve
+and answering it with a different one while saying `preset` would be a lie. The family is
+judged against the drive setting the *whole command* ends in, so
+`--es preset "bright quiet" --ez leddriveon true` in one line is accepted. Two more reply
+fields say where you stand: `presetfamily=` and `presetsallowed=`.
 
 The LED drive override is `--es leddrive stock|bright|<encoded>` followed by
 `--ez leddriveon true|false` — the level is applied before the switch, so both can go in
@@ -264,7 +277,10 @@ percentage of the driver's own per-channel maximum — Super Eco 20, Eco 40, Nor
 Presentation 76, with the red channel a few points lower at each. So the light engine
 spends its life at about three-quarters of what the firmware's own scale permits. This
 override writes `rgbcurrent` and `redcurrent` to move those levels up; `Bright` is
-35/55/75/95 — Presentation from 76 to 95, which is 25 % more drive.
+35/55/75/90 — Presentation from 76 to 90, which is 18 % more drive. 90 rather than higher
+because 90 is the drive the Bright curve family was drawn against and the drive its plant
+scaling was measured at; a brightness preset that outran its curve would be a number nobody
+had solved a fan speed for.
 
 **It is capped at 97, not 100, and that is not caution.** Reading `rgbcurrent` makes the
 driver log the absolute current: at Presentation it reports `current = 5357 ma, percent = 75`,
@@ -276,10 +292,11 @@ the picture goes *dimmer*, not brighter. The app clamps to 97 and a test holds i
 **What it costs.** Heat, and it lands on the red die — the lowest-rated part in the light
 path, the one that loses output fastest with temperature, and the one seven owners of this
 model have reported losing. From the measured plant each +10 on the Presentation level is
-about +3.4 °C at a fixed fan speed, so 76 → 95 is roughly **6.5 °C**. That is why `Bright`
-exists: it is the curve that spends fan to put some of that back. **Bright was drawn against
-the older 90 and has not been redrawn for 95**, so it now covers rather less of the rise
-than the figures under [The five presets](#the-five-presets) were computed for.
+about +3.4 °C at a fixed fan speed, so 76 → 90 is roughly **4.8 °C**. That is why the Bright
+curve family exists: it spends fan to put some of that back. **Switching this row on switches
+your curve preset with it** — Quiet becomes Bright Quiet, Cool becomes Bright Cool — and
+switching it off switches them back, so the two can never be out of step. See
+[The two preset families](#the-two-preset-families).
 
 **The rule that makes it safe.** The override is on the hardware *only* while the app is
 genuinely the fan controller — mode `CURVE` or `LINEAR`, no measurement session running, the
@@ -287,9 +304,11 @@ light engine on, and the fail-safe not latched. In every other state the stock t
 back, within a second, by rewriting `rgblevel`. This is the whole safety case: raising light
 output while something else owns the fan is exactly the "Presentation-class heat on the Eco
 ladder" failure this project has refused to ship since the reverse-engineering found it. There
-is also a temperature trip — above 57 °C the override drops to stock and stays off until the
+is also a temperature trip — above 60 °C the override drops to stock and stays off until the
 brightness mode or the configuration changes, because brightness that cycles is worse than
-brightness that stops.
+brightness that stops. The preset gate is what keeps that trip a backstop rather than a
+routine event: on a Bright preset the drive-90 equilibrium is 56 °C in a 28 °C room, four
+degrees clear, where the same drive on a standard preset settles at 58.
 
 **How to undo it.** Turn the row off, `--ez leddriveon false`, `--ez reset`, press
 **RELEASE CONTROL**, or switch to `OFF` or `MANUAL` — any of them restore the stock table.
@@ -301,11 +320,11 @@ actually has — but its field names lie. The kernel prints the four SPI channel
 order under the labels `duty_r, duty_g, duty_b, duty_b2`, while the real map is
 ch0 green, ch1 red, ch2 b2, ch3 blue. So **`duty_g` is the red channel** and the other
 three all carry the common level. With Bright on in Presentation it reads
-`duty_r=94 duty_g=88 duty_b=94 duty_b2=94` — 95 and 89, each one low, which is how the
-handler reports. (The recorded reading behind that rule was taken at the older 90:
-`duty_r=89 duty_g=83`.) Any field above 100 is a failed SPI read, not a level.
+`duty_r=89 duty_g=83 duty_b=89 duty_b2=89` — 90 and 84, each one low, which is how the
+handler reports, and that is the reading the projector actually printed rather than a
+prediction. Any field above 100 is a failed SPI read, not a level.
 
-**What is not known.** Whether 95 looks meaningfully brighter, and whether the white point
+**What is not known.** Whether 90 looks meaningfully brighter, and whether the white point
 drifts cool as the red channel droops faster than green and blue. Neither is a temperature
 question and neither can be answered from a log — put up a white field and look.
 
@@ -314,7 +333,7 @@ question and neither can be answered from a log — put up a white field and loo
 | symptom | what it is |
 |---|---|
 | fan cycles slowly between two speeds | something else is writing the fan node. Check `Mode` is `CURVE` and `Re-assert` is on. MANUAL leaves the stock controller armed by design, so it is not usable for a quiet run |
-| on Cold, Normal is louder than 30 % | expected above a 23 °C room. Cold starts its rise at 43 °C rather than 47 so that it does not hunt, which puts Normal's operating point on the rise. Quiet, Balanced and Cool all keep Normal at 30 % |
+| on Cold, Normal is louder than 30 % | expected above a 23 °C room. Cold starts its rise at 43 °C rather than 47 so that it does not hunt, which puts Normal's operating point on the rise. The other three steps all keep Normal at 30 %, and Bright Cold inherits Cold's behaviour here along with its floor edge |
 | fan jumps to 83 % and stays | a fail-safe. Every error path writes 83 rather than a low value. Check the Diagnostics screen |
 | fan loud for ~15 s after changing mode | expected. Changing away from CURVE hands back at 83 %, and coming back is a slew-limited ramp down |
 | a setting did not take, over adb | wrong component name — see above |
@@ -564,10 +583,24 @@ reads about 2.5 °C low.
 Full derivation, the measured thermal plant, and the stability analysis:
 **[docs/curve.md](docs/curve.md)**.
 
-## The five presets
+## The two preset families
 
-The curve ships as five, selectable on the main screen or by broadcast. Four of them are the
-base curve with a constant added to every knee **above the floor**, clipped at 83 %:
+Four steps, run twice. The **standard** four are for the stock LED drive. The **Bright**
+four are the same four steps with Presentation's fan row redrawn for the drive override.
+You pick the step; **the override picks the family**, and it is not negotiable — turning it
+on moves you to the Bright version of the step you are on, turning it off moves you back,
+and the preset button only ever cycles inside the family you are currently in. There is no
+sequence of presses that pairs a standard curve with the raised drive.
+
+**Why that is a gate rather than a warning.** Nothing used to stop Quiet running with the
+drive on. At drive 90 in a 28 °C room that pairing settles at **58 °C**, against 56 °C on
+Bright Quiet. 58 °C is inside the margin the drive's own 60 °C cut-out leaves itself, so a
+warm afternoon reaches the trip — and the trip drops the drive without announcing it, so
+what you actually see is the picture going back to stock brightness on its own with nothing
+on screen saying why. A pairing that fails that way is worth making unreachable; merely
+discouraging it leaves the report to be filed and diagnosed.
+
+### The standard four — stock LED drive
 
 | preset | fan at 24 °C | LED at 24 °C | holds ≤54 °C to | holds ≤55 °C to |
 |---|---|---|---|---|
@@ -575,70 +608,86 @@ base curve with a constant added to every knee **above the floor**, clipped at 8
 | Balanced | 41 % | 50.4 °C | 28.8 °C room | 30.0 °C room |
 | Cool | 43 % | 49.8 °C | 30.1 °C room | 31.2 °C room |
 | Cold | 46 % | 48.6 °C | 31.5 °C room | 32.6 °C room |
-| **Bright** *(raised LED drive)* | **44 %** | **53.8 °C** | **24.4 °C room** | **26.1 °C room** |
 
-**Bright's row is not comparable with the four above it, and its numbers are inferred.** The
-other four are solved against this unit's *measured* thermal plant. Bright is solved against
-that plant scaled up for a raised LED drive — Presentation at 90 % of the driver maximum
-rather than the stock 76 — and **nothing has ever been held at that drive**, so every figure
-in its row is a prediction from a fitted line. The one-press override has since moved to 95,
-which the row has not been redrawn for, so it reads low by roughly another 1.7 °C. One twelve-minute hold at duty 45 confirms or
-corrects it; the derivation, the fit, and what happens if it reads high are all in
-[docs/curve.md](docs/curve.md#the-bright-preset).
+Solved against this unit's *measured* thermal plant.
 
-On the stock drive Bright settles at 39 % / 51.5 °C at 24 °C — Quiet, near enough. It is not
-a fifth step up the ladder; it is a different curve for a different machine.
+### The Bright four — LED drive override on
 
-**What Bright changes.** Same knees as Quiet, same deadband, slew and SoC guard, and Normal
-and Eco / Super Eco keep Quiet's duty row untouched. Only the Presentation row differs, and
-it is Quiet's own 2.0 duty/°C rise carried straight through the 51–55 °C shelf instead of
-levelling off on it:
+Same steps, same names with `Bright` in front. Their equilibria are in
+[docs/curve.md](docs/curve.md#the-bright-preset-family) rather than here, because they are
+solved against a *different plant* and putting the two tables side by side invites a
+comparison that means nothing: a Bright preset never runs at stock drive by choice, and a
+standard one can no longer run at raised drive at all.
+
+### All eight, knee by knee
 
 ```
-tempC   =  47   51   55   60   66   70
-Quiet   =  30   38   40   50   68   83
-Bright  =  30   38   46   56   70   83     Presentation only
+tempC            =  47   51   55   60   66   70      (knee 0 is 43 on Cold and Bright Cold)
+
+Quiet            =  30   38   40   50   68   83
+Balanced         =  30   43   45   55   73   83
+Cool             =  30   48   50   60   78   83
+Cold             =  30   53   55   65   83   83
+
+Bright Quiet     =  30   38   50   62   76   83      Presentation only
+Bright Balanced  =  30   43   55   67   81   83      Presentation only
+Bright Cool      =  30   48   60   72   83   83      Presentation only
+Bright Cold      =  30   53   65   77   83   83      Presentation only
 ```
 
-On the raised drive that settles at 44 % / 53.8 °C in a 24 °C room, against Quiet's
-40.6 % / 55.3 °C — already over the ceiling — and it stays under the owner's 50 % line until
-about a 29 °C room.
+**A Bright step differs from its standard step in exactly one column and one way.** Its
+Presentation row is the standard row **plus 0, 0, 10, 12, 8, 0 at the six knees, clipped at
+83** — the same edit in all four. Normal and Eco / Super Eco keep the standard step's row
+untouched, the knees are the standard step's including the floor edge, and so are the
+deadband, the slew limits and the SoC guard. Knee 1 is deliberately unchanged, which is what
+keeps all three brightness columns identical at and below 51 °C.
+
+What the edit does is **spend the shelf**. The standard curve levels off across 51–55 °C, the
+band this machine occupies at stock drive; the Bright one climbs through it at 3.0 duty/°C
+instead. A shelf is deliberately indifferent to temperature, which is the right instinct when
+the operating point sits in the middle of the band and the wrong one once the raised drive
+has pushed it up against the ceiling.
 
 **Raising the LED drive costs the dim modes their silent floor, and that is the drive raise
-rather than the preset.** Bright leaves their rows alone precisely so it does not make it
-worse, but it is worth knowing before switching either on: with Normal at 70 % drive rather
-than 55, **Normal leaves duty 30 at an 18.8 °C room instead of a 24.5 °C one** and sits at
-about 37 % / 50.5 °C in a 24 °C room. Eco at 50 % drive reaches the 47 °C floor edge at a
-27 °C room rather than a 30.7 °C one. Super Eco is untouched below a 31 °C room. The full
-tables are in [docs/curve.md](docs/curve.md#what-it-costs-stated-rather-than-buried).
+rather than the preset.** The Bright steps leave Normal, Eco and Super Eco alone precisely so
+they do not make it worse, but it is worth knowing before switching the override on: with
+Normal at 70 % drive rather than 55, **Normal leaves duty 30 at an 18.8 °C room instead of a
+24.5 °C one** and sits at about 37 % / 50.5 °C in a 24 °C room. Eco at 50 % drive reaches the
+47 °C floor edge at a 27 °C room rather than a 30.7 °C one. Super Eco is untouched below a
+31 °C room. The full tables are in
+[docs/curve.md](docs/curve.md#what-it-costs-stated-rather-than-buried).
 
-Two design points worth stating, because both were arrived at the hard way:
+Three design points worth stating, because all three were arrived at the hard way:
 
-**The floor is not offset.** All five presets idle at 30 %. Below the floor edge the light
+**The floor is not offset.** All eight presets idle at 30 %. Below the floor edge the light
 engine is cool enough that extra fan buys almost nothing — measured, Cold's +15 bought 3.4 °C
 in Super Eco on a thermistor already sitting at 35 °C. Since Normal, Eco and Super Eco spend
 their whole lives on the floor, offsetting it would make them louder for no useful cooling.
 The offset applies only where the ceiling is actually in question.
 
-**Cold's floor edge is 43 °C, where the other three share 47 °C**, and that is the one place
-the presets are not congruent. With the floor pinned at 30 and Cold's shelf at 53, a rise
+**Cold's floor edge is 43 °C, where the other three steps share 47 °C**, and that is the one
+place the steps are not congruent. With the floor pinned at 30 and Cold's shelf at 53, a rise
 over 47–51 °C would be **5.75 duty/°C** — steep enough that the 0.8 °C deadband spans 4.6 duty
 points, so no fan speed can rest inside it. It hunted by four points at a 17 °C room. Starting
-Cold's rise at 43 halves the slope to 2.87 duty/°C and removes it.
+Cold's rise at 43 halves the slope to 2.87 duty/°C and removes it. Bright Cold inherits that
+edge along with everything else it takes from Cold.
 
-The cost falls on Normal, and only on Cold: its settled 46.5 °C reading now sits on the rise,
-so above about a 23 °C room Normal runs 32–39 % on this preset rather than 30. Eco and Super
-Eco are untouched to 26 °C. Anyone choosing the coldest preset is not asking for the quietest
-fan, so the trade was taken — and it let the host test be bounded at the accepted two duty
-points rather than carry an exception for a known four.
+The cost falls on Normal, and only on the Cold step: its settled 46.5 °C reading now sits on
+the rise, so above about a 23 °C room Normal runs 32–39 % on this preset rather than 30. Eco
+and Super Eco are untouched to 26 °C. Anyone choosing the coldest step is not asking for the
+quietest fan, so the trade was taken — and it let the host test be bounded at the accepted two
+duty points rather than carry an exception for a known four.
 
 **A uniform offset above the floor keeps the geometry.** Adding a constant leaves every
 segment's width and slope untouched, so the shelf and everything above it inherit the base
 curve's stability rather than needing a fresh argument. The one exception is the rise from
 the pinned floor to the shelf, which climbs further in the same 4 °C — 5.75 duty/°C on Cold
-— and that was not assumed safe: all five are driven through `tools/CurveSim.java` across
-15–35 °C ambient at four thermal poles, and through the host suite at every ambient from 14
-to 34 °C on every build.
+— and that was not assumed safe: all eight are driven through `tools/CurveSim.java` across
+15–35 °C ambient at four thermal poles (**666 of 672 runs steady**), and through the host
+suite at every ambient from 14 to 34 °C on every build. The six that are not steady are
+Quiet's and Bright Quiet's shared 16 °C corner; they are the same corner, because below 51 °C
+Bright Quiet *is* Quiet. **On the raised plant there is one more, and it is on Bright Cool** —
+see [docs/curve.md](docs/curve.md#stability-of-the-bright-family).
 
 **A curve cannot hold a hard temperature ceiling**, and it is worth being explicit about
 why. To pin the LED at exactly 55 °C the curve would have to command 38.2 % in a 27 °C room
@@ -659,8 +708,8 @@ a case it has to have been measured in.
 **LINEAR is not simply louder — it trades noise against temperature in opposite directions
 either side of about 24 °C**, which is where its default 52 °C ceiling was chosen to meet the
 curve. (With the LED drive override on, that default is promoted to 54 °C — holding 52 °C at
-a raised drive costs about twelve duty points more, and 54 °C is where the `Bright` curve
-rests, so the two controllers still meet. A ceiling you have set by hand is left alone.) Presentation, both controllers solved against the measured plant:
+a raised drive costs about twelve duty points more, and 54 °C is roughly where the Bright
+curve family rests, so the two controllers still meet. A ceiling you have set by hand is left alone.) Presentation, both controllers solved against the measured plant:
 
 | room | CURVE Quiet | LINEAR @ 52 °C | LINEAR costs | and buys |
 |---|---|---|---|---|

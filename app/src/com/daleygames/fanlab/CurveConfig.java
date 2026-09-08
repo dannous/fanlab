@@ -48,8 +48,8 @@ package com.daleygames.fanlab;
  *       any plausible ambient;</li>
  *   <li><b>identical columns for all three profiles</b>, so a brightness change is not a
  *       tier change in duty terms and FanCurve's immediate-jump exception never fires.
- *       True of the shipped curve and of every offset preset. The Bright preset is the one
- *       exception and it is deliberate -- see {@link #PRESETS}.</li>
+ *       True of the shipped curve and of every standard preset. The four Bright presets
+ *       are the deliberate exception, and only above 51 C -- see {@link #PRESETS}.</li>
  * </ul>
  *
  * <h3>The shelf moved, because the field log said it was in the wrong place</h3>
@@ -78,12 +78,28 @@ public final class CurveConfig {
     public static final String[] PROFILE_NAMES = {"Eco / Super Eco", "Normal", "Presentation"};
 
     /**
-     * The curves on offer. The first four run quietest first; Bright is last because it is
-     * a special-purpose curve rather than a louder one -- it is only worth choosing with
-     * the LED drive override on, and on the stock drive it is within half a duty point of
-     * Quiet. See {@link #PRESETS}.
+     * The curves on offer: <b>two families of the same four rungs</b>, quietest rung first.
+     *
+     * The standard four are for the stock LED drive. The Bright four are for the drive
+     * override, and each is the same rung with Presentation's row redrawn for a light
+     * engine putting out about 17 % more heat. Which family is selectable is decided by the
+     * override, not by the user -- see {@link #curveForDrive}, and
+     * {@link #wrongFamilyRefusal} for what happens when one is asked for anyway.
+     *
+     * The pairing is positional and {@link #RUNGS} apart, so {@link #counterpartOf} is
+     * arithmetic rather than a table that could disagree with this list.
      */
-    public static final String[] PRESET_NAMES = {"Quiet", "Balanced", "Cool", "Cold", "Bright"};
+    public static final String[] PRESET_NAMES = {
+            "Quiet", "Balanced", "Cool", "Cold",
+            "Bright Quiet", "Bright Balanced", "Bright Cool", "Bright Cold",
+    };
+
+    /**
+     * Rungs per family. The list above is the standard family then the Bright one, same
+     * rungs in the same order, so preset {@code i} and preset {@code i + RUNGS} are the
+     * same rung on the two drive levels.
+     */
+    public static final int RUNGS = 4;
 
     /** {@link #presetOf} for a curve that is none of the presets. Not a destination. */
     public static final int PRESET_CUSTOM = -1;
@@ -95,11 +111,11 @@ public final class CurveConfig {
      * PRESET_OFFSETS} it replaces was: the derivation <i>is</i> the design, and the host
      * test pins the encoded lines against it rather than against a second hand-typed copy
      * of the same numbers. What changed is that "add N to every knee above the floor"
-     * stopped being able to describe all of them. Bright's Presentation row is drawn rather
-     * than offset, so the derivation is a small type with two cases instead of an integer
-     * that four presets fitted and a fifth did not -- which keeps the offset rule stated
-     * once, for the presets it actually governs, instead of carrying an exception through
-     * every loop that reads it.
+     * stopped being able to describe all of them. A Bright preset's Presentation row is
+     * drawn rather than offset, so the derivation is a small type with two cases instead of
+     * an integer that four presets fitted and four did not -- which keeps the offset rule
+     * stated once, for the presets it actually governs, instead of carrying an exception
+     * through every loop that reads it.
      */
     public abstract static class PresetShape {
 
@@ -152,66 +168,101 @@ public final class CurveConfig {
     }
 
     /**
-     * Presentation's row drawn by hand; Normal and Eco / Super Eco keep Quiet's exactly.
+     * A standard rung with Presentation's row drawn by hand -- the shape of every Bright
+     * preset. Normal and Eco / Super Eco keep the standard rung's own rows exactly, and the
+     * floor edge is inherited from it, so a Bright preset can differ from its counterpart
+     * in one column and nowhere else.
      *
-     * This is the shape an offset cannot express, and Bright is why it exists. A preset for
-     * a raised LED drive needs more fan in Presentation and <i>less</i> reason to touch the
-     * dim modes -- the raised drive already costs them their silence, and offsetting them
-     * on top would spend noise where the ceiling is not in question. So the columns stop
-     * being identical, and the property that bought -- no fan step on a brightness change
-     * -- is re-established by measurement rather than by construction. See {@link
-     * #PRESETS}.
+     * This is the shape an offset cannot express, and the raised LED drive is why it
+     * exists. A preset for a raised drive needs more fan in Presentation and <i>less</i>
+     * reason to touch the dim modes -- the raised drive already costs them their silence,
+     * and offsetting them on top would spend noise where the ceiling is not in question. So
+     * the columns stop being identical, and the property that bought -- no fan step on a
+     * brightness change -- is re-established by measurement rather than by construction.
+     * See {@link #PRESETS}.
+     *
+     * It holds its counterpart rather than a copy of its numbers, which is what makes "a
+     * Bright preset's dim rows <i>are</i> its standard counterpart's" a fact about the file
+     * instead of a claim a later edit could quietly break.
      */
     private static final class DrawnHighRow extends PresetShape {
+        private final PresetShape standard;
         private final int[] high;
 
-        DrawnHighRow(int floorEdgeC, int[] high) {
-            super(floorEdgeC);
+        DrawnHighRow(PresetShape standard, int[] high) {
+            super(standard.floorEdgeC);
+            this.standard = standard;
             this.high = high;
         }
 
         @Override
         public int[] row(int profile, int[] quiet) {
-            return (profile == PROFILE_HIGH ? high : quiet).clone();
+            return profile == PROFILE_HIGH ? high.clone() : standard.row(profile, quiet);
         }
     }
 
+    // The standard family, named so the Bright family can be built out of it below rather
+    // than beside it.
+    private static final PresetShape QUIET = new OffsetAboveFloor(47, 0);
+    private static final PresetShape BALANCED = new OffsetAboveFloor(47, 5);
+    private static final PresetShape COOL = new OffsetAboveFloor(47, 10);
+    private static final PresetShape COLD = new OffsetAboveFloor(43, 15);
+
     /** One shape per preset, in {@link #PRESET_NAMES} order. */
     public static final PresetShape[] PRESET_SHAPES = {
-            new OffsetAboveFloor(47, 0),                                    // Quiet
-            new OffsetAboveFloor(47, 5),                                    // Balanced
-            new OffsetAboveFloor(47, 10),                                   // Cool
-            new OffsetAboveFloor(43, 15),                                   // Cold
-            new DrawnHighRow(47, new int[]{30, 38, 46, 56, 70, 83}),        // Bright
+            QUIET,
+            BALANCED,
+            COOL,
+            COLD,
+            new DrawnHighRow(QUIET, new int[]{30, 38, 50, 62, 76, 83}),     // Bright Quiet
+            new DrawnHighRow(BALANCED, new int[]{30, 43, 55, 67, 81, 83}),  // Bright Balanced
+            new DrawnHighRow(COOL, new int[]{30, 48, 60, 72, 83, 83}),      // Bright Cool
+            new DrawnHighRow(COLD, new int[]{30, 53, 65, 77, 83, 83}),      // Bright Cold
     };
 
     /**
-     * The presets, encoded. Four of the five are the shipped curve with a constant added to
-     * every knee duty above the floor, clipped at the 83 ceiling; the fifth, Bright, draws
-     * its Presentation row instead. Nothing else about any of them differs -- same
-     * hysteresis, same slew, same guard, same knee temperatures -- with one exception:
-     * Cold's floor edge is 43 C where the others' is 47, for the reason given against its
-     * line below.
+     * The presets, encoded. Eight of them, and they are four rungs run twice.
      *
-     * <h3>Why an offset rather than five drawn curves</h3>
+     * <h3>Two families, and why the choice is not the user's</h3>
+     * The <b>standard</b> four -- Quiet, Balanced, Cool, Cold -- are the shipped curve with
+     * a constant added to every knee duty above the floor, clipped at the 83 ceiling. The
+     * <b>Bright</b> four are the same rungs with Presentation's row redrawn for the LED
+     * drive override, which puts roughly 17 % more rise above ambient into the light engine
+     * at every duty. Nothing else about any of the eight differs -- same hysteresis, same
+     * slew, same guard, same knee temperatures -- with one exception: Cold's floor edge, and
+     * so Bright Cold's, is 43 C where the other six share 47, for the reason given against
+     * Cold's line below.
+     *
+     * The two families are not both on offer at once. The override decides which one is,
+     * and moving the override moves the stored curve to the same rung in the other family
+     * -- {@link #curveForDrive}. That is a gate rather than advice, and it is there because
+     * the bad pairing is a measurement rather than a worry: <b>Quiet with the drive at 90 in
+     * a 28 C room settles at 58 C, against 56 on Bright Quiet.</b> 58 is past the 60 C
+     * override trip's own margin, and the trip drops the drive silently -- so the failure a
+     * user would actually see is the picture going back to stock brightness on its own, with
+     * nothing on screen saying why. Making the pairing unreachable costs a preset press and
+     * removes the whole class of report.
+     *
+     * <h3>Why an offset rather than eight drawn curves</h3>
      * Adding a constant to the knees above the floor leaves the <i>differences</i> between
      * those knees untouched. The shelf and every segment above it therefore keep Quiet's
      * width and Quiet's duty/C slope, so their geometry and their stability margin are
      * unchanged. Monotonicity and identical columns across the three profiles carry across
-     * by construction. Bright gives that up on purpose and pays for it by measurement
-     * instead -- see its line.
+     * by construction. The Bright family gives the identical columns up on purpose and pays
+     * for it by simulation instead -- see the Bright lines. It keeps the rest: a Bright
+     * preset's dim rows <i>are</i> its standard counterpart's, taken from the counterpart's
+     * own shape rather than retyped, so the two can never drift.
      *
      * <h3>The one segment the offsets do change, and what that cost</h3>
      * Pinning the floor means the rise from it to the shelf has to climb further in the
      * same 4 C: 2.0 duty/C on Quiet, then 3.25, 4.5 and <b>5.75 on Cold</b>. That is the
      * one place the "inherit Quiet's stability" argument does not apply, and it is exactly
      * the kind of steepening that was measured hunting elsewhere in this curve's history --
-     * so it was not assumed safe. All five presets were driven through
+     * so it was not assumed safe. All eight presets were driven through
      * {@code tools/CurveSim.java} against the two-pole plant across 15-35 C ambient at four
-     * slow poles: <b>414 of 420 runs are steady at one duty point per tick</b>. (This line
-     * read "334 of 336" for the four presets before Bright. Re-running those four today
-     * gives 333: Quiet's 16 C corner is three runs, not two, which is what
-     * {@code docs/curve.md} has always said it was. The old figure was one out.)
+     * slow poles: <b>666 of 672 runs are steady at one duty point per tick</b>. (This line
+     * read "414 of 420" for the five before the families, and "334 of 336" for the four
+     * before that.)
      *
      * <b>The six that are not, stated plainly rather than rounded away.</b> Quiet at 16 C
      * hunts by two duty points on three of the four slow poles, which predates the pinned
@@ -223,11 +274,15 @@ public final class CurveConfig {
      * accepted state, and the host test that drives every preset against the plant is
      * bounded at two for exactly that reason: three is a regression.
      *
-     * The other three are Bright at the same 16 C on the same plant, and they are the same
-     * corner rather than a second one: below 51 C Bright <i>is</i> Quiet, so at 16 C the
-     * two are running the same curve at the same operating point. On the inferred raised
-     * plant Bright is 81 of 84 as well, with the wobble at 17 C and duty 36-38 -- and Quiet
-     * on that plant is 81 of 84 at 17 C too, identically, for the same reason.
+     * The other three are Bright Quiet at the same 16 C on the same plant, and they are the
+     * same corner rather than a second one: below 51 C Bright Quiet <i>is</i> Quiet, so at
+     * 16 C the two are running the same curve at the same operating point. Every other
+     * preset, standard or Bright, is 84 of 84 on the stock plant.
+     *
+     * On the <i>raised</i> plant the picture is not the same, and the difference is on the
+     * Bright Cool line below rather than smoothed over here. That plant is only CurveSim's
+     * business -- the host suite runs the stock one, because that is where seven of the
+     * eight actually operate and the eighth pairing is now unreachable.
      *
      * Cold at 17 C used to hunt by four, from the 5.75 duty/C rise the pinned floor forced
      * on it. That was fixed by moving Cold's floor edge to 43 C -- see its line -- and the
@@ -244,12 +299,14 @@ public final class CurveConfig {
      *
      * <h3>Where the tail flattens, and why that is still safe</h3>
      * The offsets clip at 83, so the top of the curve is the one place the offset shapes
-     * are not congruent: Quiet, Balanced and Cool all reach full speed at the last knee,
-     * 70 C, and only Cold gets there earlier, at 66 C. Bright reaches it at 70 like the
-     * first three. That still satisfies "reach the ceiling by a temperature the plant
-     * cannot achieve" -- the hottest degC ever recorded on this unit is 52.85 C, so every
-     * one of these curves reaches its ceiling more than thirteen degrees above anything the
-     * hardware has produced, and rule 6 holds for all five.
+     * are not congruent: Quiet and Balanced reach full speed at the last knee, 70 C, and
+     * Cool and Cold get there earlier, at 66. Each Bright rung lands where its counterpart
+     * does, because the +8 at knee 4 clips against the same ceiling -- Bright Quiet and
+     * Bright Balanced at 70, Bright Cool and Bright Cold at 66. That still satisfies "reach
+     * the ceiling by a temperature the plant cannot achieve" -- the hottest degC ever
+     * recorded on this unit is 52.85 C, so every one of these curves reaches its ceiling
+     * more than thirteen degrees above anything the hardware has produced, and rule 6 holds
+     * for all eight.
      *
      * <h3>Where they settle</h3>
      * Solved against the measured plant by {@code tools/equilibria.py}, Presentation:
@@ -259,12 +316,13 @@ public final class CurveConfig {
      *   Balanced   39.5 % / 49.2     41.6 % / 50.3     43.3 % / 51.6
      *   Cool       42.1 % / 48.1     44.3 % / 49.2     46.9 % / 50.5
      *   Cold       45.0 % / 46.9     47.6 % / 48.3     50.3 % / 49.6
-     *   Bright     37.2 % / 50.6     39.0 % / 51.5     41.0 % / 52.5   &lt;- STOCK drive
      * </pre>
-     * Bright's row is the odd one out and is included to make one point: on the stock LED
-     * drive it is Quiet, near enough -- identical at 22 C, half a duty point louder at 24 C
-     * for 0.4 C. It is drawn for the raised drive and its own numbers are under its line
-     * below.
+     * The Bright rungs are not on this table, because it is solved against the stock plant
+     * and they are not for it. The gate is what makes that omission safe rather than
+     * careless: a Bright preset can no longer be selected while the drive is stock, so there
+     * is no state in which a reader would need its stock-plant equilibrium. Its own numbers
+     * are in {@code docs/curve.md}, against the raised plant, labelled with which parts of
+     * that plant are measured.
      * So at 24 C the cooling against Quiet is 1.6, 2.7 and 3.6 C. The offsets bite harder
      * here than they did on the previous curve, where the same +5 bought only 1.3 C. That
      * curve's operating point sat on a ramp, so the extra duty cooled the light engine, the
@@ -311,64 +369,98 @@ public final class CurveConfig {
             // asking for the quietest fan, so the trade was taken.
             "v1,43,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,55,65,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
-            // Bright: for the LED drive override, and only useful with it. Quiet's knees,
-            // Quiet's hysteresis, slew and guard, and Quiet's row untouched in Normal and
-            // Eco / Super Eco. The one thing that changes is Presentation's row, which
-            // carries Quiet's own 2.0 duty/C rise straight through the shelf instead of
-            // levelling off on it -- 30 at 47 C, 38 at 51, 46 at 55 -- and then the same
-            // 2.0 duty/C to 56 at 60 C before the backstop reaches 83 by 70 C, as in every
-            // other preset. Nothing here is a new slope: 2.0 duty/C is what Quiet already
-            // does over 47-51 C and again over 55-60 C. What Bright does is spend it over
-            // the four degrees where Quiet is flat.
+            // ---- the Bright family: the same four rungs, for the LED drive override ----
             //
-            // EVERYTHING BELOW ABOUT THE RAISED DRIVE IS INFERRED. No hold has ever been
-            // taken at drive 90. The plant for it is the measured Presentation column
-            // scaled by x1.1735, from the rise-vs-drive line fitted across all four
-            // brightness modes at duty 40 (rise ~= 1.60 + 0.342 x drive, which reproduces
-            // Normal and Eco to about 1 K) -- see tools/solve_curve.py drive_scale. One
-            // twelve-minute hold at duty 45 in Presentation at drive 90 settles it: the
-            // scaling predicts 53.2 C in a 24 C room. Two simulation-backed verdicts in
-            // this project have already been wrong, so treat every Bright number as a
-            // prediction until that hold exists.
+            // Each is its standard counterpart with Presentation's row redrawn, and nothing
+            // else: the counterpart's knees, its floor edge, its hysteresis, slew and guard,
+            // and its own duty row untouched in Normal and Eco / Super Eco. The dim rows are
+            // taken from the counterpart's PresetShape rather than retyped here, so "Bright
+            // Balanced is Balanced in the dim modes" is structural.
             //
-            // Why the shelf goes. Raising the drive from 76 to 90 % puts about 17 % more
-            // rise above ambient into the light engine at every duty, and Quiet's shelf was
-            // placed on the plant as measured at 76. On the inferred raised plant Quiet
-            // settles at 40.6 % / 55.3 C in a 24 C room -- over the 55 C ceiling, and it
-            // crosses 55 at a 23.5 C room. A shelf is deliberately indifferent to
-            // temperature, which is the wrong instinct once the operating point has moved
-            // up into the band where the ceiling is the binding constraint. Bright trades
-            // the shelf for authority exactly there and settles at 43.7 % / 53.8 C at 24 C,
-            // holding 55 C out to a 26.1 C room.
+            // What the redrawn row does, and it is the same edit in every rung: the
+            // counterpart's Presentation row plus 0, 0, 10, 12, 8, 0 at the six knees,
+            // clipped at 83. Knee 1 is untouched, which is what keeps the three columns
+            // identical at and below 51 C; the shelf at knee 2 becomes a 3.0 duty/C rise;
+            // 55-60 C steepens to 2.4; and the last knee is the shared 83 backstop, so the
+            // curve rejoins its counterpart at the top. The clip bites twice -- Bright Cool's
+            // 86 and Bright Cold's 91 at knee 4 both become 83, exactly as Cool's and Cold's
+            // own offsets already clip there.
             //
-            // The owner's constraint was that it rest below duty 50 -- he has tested 50 by
-            // ear and calls it the border of acceptable. Solved against the inferred plant
-            // it rests at 40.6 % at 21 C, 43.7 at 24, 47.2 at 27, and does not reach 50
-            // until about a 29.2 C room. The unit's measured room range is 21.9-26.2 C.
+            // The shelf is the thing being spent. A shelf is deliberately indifferent to
+            // temperature, which is right when the operating point sits in the middle of the
+            // band and wrong once the raised drive has pushed it up against the ceiling --
+            // and that is the whole of the change. The knees are the counterpart's, the
+            // backstop is 83 by 70 C as everywhere else, and the floor is 30 below the floor
+            // edge in every mode.
             //
-            // Stability was measured, not inherited. CurveSim, two-pole plant, four slow
-            // poles, 15-35 C: 81 of 84 steady on the stock plant and 81 of 84 on the
-            // inferred raised one. The three that are not are the 16 C corner Quiet has
-            // always had (17 C on the raised plant), which Bright shares because below
-            // 51 C it is Quiet -- same curve, same operating point, same knife-edge. The
-            // host test drives it too, at every ambient from 14 to 34 C, bounded at two.
+            // WHAT IS MEASURED AND WHAT IS NOT. Measured: the Presentation plant at drive 90
+            // is the measured drive-76 column x1.208, and Quiet at drive 90 in a 28 C room
+            // settles at 58 C against Bright Quiet's 56 -- which is the gate's whole
+            // justification and is why the drive now selects the family. Inferred: the
+            // Normal, Eco and Super Eco scalings (x1.2513, x1.2238, x1.4052) are still the
+            // fitted rise-vs-drive line, rise ~= 1.60 + 0.342 x drive, and the equilibrium
+            // tables in docs/curve.md were solved at the fitted Presentation x1.1735 rather
+            // than at the measured x1.208, so they read about half a degree low. They are
+            // labelled there rather than silently restated here.
+            //
+            // Stability was simulated at the MEASURED scaling, not inherited from the
+            // standard family: CurveSim, two-pole plant, four slow poles, --scale high=1.208,
+            // 14-34 C. Three of the four are as good as their counterparts and the fourth is
+            // not -- the verdicts are on each line below, Bright Cool's at length, because it
+            // is the one place this family is worse than the family it mirrors. The host
+            // suite drives all eight at every ambient from 14 to 34 C on every build against
+            // the stock plant, bounded at two duty points, and all eight pass.
             //
             // The cost, and it is real: Presentation and the dim modes no longer share a
             // column, so FanCurve's immediate-jump exception can fire on a brightness
-            // change. The two rows are identical at and below 51 C, which is asserted in
-            // the host test, and Eco settles at 44.1 C and Normal at 50.5 C in a 24 C room
-            // on the raised drive -- so the jump is zero there, and CurveSim measures the
-            // largest single-tick change on an Eco -> Presentation switch at 24 C as one
-            // duty point, the same as every other preset. Eco stays stepless to 30 C.
-            // Normal does not: the raised drive pushes its settled reading up onto the
-            // shelf, and a Normal -> Presentation switch steps 0 points to a 25 C room,
-            // 1 at 26, 2 at 26.2 -- the warmest room this unit has recorded -- then 3 at
-            // 27, 5 at 28 and 6 at 30. Two points is below the three that went unnoticed
-            // by ear during the shelf work; six would not be, in a room nobody here has.
-            // Offsetting the dim columns to match would have removed that at the price of
-            // making three modes that are already louder on the raised drive louder again,
-            // for no ceiling worth defending. The step was the cheaper thing to accept.
-            "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,46,56,70,83,"
+            // change. The two rows are identical at and below 51 C in every rung, which is
+            // asserted in the host test, and the dim modes settle below that on the raised
+            // drive -- so the jump is zero where the machine actually lives. It grows in a
+            // room warmer than this unit has recorded: on Bright Quiet a Normal ->
+            // Presentation switch steps 0 points to a 25 C room, 1 at 26, 2 at 26.2 -- the
+            // warmest recorded -- then 3, 5 and 6 at 27, 28 and 30. Offsetting the dim
+            // columns to match would have removed that at the price of making three modes
+            // that are already louder on the raised drive louder again, for no ceiling worth
+            // defending. The step was the cheaper thing to accept.
+            //
+            // Bright Quiet: Quiet's 30/38 to 51 C, then 50 at 55 and 62 at 60. The rung the
+            // override lands on from a fresh install. 81 of 84 steady; the three that are not
+            // are the two-point wobble at 16 C that shipped Quiet already has -- below 51 C
+            // this IS Quiet, so it is the same knife-edge and not a new one.
+            "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,50,62,76,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+            // Bright Balanced: Balanced's 30/43, then 55 at 55 C and 67 at 60. Its 66 C knee
+            // is 81 rather than clipped, so like Balanced it reaches 83 at the last knee, and
+            // above 66 C it is the gentlest slope in the family at 0.5 duty/C. 84 of 84
+            // steady.
+            "v1,47,51,55,60,66,70,30,43,45,55,73,83,30,43,45,55,73,83,30,43,55,67,81,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+            // Bright Cool: Cool's 30/48, then 60 at 55 C and 72 at 60. Its 66 C knee clips to
+            // 83, so the ceiling arrives at 66 as it does on Cool.
+            //
+            // 81 of 84 steady, and the three that are not need stating precisely because
+            // they are NOT the accepted 16 C two-point corner the other rungs have. They sit
+            // at 14 C and they span THREE duty points, 35..38. It is on shared ground rather
+            // than on the redrawn row -- below 51 C Bright Cool is Cool exactly, and plain
+            // Cool on the same raised plant hunts by three at 14 C identically, run for run.
+            // What is new is that the pairing is now reachable: Cool never runs at drive 90,
+            // and Bright Cool is drawn to. The corner is the 4.5 duty/C rise over 47-51 C
+            // that Cool has always carried, meeting an operating point the raised plant puts
+            // on it. It clears at 15 C and every ambient above, and 15 C is five degrees
+            // below the coldest room this unit has recorded (21.9 C).
+            //
+            // Left as it is rather than redrawn, because the fix would be to move Cool's
+            // floor edge the way Cold's was moved, and that would change a standard preset
+            // that is 84 of 84 on the plant it actually runs on to fix a raised-plant
+            // simulation nobody has held a measurement against. The host suite is not
+            // weakened for it: it runs the stock plant, where Bright Cool is 84 of 84, and
+            // stays bounded at two.
+            "v1,47,51,55,60,66,70,30,48,50,60,78,83,30,48,50,60,78,83,30,48,60,72,83,83,"
+                    + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
+            // Bright Cold: Cold's floor edge of 43 C and its 30/53, then 65 at 55 C and 77 at
+            // 60. Clips to 83 at 66 like Cold. 84 of 84 steady -- the 43 C floor edge that
+            // fixed Cold's four-point hunt does the same work here.
+            "v1,43,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,65,77,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
     };
 
@@ -670,6 +762,164 @@ public final class CurveConfig {
     /** The name to show for a preset index, or "Custom" for anything that is not one. */
     public static String presetName(int i) {
         return (i < 0 || i >= PRESET_NAMES.length) ? "Custom" : PRESET_NAMES[i];
+    }
+
+    // ------------------------------------------------------------- the two families
+
+    /**
+     * Is this one of the four presets drawn for the LED drive override?
+     *
+     * False for {@link #PRESET_CUSTOM} and for any index from nowhere, which is the right
+     * answer to "may this run with the drive on" for both: a curve nobody recognises is not
+     * a Bright preset, and the gate leaves it alone rather than claiming it.
+     */
+    public static boolean isBrightPreset(int preset) {
+        return preset >= RUNGS && preset < PRESET_NAMES.length;
+    }
+
+    /**
+     * Which rung of its family a preset is -- 0 quietest, {@link #RUNGS} - 1 coldest -- or
+     * -1 for a curve that is in neither family. The rung is what a user keeps when the
+     * override moves them across; the family is what the override decides.
+     */
+    public static int rungOf(int preset) {
+        return (preset < 0 || preset >= PRESET_NAMES.length) ? -1 : preset % RUNGS;
+    }
+
+    /**
+     * The presets a given drive state allows, quietest rung first. This is the list the
+     * screen cycles and the list a broadcast is judged against, so neither can offer a rung
+     * the other does not.
+     */
+    public static int[] presetsFor(boolean driveOn) {
+        int[] r = new int[RUNGS];
+        for (int rung = 0; rung < RUNGS; rung++) {
+            r[rung] = driveOn ? RUNGS + rung : rung;
+        }
+        return r;
+    }
+
+    /** The four for the stock LED drive. */
+    public static int[] standardPresets() {
+        return presetsFor(false);
+    }
+
+    /** The four for the LED drive override. */
+    public static int[] brightPresets() {
+        return presetsFor(true);
+    }
+
+    /**
+     * The same rung in the family {@code driveOn} selects: Quiet to Bright Quiet and back,
+     * Balanced to Bright Balanced, and so on. A preset already in the right family is
+     * returned unchanged, and so is anything with no rung at all -- {@link #PRESET_CUSTOM}
+     * has no counterpart and must not be given one.
+     *
+     * Several callers need this and none of them should be the one that knows the two
+     * families are {@link #RUNGS} apart.
+     */
+    public static int counterpartOf(int preset, boolean driveOn) {
+        int rung = rungOf(preset);
+        return rung < 0 ? preset : (driveOn ? RUNGS + rung : rung);
+    }
+
+    /**
+     * The curve to store for a given drive state, given the curve stored now: the same rung
+     * in the family that state allows.
+     *
+     * <b>This is the gate.</b> Both the screen and the broadcast path change the override
+     * through {@code Prefs}, and {@code Prefs} moves the curve through here, so there is one
+     * place where "which family is legal" is decided and no way for the two to disagree. The
+     * user keeps their rung -- Quiet stays Quiet -- and only the family moves, because the
+     * rung is the thing they chose and the family is the thing the hardware dictates.
+     *
+     * <b>A hand-edited curve is returned untouched.</b> It is in neither family, so there is
+     * no counterpart to move it to, and silently replacing thirty numbers somebody typed
+     * would be worse than the pairing this exists to prevent. The caller says so out loud
+     * instead -- see {@code Prefs.setLedDriveOn} and the {@code curve=} field of the
+     * broadcast reply, which shows exactly what is loaded.
+     */
+    public static String curveForDrive(String encoded, boolean driveOn) {
+        int preset = presetOf(encoded);
+        return preset == PRESET_CUSTOM ? encoded : PRESETS[counterpartOf(preset, driveOn)];
+    }
+
+    /**
+     * Why a preset may not be applied in the current drive state, or null if it may.
+     *
+     * A refusal rather than a silent substitution, because the two are asking different
+     * questions. {@link #curveForDrive} migrates a curve the user is not currently thinking
+     * about -- they moved the override, not the curve -- and keeping their rung is obviously
+     * what they meant. Naming a preset from the wrong family is the opposite: it is an
+     * explicit request for that exact curve, and quietly applying a different one would tell
+     * the caller they got what they asked for. So this answers with the name of the preset
+     * they probably wanted and the other way to get it.
+     */
+    public static String wrongFamilyRefusal(int preset, boolean driveOn) {
+        if (rungOf(preset) < 0 || isBrightPreset(preset) == driveOn) {
+            return null;
+        }
+        return PRESET_NAMES[preset] + " is a " + (driveOn ? "standard" : "Bright")
+                + " preset and the LED drive is " + (driveOn ? "on" : "off")
+                + "; use " + PRESET_NAMES[counterpartOf(preset, driveOn)]
+                + " or turn the drive " + (driveOn ? "off" : "on");
+    }
+
+    /**
+     * A preset by the name it is shown under, or {@link #PRESET_CUSTOM} for anything that is
+     * not one. Case, spaces and punctuation are ignored, so {@code Bright Quiet},
+     * {@code brightquiet} and {@code bright-quiet} are one preset rather than three -- a
+     * two-word name typed into a shell is going to arrive in all three spellings and none of
+     * them is a mistake worth an error message.
+     *
+     * Matched against {@link #PRESET_NAMES} itself so the words accepted cannot drift from
+     * the words on screen.
+     */
+    public static int presetNamed(String name) {
+        String want = squash(name);
+        if (want.length() == 0) {
+            return PRESET_CUSTOM;
+        }
+        for (int i = 0; i < PRESET_NAMES.length; i++) {
+            if (squash(PRESET_NAMES[i]).equals(want)) {
+                return i;
+            }
+        }
+        return PRESET_CUSTOM;
+    }
+
+    /** Letters and digits only, lower case: the form two spellings of a name agree on. */
+    private static String squash(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch >= 'A' && ch <= 'Z') {
+                sb.append((char) (ch - 'A' + 'a'));
+            } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * The names a drive state accepts, as a sentence: "quiet, balanced, cool or cold".
+     * Built from the list rather than typed out, so it cannot go on naming four presets
+     * after a fifth has been added -- which is the mistake this replaced.
+     */
+    public static String familyWords(boolean driveOn) {
+        int[] family = presetsFor(driveOn);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < family.length; i++) {
+            if (i > 0) {
+                sb.append(i == family.length - 1 ? " or " : ", ");
+            }
+            sb.append(PRESET_NAMES[family[i]].toLowerCase());
+        }
+        return sb.toString();
     }
 
     /**

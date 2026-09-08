@@ -133,13 +133,14 @@ Also not part of the deployment, also off by default, and also over the same bro
 drives the light engine above the per-mode table the kernel installs.
 
 ```bash
-# the Bright preset -- 35/55/75/95 instead of the stock 20/40/55/76 -- and switch it on
+# the Bright preset -- 35/55/75/90 instead of the stock 20/40/55/76 -- and switch it on.
+# This also moves the curve preset to the Bright version of the step it is on.
 adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
     -a com.daleygames.fanlab.CONFIG --es leddrive bright --ez leddriveon true
 
 # hand-set levels, Super Eco / Eco / Normal / Presentation
 adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
-    -a com.daleygames.fanlab.CONFIG --es leddrive "d1,35,55,75,95"
+    -a com.daleygames.fanlab.CONFIG --es leddrive "d1,35,55,75,90"
 
 # off, and back to the kernel's own table
 adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \

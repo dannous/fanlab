@@ -181,10 +181,11 @@ also stores no preference that could turn one back on at boot.
 ## The LED drive override runs the light engine harder
 
 Separate from everything above, and off by default. It writes `rgbcurrent` and `redcurrent`
-to drive the four brightness modes at **35/55/75/95 %** instead of the kernel's own
-20/40/55/76 — 25 % more drive in Presentation, and about **+3.4 °C** on the LED thermistor
-for every 10 points at a fixed fan duty, so roughly **+6.5 °C** for the 76 → 95 step. The
-`Bright` curve preset was drawn against the older 90 and has not been redrawn for 95.
+to drive the four brightness modes at **35/55/75/90 %** instead of the kernel's own
+20/40/55/76 — 18 % more drive in Presentation, and about **+3.4 °C** on the LED thermistor
+for every 10 points at a fixed fan duty, so roughly **+4.8 °C** for the 76 → 90 step. 90 is
+the drive the Bright curve family was drawn against and the drive its plant scaling was
+measured at, so the brightness preset and the curve now agree on one number.
 
 The safety case is one rule, and it is a conjunction: **the override applies only while
 this app is the thing cooling the machine.** CURVE or LINEAR, no AUTO or VERIFY session
@@ -194,25 +195,36 @@ Presentation-class LED heat under whatever fan ladder `rgblevel` happens to sele
 is precisely the hazard the rest of this document exists to avoid. Any doubt, including an
 unreadable `led_status`, resolves to *not* applied.
 
-On top of that it has a ceiling of its own: above **57 °C** on the LED thermistor the
+On top of that it has a ceiling of its own: above **60 °C** on the LED thermistor the
 override is dropped and **latched off** until the brightness mode or the setting changes.
-57 is two degrees above the 55 at which the stock controller commands maximum fan. There is
+60 is five degrees above the 55 at which the stock controller commands maximum fan. There is
 no automatic re-arm, because brightness cycling on the wall is more objectionable than a
 fan swing.
+
+**The curve preset families exist to keep that trip a backstop.** Switching the override on
+moves the stored curve to the Bright version of the step it is on, and switching it off moves
+it back; the screen only offers the family the drive allows and a broadcast naming one from
+the wrong family is refused. The reason is measured: at drive 90 in a 28 °C room a Bright step
+settles at 56 °C, four degrees under the trip, where the same drive on a standard step settles
+at **58 °C** — 2 °C under it. A pairing that close reaches the trip on a warm afternoon, and
+the trip drops the brightness with nothing on screen to say why, so the symptom is a picture
+that dims itself for no visible reason. A hand-edited curve has no counterpart and is left as
+it is, which is the one case where the pairing is still the owner's to get right.
 
 It also starts only at a service start, a settings change, or a mode change — never part
 way through a run. That is not tidiness: switching it on under LINEAR mid-session makes the
 fan walk about 12 duty points at one per five seconds, and a 14-point cumulative walk is the
 one thing on this machine the owner has actually heard and objected to.
 
-**What it costs.** Under CURVE the extra heat is paid in temperature: the Bright preset
-rests around 53.8 °C rather than 51.9. Under LINEAR it is paid in fan, so the default
-ceiling moves from 52.0 to **54.0 °C** while the override is on — matching where the Bright
-curve rests, so the two controllers can still be compared by ear. A ceiling you set by hand
-is never moved, and nothing is written to the stored setting: switching the override off
-puts the ceiling back. **Every number in this paragraph is inferred from scaling the
-measured plant by 1.18, not measured**, and the two-degrees-over-50 caveat above applies
-with two more degrees on top.
+**What it costs.** Under CURVE the extra heat is paid in temperature: Bright Quiet rests
+around 53.8 °C rather than Quiet's 51.9 in a 24 °C room. Under LINEAR it is paid in fan, so
+the default ceiling moves from 52.0 to **54.0 °C** while the override is on — roughly where
+the Bright family rests, so the two controllers can still be compared by ear. A ceiling you
+set by hand is never moved, and nothing is written to the stored setting: switching the
+override off puts the ceiling back. **The Presentation plant scaling behind these numbers is
+measured — ×1.208 at drive 90 — but the equilibria themselves were solved at the earlier
+fitted ×1.1735 and read about half a degree low.** The dim-mode scalings are still inferred
+entirely. The two-degrees-over-50 caveat above applies with two more degrees on top.
 
 The 75 °C shutdown and the fan-stall watchdog are untouched by it, like everything else here.
 

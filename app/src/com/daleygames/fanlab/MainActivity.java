@@ -207,16 +207,21 @@ public class MainActivity extends Activity implements StepRow.Listener {
         presetRow = addRow(root, new StepRow(c, "Curve preset — CURVE mode").button()
                 .tag("preset", 0));
         root.addView(Ui.body(c,
-                "Fan speed in Presentation, and where the light engine settles at "
-                        + "24 °C:"
+                "Four steps, quietest first. Fan speed in Presentation and where the "
+                        + "light engine settles at 24 °C:"
                         + "\n    Quiet       38–40 %    51.9 °C"
                         + "\n    Balanced    43–45 %    50.3 °C"
                         + "\n    Cool        48–50 %    49.2 °C"
                         + "\n    Cold        53–55 %    48.3 °C"
-                        + "\n    Bright      ~44 %      53.8 °C   use with LED drive"
-                        + "\nChoose Bright only with the LED drive on. On stock drive "
-                        + "it behaves like Quiet, so it buys nothing."
-                        + "\nAll five idle at 30 % in Normal, Eco and Super Eco at stock "
+                        + "\nWith the LED drive on you get the same four steps as "
+                        + "Bright Quiet, Bright Balanced, Bright Cool and Bright Cold. "
+                        + "Those spend more fan in Presentation to cover the hotter light "
+                        + "engine, and they are the only ones this button offers while the "
+                        + "drive is on — a plain curve with the drive raised runs about "
+                        + "2 °C hotter and can trip the drive's own cut-out."
+                        + "\nSwitching the LED drive keeps your step and changes the "
+                        + "family, so Quiet becomes Bright Quiet and back."
+                        + "\nAll eight idle at 30 % in Normal, Eco and Super Eco at stock "
                         + "drive."),
                 Ui.wrap());
         ceilingRow = addRow(root, new StepRow(c, "Temperature ceiling — LINEAR mode")
@@ -239,13 +244,14 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 .tag("leddrive", 0));
         root.addView(Ui.body(c,
                 "Runs the LEDs harder than the projector normally does. Presentation "
-                        + "goes from 76 % to 95 % of maximum — 25 % more drive. "
+                        + "goes from 76 % to 90 % of maximum — 18 % more drive. "
                         + "Press to cycle Stock → Bright → Stock.\n"
-                        + "\nSwitch the curve preset to Bright as well. The light "
-                        + "engine runs about 6 °C hotter on this setting, and Bright "
-                        + "is the curve that spends a little more fan to cover it — "
-                        + "though Bright was drawn for the older 90 and covers rather "
-                        + "less of 95 than it did of that.\n"
+                        + "\nThe curve preset moves with it: your step stays where it is "
+                        + "and switches to the Bright version of itself, which spends a "
+                        + "little more fan to cover the roughly 5 °C the raised drive "
+                        + "adds. Switching back reverses it. A curve you have edited by "
+                        + "hand is left alone, because there is no Bright version of it "
+                        + "to switch to.\n"
                         + "\nThen put up a white image and check two things: it should "
                         + "look brighter, and white should still look white. If it looks "
                         + "dimmer instead, switch it off — that means the drive was set "
@@ -392,21 +398,27 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     : "Mode — CURVE: following the temperature curve");
         }
         if (presetRow != null) {
-            // The colour tracks the noise, not the state: green for the quietest, amber
+            // The colour tracks the noise, not the state: green for the quietest rung, amber
             // for the ones whose operating point reaches the owner's "just acceptable" 50
-            // in a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 %, and Bright is
-            // predicted at 45.9 % in a 26 C room with the LED drive raised -- and dim for a
+            // in a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 % -- and dim for a
             // curve that is none of them and therefore has nothing to say about how loud it
-            // is.
+            // is. Driven off the rung rather than the index, so Bright Quiet reads as
+            // quietest exactly as Quiet does; the two families are the same four rungs and
+            // the colour is about the rung.
+            //
+            // The name carries the family: the row reads "Bright Quiet", not "Quiet", so the
+            // one place a user looks to see which curve is loaded also says which drive level
+            // it was drawn for.
             //
             // Dimmed outside CURVE, because a value the loop is not currently using should
             // not look like one it is.
             int preset = Prefs.preset(this);
+            int rung = CurveConfig.rungOf(preset);
             presetRow.display(CurveConfig.presetName(preset));
             presetRow.valueColour(mode != Mode.CURVE ? Ui.DIM
-                    : preset == 0 ? Ui.GOOD
-                    : preset == 1 ? Ui.ACCENT
-                    : (preset >= 2 && preset < CurveConfig.PRESET_NAMES.length) ? Ui.WARN
+                    : rung == 0 ? Ui.GOOD
+                    : rung == 1 ? Ui.ACCENT
+                    : rung >= 2 ? Ui.WARN
                     : Ui.DIM);
         }
         if (ceilingRow != null) {
@@ -655,16 +667,25 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("preset".equals(row.tagName)) {
-                // Quiet -> Balanced -> Cool -> Cold -> Bright -> Quiet, in PRESET_NAMES
-                // order. Custom is a state to arrive in, not one to cycle to: it has no
-                // curve of its own, so PRESET_CUSTOM being -1 lands the next press on
-                // Quiet, which is the only sensible place to go from a curve none of the
-                // names describe.
-                int next = Prefs.preset(this) + 1;
-                if (next >= CurveConfig.PRESET_NAMES.length) {
-                    next = 0;
+                // Quiet -> Balanced -> Cool -> Cold -> Quiet, and with the LED drive on the
+                // same four rungs in the Bright family instead. The loop stays inside the
+                // family the drive allows, so the pairing the gate exists to prevent cannot
+                // be reached by pressing this at all -- there is no press count that gets
+                // from Quiet to Bright Cold. Moving the LED drive row is what moves families,
+                // and it carries the rung across.
+                //
+                // Custom is a state to arrive in, not one to cycle to: it has no curve of its
+                // own, so a curve none of the names describe is not found in the family below
+                // and the next press lands on its quietest rung.
+                int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
+                int preset = Prefs.preset(this);
+                int at = -1;
+                for (int k = 0; k < family.length; k++) {
+                    if (family[k] == preset) {
+                        at = k;
+                    }
                 }
-                Prefs.setPreset(this, next);
+                Prefs.setPreset(this, family[(at + 1) % family.length]);
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("ceiling".equals(row.tagName)) {

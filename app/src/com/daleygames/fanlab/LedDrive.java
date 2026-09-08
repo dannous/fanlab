@@ -131,12 +131,19 @@ public final class LedDrive {
     /**
      * LED thermistor temperature above which the override is dropped and latched off.
      *
-     * 57.0: two degrees above the 55 C at which the stock controller itself commands
-     * maximum fan, so the override cannot hold the light engine in a region the
+     * 60.0: five degrees above the 55 C at which the stock controller itself commands
+     * maximum fan, so the override cannot hold the light engine far into a region the
      * manufacturer's own software treats as out of its comfort zone, and well below the
      * 75 C shutdown.
+     *
+     * The margin it leaves is what the two curve preset families are for. Bright Quiet at
+     * drive 90 in a 28 C room is measured settling at 56 C -- four degrees clear. The same
+     * drive on plain Quiet settles at 58, close enough that a warmer afternoon reaches the
+     * trip, and the trip drops the drive with nothing on screen to say why: the symptom is
+     * the picture going back to stock brightness on its own. {@code
+     * CurveConfig.curveForDrive} is what stops that pairing being reachable.
      */
-    public static final double DEFAULT_TRIP_C = 57.0;
+    public static final double DEFAULT_TRIP_C = 60.0;
 
     /** Minimum gap between {@code rgblevel} rewrites. Matches {@code assertRgbLevel}. */
     public static final long RESTORE_EVERY_MS = 5000L;
@@ -167,13 +174,19 @@ public final class LedDrive {
             }
         }
 
-        /** The one-press preset the main screen offers: +15, +15, +20, +19 over stock. */
+        /**
+         * The one-press preset the main screen offers: +15, +15, +20, +14 over stock.
+         *
+         * Presentation is 90 rather than higher because 90 is the drive the Bright curve
+         * family was drawn against and the one the plant scaling was measured at. A preset
+         * that outran its curve would be a number nobody had solved a fan speed for.
+         */
         public static Config bright() {
             Config c = new Config();
             c.level[0] = 35;
             c.level[1] = 55;
             c.level[2] = 75;
-            c.level[3] = 95;
+            c.level[3] = 90;
             return c;
         }
 

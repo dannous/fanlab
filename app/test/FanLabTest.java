@@ -442,18 +442,18 @@ public final class FanLabTest {
             }
             // The columns used to be identical in every preset, which made "a brightness
             // change is not a tier change in duty terms" true by construction and stopped
-            // FanCurve's immediate-jump exception ever firing. Bright breaks that on
-            // purpose -- it needs more fan in Presentation and less reason to touch the dim
-            // modes -- so the property is asserted here as what it actually has to be: the
-            // three columns agree at every temperature at or below 51 C, which is where the
-            // dim modes live and therefore where a brightness change is made from. Above
-            // 51 C only Presentation is different, and only in Bright.
+            // FanCurve's immediate-jump exception ever firing. The Bright family breaks that
+            // on purpose -- it needs more fan in Presentation and less reason to touch the
+            // dim modes -- so the property is asserted here as what it actually has to be:
+            // the three columns agree at every temperature at or below 51 C, which is where
+            // the dim modes live and therefore where a brightness change is made from. Above
+            // 51 C only Presentation is different, and only in the Bright family.
             //
-            // What that leaves is stated rather than hidden: on Bright with the LED drive
-            // raised, the step on a Normal -> Presentation switch is 0 up to a 25 C room,
-            // 1 at 26, 2 at 26.2 -- the warmest this unit has recorded -- and 3, 5 and 6 at
-            // 27, 28 and 30 C. Eco -> Presentation is stepless everywhere below 30 C. In
-            // every other preset it is 0 always, because the columns are identical.
+            // What that leaves is stated rather than hidden: on Bright Quiet with the LED
+            // drive raised, the step on a Normal -> Presentation switch is 0 up to a 25 C
+            // room, 1 at 26, 2 at 26.2 -- the warmest this unit has recorded -- and 3, 5 and
+            // 6 at 27, 28 and 30 C. Eco -> Presentation is stepless everywhere below 30 C. In
+            // the standard family it is 0 always, because the columns are identical.
             String disagreesAt = null;
             for (double t = -100.0; t <= 51.0 && disagreesAt == null; t += 0.25) {
                 int low = p.dutyAt(CurveConfig.PROFILE_LOW, t);
@@ -504,13 +504,13 @@ public final class FanLabTest {
         // stability argument, so the derivation is what wants pinning.
         //
         // That published derivation used to be int[] PRESET_OFFSETS, and it stopped being
-        // able to describe the set the day Bright arrived. Four presets are Quiet plus a
-        // constant at every knee above the floor, leaving the shelf's width and slope equal
-        // to Quiet's so the margin against the deadband cannot have moved there; Bright's
-        // Presentation row is drawn instead, and its other two are Quiet's untouched. Both
-        // are a CurveConfig.PresetShape now, which is why this loop has no case in it --
-        // the alternative was an offset array with a sentinel in it and an if in every
-        // reader.
+        // able to describe the set the day the first Bright curve arrived. The standard four
+        // are Quiet plus a constant at every knee above the floor, leaving the shelf's width
+        // and slope equal to Quiet's so the margin against the deadband cannot have moved
+        // there; each Bright one draws its Presentation row instead and takes its other two
+        // rows from its standard counterpart's shape. Both are a CurveConfig.PresetShape
+        // now, which is why this loop has no case in it -- the alternative was an offset
+        // array with a sentinel in it and an if in every reader.
         //
         // The floor is deliberately NOT offset in either shape. Below the floor edge the
         // light engine is cool enough that extra fan buys almost nothing -- measured,
@@ -519,7 +519,7 @@ public final class FanLabTest {
         // 30, and the offset applies only where the ceiling is actually in question.
         //
         // Driven off the published PRESET_SHAPES rather than a copy of them here, so a
-        // sixth curve added without a shape fails rather than going unchecked.
+        // ninth curve added without a shape fails rather than going unchecked.
         CurveConfig.PresetShape[] shapes = CurveConfig.PRESET_SHAPES;
         eq(shapes.length, CurveConfig.PRESETS.length,
                 "there is a shape here for every preset on offer");
@@ -557,22 +557,23 @@ public final class FanLabTest {
                             + want[k] + " its shape derives from Quiet's " + quiet[k]);
                 }
             }
-            // Quietest first, through Cold. Bright is outside that ordering and is last in
-            // the list because it is special-purpose, not because it is the loudest: at
-            // knee 1 it IS Quiet, at knee 2 it sits between Balanced and Cool, and Cold is
-            // louder than it at every knee. Choosing it without the LED drive override on
-            // is pointless rather than dangerous -- solved against the stock plant it rests
-            // half a duty point above Quiet at 24 C.
-            if (i > 0 && i < 4) {
-                int[] prev = CurveConfig.preset(i - 1).duty[CurveConfig.PROFILE_HIGH];
+            // Quietest rung first, WITHIN a family. The two families are the same four
+            // rungs, so the ordering is a property of each family and not of the list: the
+            // comparison is against the previous rung in the same family, which for
+            // Bright Balanced is Bright Quiet and not Cold. Across the families it would
+            // mean nothing -- Bright Quiet is louder than Cold above 51 C and quieter below
+            // it, because they are curves for two different machines.
+            if (CurveConfig.rungOf(i) > 0) {
+                int prevPreset = i - 1;
+                int[] prev = CurveConfig.preset(prevPreset).duty[CurveConfig.PROFILE_HIGH];
                 int[] mine = p.duty[CurveConfig.PROFILE_HIGH];
                 for (int k = 0; k < CurveConfig.POINTS; k++) {
                     check(mine[k] >= prev[k], name + ": knee " + k + " is at least "
-                            + CurveConfig.PRESET_NAMES[i - 1] + "'s, so the list runs "
-                            + "quietest first");
+                            + CurveConfig.PRESET_NAMES[prevPreset] + "'s, so each family "
+                            + "runs quietest first");
                 }
                 check(mine[1] > prev[1], name + ": and strictly louder than "
-                        + CurveConfig.PRESET_NAMES[i - 1] + " at the top of the rise");
+                        + CurveConfig.PRESET_NAMES[prevPreset] + " at the top of the rise");
             }
             // Stated as its own assertion rather than left implicit in the loop above,
             // because it is the owner's requirement in his own words: "i want the floor to
@@ -589,10 +590,11 @@ public final class FanLabTest {
         }
 
         // Rule 6: the ceiling has to arrive above anything the plant can produce. Clipping
-        // moves that temperature down for the two biggest offsets -- Quiet, Balanced and
-        // Bright reach 83 at the last knee, Cool and Cold at the one before it -- so it is
-        // worth saying where each one lands rather than trusting that "83 somewhere" is
-        // enough. 52.85 C is the hottest degC ever recorded on this unit.
+        // moves that temperature down for the two biggest offsets in each family -- Quiet
+        // and Balanced reach 83 at the last knee and Cool and Cold at the one before it,
+        // and the Bright rungs land the same way -- so it is worth saying where each one
+        // lands rather than trusting that "83 somewhere" is enough. 52.85 C is the hottest
+        // degC ever recorded on this unit.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             CurveConfig p = CurveConfig.preset(i);
             int[] high = p.duty[CurveConfig.PROFILE_HIGH];
@@ -606,86 +608,274 @@ public final class FanLabTest {
                     + " C, far above the 52.85 C this unit has ever recorded");
         }
 
-        testBrightPreset();
+        testBrightPresetFamily();
     }
 
     /**
-     * Bright, pinned knee by knee.
+     * The two preset families, pinned: the four Bright rows knee by knee, their relationship
+     * to their standard counterparts, and the gate that decides which family is on offer.
      *
      * The loops above hold every preset to the rules and to its published shape, which is
-     * the right level for a family. Bright gets its own numbers written down as well,
-     * because it is the one preset whose Presentation row was drawn rather than derived:
-     * there is no offset to re-derive it from, so if it is ever changed the change should
-     * be a deliberate edit here and not a diff nobody reads.
+     * the right level for a family. The Bright four get their numbers written down as well,
+     * because they are the four whose Presentation row was drawn rather than derived: there
+     * is no offset to re-derive them from, so a change should be a deliberate edit here and
+     * not a diff nobody reads.
      *
-     * The row is 30/38/46/56/70/83 on Quiet's knees. That is Quiet's own 2.0 duty/C rise
-     * carried straight through the 51-55 C shelf instead of levelling off on it, and then
-     * 2.0 duty/C again to 60 C before the shared backstop. No new slope anywhere: what
-     * Bright does is spend Quiet's slope over the four degrees where Quiet is flat.
+     * Each row is its counterpart's Presentation row plus 0, 0, 10, 12, 8, 0 at the six
+     * knees, clipped at 83. That uniformity is asserted rather than described, because a
+     * comment saying the family is uniform and a table where one rung is not would be worse
+     * than no comment.
      *
-     * Where it settles is INFERRED and is not asserted here, because nothing has been held
-     * at the raised LED drive -- see the Bright entry in CurveConfig.PRESETS and
-     * docs/curve.md. What is asserted is the shape, which is a fact about the file.
+     * Where they settle is INFERRED for every mode but Presentation -- the drive-90
+     * Presentation plant scaling is measured at x1.208, the other three are still the fitted
+     * line -- so no equilibrium is asserted here. See CurveConfig.PRESETS and docs/curve.md.
+     * What is asserted is the shape and the gate, which are facts about the file.
      */
-    private static void testBrightPreset() {
-        int i = CurveConfig.PRESET_NAMES.length - 1;
-        eq(i, 4, "Bright is the fifth preset");
-        check("Bright".equals(CurveConfig.PRESET_NAMES[i]), "and it is the one named Bright");
+    private static void testBrightPresetFamily() {
+        section("curve: two preset families, and the drive decides which one is on offer");
 
-        CurveConfig b = CurveConfig.preset(i);
-        eq(CurveConfig.presetOf(b.encode()), i,
-                "the curve preset(4) returns is recognised back as preset 4");
+        eq(CurveConfig.PRESET_NAMES.length, 8, "eight presets on offer");
+        eq(CurveConfig.RUNGS, 4, "four rungs, run twice");
+        eq(CurveConfig.PRESETS.length, CurveConfig.PRESET_NAMES.length,
+                "and a curve for every name");
 
-        int[] quiet = CurveConfig.preset(0).duty[CurveConfig.PROFILE_HIGH];
-        int[] wantHigh = {30, 38, 46, 56, 70, 83};
-        int[] knees = {47, 51, 55, 60, 66, 70};
-        for (int k = 0; k < CurveConfig.POINTS; k++) {
-            eq(b.tempC[k], knees[k], "Bright: knee " + k + " is at " + knees[k]
-                    + " C, exactly Quiet's");
-            eq(b.duty[CurveConfig.PROFILE_HIGH][k], wantHigh[k],
-                    "Bright Presentation: knee " + k + " is " + wantHigh[k]);
-            eq(b.duty[CurveConfig.PROFILE_NORMAL][k], quiet[k],
-                    "Bright Normal: knee " + k + " is Quiet's " + quiet[k] + ", untouched");
-            eq(b.duty[CurveConfig.PROFILE_LOW][k], quiet[k],
-                    "Bright Eco / Super Eco: knee " + k + " is Quiet's " + quiet[k]
-                            + ", untouched");
+        // Every one of the eight survives the trip out to a curve and back to an index. The
+        // label on the screen is computed this way on every sync, so a preset that did not
+        // round trip would show as Custom while running perfectly well.
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            eq(CurveConfig.presetOf(CurveConfig.preset(i).encode()), i,
+                    CurveConfig.PRESET_NAMES[i] + ": preset(" + i + ") is recognised back "
+                            + "as preset " + i);
         }
 
-        // Everything else about it is Quiet's, which is what lets the stability argument
-        // above the floor be inherited rather than remade.
-        CurveConfig q = CurveConfig.preset(0);
-        eq(b.hysteresisC, q.hysteresisC, 1e-9, "Bright: Quiet's deadband");
-        eq(b.slewUpPerSec, q.slewUpPerSec, 1e-9, "Bright: Quiet's rising slew");
-        eq(b.slewDownPerSec, q.slewDownPerSec, 1e-9, "Bright: Quiet's falling slew");
-        eq(b.minDuty, q.minDuty, "Bright: Quiet's floor");
-        eq(b.maxDuty, q.maxDuty, "Bright: Quiet's ceiling");
-        eq(b.idleDuty, q.idleDuty, "Bright: Quiet's idle duty");
-        check(b.socGuardEnabled == q.socGuardEnabled, "Bright: the guard is armed as Quiet's is");
-        eq(b.socGuardStartC, q.socGuardStartC, "Bright: Quiet's guard knee");
-        eq(b.socGuardGainPerC, q.socGuardGainPerC, 1e-9, "Bright: Quiet's guard gain");
-        eq(b.socGuardMaxDuty, q.socGuardMaxDuty, "Bright: Quiet's guard ceiling");
-        eq(b.socGuardHystC, q.socGuardHystC, 1e-9, "Bright: Quiet's guard deadband");
+        // The families, by name and by index. Positional and RUNGS apart, which is what
+        // counterpartOf relies on.
+        String[] standard = {"Quiet", "Balanced", "Cool", "Cold"};
+        String[] bright = {"Bright Quiet", "Bright Balanced", "Bright Cool", "Bright Cold"};
+        int[] std = CurveConfig.standardPresets();
+        int[] brt = CurveConfig.brightPresets();
+        eq(std.length, CurveConfig.RUNGS, "the standard family is one preset per rung");
+        eq(brt.length, CurveConfig.RUNGS, "and so is the Bright one");
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            check(standard[rung].equals(CurveConfig.PRESET_NAMES[std[rung]]),
+                    "rung " + rung + " of the standard family is " + standard[rung]);
+            check(bright[rung].equals(CurveConfig.PRESET_NAMES[brt[rung]]),
+                    "rung " + rung + " of the Bright family is " + bright[rung]);
+            check(!CurveConfig.isBrightPreset(std[rung]),
+                    standard[rung] + " is not a Bright preset");
+            check(CurveConfig.isBrightPreset(brt[rung]), bright[rung] + " is");
+            eq(CurveConfig.rungOf(std[rung]), rung, standard[rung] + " is rung " + rung);
+            eq(CurveConfig.rungOf(brt[rung]), rung, bright[rung] + " is the same rung");
+        }
+        check(!CurveConfig.isBrightPreset(CurveConfig.PRESET_CUSTOM),
+                "a hand-edited curve is not a Bright preset");
+        eq(CurveConfig.rungOf(CurveConfig.PRESET_CUSTOM), -1, "and has no rung either");
+        eq(CurveConfig.rungOf(99), -1, "nor does an index from nowhere");
 
-        // Monotone in temperature and reaching the stock maximum by 70 C, checked on the
-        // controller's own output rather than on the table, because dutyAt applies the
-        // clamps and the rounding and it is dutyAt the fan sees.
-        int prev = -1;
-        boolean monotone = true;
-        for (double t = -100.0; t <= 200.0; t += 0.1) {
-            int d = b.dutyAt(CurveConfig.PROFILE_HIGH, t);
-            if (prev >= 0 && d < prev) {
-                monotone = false;
-                break;
+        // The four Bright Presentation rows, exactly as tabled. Written out here rather than
+        // read off PRESET_SHAPES, because this is the copy a human checks the table against.
+        int[][] wantHigh = {
+                {30, 38, 50, 62, 76, 83},   // Bright Quiet
+                {30, 43, 55, 67, 81, 83},   // Bright Balanced
+                {30, 48, 60, 72, 83, 83},   // Bright Cool
+                {30, 53, 65, 77, 83, 83},   // Bright Cold
+        };
+        // The one edit that makes a Bright rung out of a standard one, at each knee.
+        int[] delta = {0, 0, 10, 12, 8, 0};
+
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            CurveConfig s = CurveConfig.preset(std[rung]);
+            CurveConfig b = CurveConfig.preset(brt[rung]);
+            String name = bright[rung];
+
+            for (int k = 0; k < CurveConfig.POINTS; k++) {
+                eq(b.duty[CurveConfig.PROFILE_HIGH][k], wantHigh[rung][k],
+                        name + " Presentation: knee " + k + " is " + wantHigh[rung][k]);
+                // The knees are the counterpart's, floor edge included -- which is how
+                // Bright Cold inherits Cold's 43 C rather than needing its own reason for it.
+                eq(b.tempC[k], s.tempC[k], name + ": knee " + k + " is at "
+                        + standard[rung] + "'s " + s.tempC[k] + " C");
+                // The dim rows ARE the counterpart's. This is the property that makes a
+                // Bright preset one column different from its standard rung and no more, and
+                // it is why the raised drive does not also make the quiet modes louder.
+                eq(b.duty[CurveConfig.PROFILE_NORMAL][k], s.duty[CurveConfig.PROFILE_NORMAL][k],
+                        name + " Normal: knee " + k + " is " + standard[rung] + "'s "
+                                + s.duty[CurveConfig.PROFILE_NORMAL][k] + ", untouched");
+                eq(b.duty[CurveConfig.PROFILE_LOW][k], s.duty[CurveConfig.PROFILE_LOW][k],
+                        name + " Eco / Super Eco: knee " + k + " is " + standard[rung] + "'s "
+                                + s.duty[CurveConfig.PROFILE_LOW][k] + ", untouched");
+                // And the whole family is the same edit, clipped at the shared 83 ceiling.
+                int want = Math.min(83, s.duty[CurveConfig.PROFILE_HIGH][k] + delta[k]);
+                eq(b.duty[CurveConfig.PROFILE_HIGH][k], want, name + " Presentation: knee "
+                        + k + " is " + standard[rung] + "'s "
+                        + s.duty[CurveConfig.PROFILE_HIGH][k] + " + " + delta[k]
+                        + " clipped at 83, the same edit as every other rung");
             }
-            prev = d;
+
+            // Everything that is not a duty row is the counterpart's, which is what lets the
+            // stability argument above the floor be inherited rather than remade.
+            eq(b.hysteresisC, s.hysteresisC, 1e-9, name + ": " + standard[rung] + "'s deadband");
+            eq(b.slewUpPerSec, s.slewUpPerSec, 1e-9, name + ": its rising slew");
+            eq(b.slewDownPerSec, s.slewDownPerSec, 1e-9, name + ": its falling slew");
+            eq(b.minDuty, s.minDuty, name + ": its floor");
+            eq(b.maxDuty, s.maxDuty, name + ": its ceiling");
+            eq(b.idleDuty, s.idleDuty, name + ": its idle duty");
+            check(b.socGuardEnabled == s.socGuardEnabled, name + ": the guard is armed as "
+                    + standard[rung] + "'s is");
+            eq(b.socGuardStartC, s.socGuardStartC, name + ": its guard knee");
+            eq(b.socGuardGainPerC, s.socGuardGainPerC, 1e-9, name + ": its guard gain");
+            eq(b.socGuardMaxDuty, s.socGuardMaxDuty, name + ": its guard ceiling");
+            eq(b.socGuardHystC, s.socGuardHystC, 1e-9, name + ": its guard deadband");
+
+            // Monotone in temperature and reaching the stock maximum by 70 C, checked on the
+            // controller's own output rather than on the table, because dutyAt applies the
+            // clamps and the rounding and it is dutyAt the fan sees.
+            int prev = -1;
+            boolean monotone = true;
+            for (double t = -100.0; t <= 200.0; t += 0.1) {
+                int d = b.dutyAt(CurveConfig.PROFILE_HIGH, t);
+                if (prev >= 0 && d < prev) {
+                    monotone = false;
+                    break;
+                }
+                prev = d;
+            }
+            check(monotone, name + " Presentation: never asks for less fan as it gets hotter");
+            eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 70.0), 83,
+                    name + " Presentation: 83 by 70 C, the same backstop as every preset");
+            eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 55.0), wantHigh[rung][2], name
+                    + " Presentation: " + wantHigh[rung][2] + " at 55 C, where "
+                    + standard[rung] + " is flat at " + s.duty[CurveConfig.PROFILE_HIGH][2]);
+            eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 51.0), s.duty[CurveConfig.PROFILE_HIGH][1],
+                    name + " Presentation: " + s.duty[CurveConfig.PROFILE_HIGH][1]
+                            + " at 51 C, where " + standard[rung] + "'s shelf starts");
         }
-        check(monotone, "Bright Presentation: never asks for less fan as it gets hotter");
-        eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 70.0), 83,
-                "Bright Presentation: 83 by 70 C, the same backstop as every other preset");
-        eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 55.0), 46,
-                "Bright Presentation: 46 at 55 C, where Quiet is flat at 40");
-        eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 51.0), 38,
-                "Bright Presentation: 38 at 51 C, where Quiet's shelf starts");
+
+        // ---- counterpartOf: the same rung in the family the drive selects ----
+        //
+        // An involution across the two families, which is the property the gate needs: a
+        // user who switches the override on and off again must get back the preset they
+        // started with and not a neighbouring rung.
+        for (int i = 0; i < CurveConfig.PRESET_NAMES.length; i++) {
+            String name = CurveConfig.PRESET_NAMES[i];
+            int rung = CurveConfig.rungOf(i);
+            eq(CurveConfig.counterpartOf(i, false), std[rung],
+                    name + " with the drive off is " + standard[rung]);
+            eq(CurveConfig.counterpartOf(i, true), brt[rung],
+                    name + " with the drive on is " + bright[rung]);
+            eq(CurveConfig.counterpartOf(CurveConfig.counterpartOf(i, !CurveConfig
+                            .isBrightPreset(i)), CurveConfig.isBrightPreset(i)), i,
+                    name + ": crossing to the other family and back lands on itself");
+            check(CurveConfig.isBrightPreset(CurveConfig.counterpartOf(i, true)),
+                    name + "'s drive-on counterpart is a Bright preset");
+            check(!CurveConfig.isBrightPreset(CurveConfig.counterpartOf(i, false)),
+                    name + "'s drive-off counterpart is a standard one");
+        }
+        // Custom has no counterpart and must not be given one -- see curveForDrive.
+        eq(CurveConfig.counterpartOf(CurveConfig.PRESET_CUSTOM, true),
+                CurveConfig.PRESET_CUSTOM, "a hand-edited curve has no Bright counterpart");
+        eq(CurveConfig.counterpartOf(CurveConfig.PRESET_CUSTOM, false),
+                CurveConfig.PRESET_CUSTOM, "nor a standard one");
+
+        // ---- the gate itself ----
+        //
+        // Prefs.setLedDriveOn is Android and cannot run here, so what is driven is the pure
+        // decision it delegates to. The wiring above it -- all three LED drive writers call
+        // it, and they ask Prefs.ledBoostOn rather than the raw flag -- is the part this
+        // suite cannot reach.
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            String off = CurveConfig.PRESETS[std[rung]];
+            String on = CurveConfig.PRESETS[brt[rung]];
+            check(CurveConfig.curveForDrive(off, true).equals(on),
+                    "enabling the drive moves " + standard[rung] + " to " + bright[rung]);
+            check(CurveConfig.curveForDrive(on, false).equals(off),
+                    "disabling it moves " + bright[rung] + " back to " + standard[rung]);
+            check(CurveConfig.curveForDrive(off, false).equals(off),
+                    standard[rung] + " with the drive already off is left alone");
+            check(CurveConfig.curveForDrive(on, true).equals(on),
+                    bright[rung] + " with the drive already on is left alone");
+        }
+        // Stated on its own for rung 0, because it is the transition the owner described and
+        // the one a fresh install makes.
+        check(CurveConfig.curveForDrive(CurveConfig.PRESETS[0], true)
+                        .equals(CurveConfig.PRESETS[4]),
+                "so Quiet becomes Bright Quiet when the LED drive comes on");
+        check(CurveConfig.curveForDrive(CurveConfig.PRESETS[4], false)
+                        .equals(CurveConfig.PRESETS[0]),
+                "and Bright Quiet becomes Quiet again when it goes off");
+
+        // A hand-edited curve survives both, untouched. Silently replacing thirty numbers
+        // somebody typed is worse than the pairing the gate exists to prevent, and there is
+        // no counterpart to replace them with anyway.
+        String custom = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
+        eq(CurveConfig.presetOf(custom), CurveConfig.PRESET_CUSTOM,
+                "the hand-edited curve really is Custom");
+        check(CurveConfig.curveForDrive(custom, true).equals(custom),
+                "a Custom curve is untouched by the drive coming on");
+        check(CurveConfig.curveForDrive(custom, false).equals(custom),
+                "and untouched by it going off");
+        check(CurveConfig.curveForDrive(null, true) == null,
+                "and so is no curve at all, rather than becoming one");
+
+        // ---- the broadcast refusal ----
+        //
+        // The words matter as much as the behaviour: this string is the whole of what a
+        // caller gets back, and it has to name the preset they probably wanted.
+        check(("Quiet is a standard preset and the LED drive is on; use Bright Quiet or turn "
+                        + "the drive off").equals(CurveConfig.wrongFamilyRefusal(0, true)),
+                "the refusal names the counterpart and both ways out  (got "
+                        + quote(CurveConfig.wrongFamilyRefusal(0, true)) + ")");
+        check(("Bright Cold is a Bright preset and the LED drive is off; use Cold or turn "
+                        + "the drive on").equals(CurveConfig.wrongFamilyRefusal(7, false)),
+                "and reads the same way in the other direction  (got "
+                        + quote(CurveConfig.wrongFamilyRefusal(7, false)) + ")");
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            check(CurveConfig.wrongFamilyRefusal(std[rung], false) == null,
+                    standard[rung] + " with the drive off is not refused");
+            check(CurveConfig.wrongFamilyRefusal(brt[rung], true) == null,
+                    bright[rung] + " with the drive on is not refused");
+            check(CurveConfig.wrongFamilyRefusal(std[rung], true) != null,
+                    standard[rung] + " with the drive on is refused");
+            check(CurveConfig.wrongFamilyRefusal(brt[rung], false) != null,
+                    bright[rung] + " with the drive off is refused");
+        }
+        // Not a preset at all is somebody else's error message -- the receiver has already
+        // rejected it by name before this is asked.
+        check(CurveConfig.wrongFamilyRefusal(CurveConfig.PRESET_CUSTOM, true) == null,
+                "a curve that is no preset is not refused on family grounds");
+        check(CurveConfig.wrongFamilyRefusal(99, false) == null, "nor is an index from nowhere");
+
+        // ---- the names a broadcast accepts ----
+        //
+        // A two-word preset typed into a shell arrives in three spellings and none of them
+        // is a mistake worth an error message.
+        eq(CurveConfig.presetNamed("Bright Quiet"), 4, "\"Bright Quiet\" is preset 4");
+        eq(CurveConfig.presetNamed("bright quiet"), 4, "and so is \"bright quiet\"");
+        eq(CurveConfig.presetNamed("brightquiet"), 4, "and \"brightquiet\"");
+        eq(CurveConfig.presetNamed("bright-quiet"), 4, "and \"bright-quiet\"");
+        eq(CurveConfig.presetNamed("  BRIGHT_QUIET  "), 4, "and \"  BRIGHT_QUIET  \"");
+        eq(CurveConfig.presetNamed("quiet"), 0, "\"quiet\" is still preset 0");
+        eq(CurveConfig.presetNamed("bright"), CurveConfig.PRESET_CUSTOM,
+                "and bare \"bright\" is no longer a preset, because there are four of them");
+        eq(CurveConfig.presetNamed("brightest"), CurveConfig.PRESET_CUSTOM,
+                "a name close to one is still not one");
+        eq(CurveConfig.presetNamed(""), CurveConfig.PRESET_CUSTOM, "nor is an empty name");
+        eq(CurveConfig.presetNamed("  "), CurveConfig.PRESET_CUSTOM, "nor is whitespace");
+        eq(CurveConfig.presetNamed(null), CurveConfig.PRESET_CUSTOM, "nor is no name");
+        for (int i = 0; i < CurveConfig.PRESET_NAMES.length; i++) {
+            eq(CurveConfig.presetNamed(CurveConfig.PRESET_NAMES[i]), i,
+                    CurveConfig.PRESET_NAMES[i] + " is accepted under the name it is shown "
+                            + "under, so the two cannot drift");
+        }
+
+        // The words the broadcast reply offers, which are the ones it will accept next.
+        check("quiet, balanced, cool or cold".equals(CurveConfig.familyWords(false)),
+                "with the drive off the reply offers the standard four  (got "
+                        + quote(CurveConfig.familyWords(false)) + ")");
+        check("bright quiet, bright balanced, bright cool or bright cold"
+                        .equals(CurveConfig.familyWords(true)),
+                "and with it on, the Bright four  (got "
+                        + quote(CurveConfig.familyWords(true)) + ")");
     }
 
     private static void testCurveVsStockAtRungs() {
@@ -2884,14 +3074,14 @@ public final class FanLabTest {
 
         LedDrive.Config bright = LedDrive.Config.bright();
         check(!bright.isStock(), "the Bright preset is not");
-        check(bright.encode().equals("d1,35,55,75,95"),
-                "and is 35/55/75/95  (got " + bright.encode() + ")");
-        eq(bright.levelFor(3), 95, "Presentation reads 95 - 76 stock, so 25 % more drive");
+        check(bright.encode().equals("d1,35,55,75,90"),
+                "and is 35/55/75/90  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 90, "Presentation reads 90 - 76 stock, so 18 % more drive");
         eq(bright.levelFor(2), 75, "Normal reads 75");
         eq(bright.levelFor(1), 55, "Eco reads 55");
         eq(bright.levelFor(4), 35, "Super Eco reads 35");
         bright.sanitise();
-        check(bright.encode().equals("d1,35,55,75,95"),
+        check(bright.encode().equals("d1,35,55,75,90"),
                 "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
         eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
 
@@ -4167,7 +4357,18 @@ public final class FanLabTest {
         // the slow pole's value, and 0.03 C of seeded sensor noise. So they are all here.
         //
         // It is driven off PRESETS.length rather than a list, so adding a curve puts it
-        // under this check without anyone remembering to. That is how Bright got here.
+        // under this check without anyone remembering to. That is how all four Bright rungs
+        // got here, and it is why the count assertion at the bottom exists.
+        //
+        // It runs the STOCK plant, and that is deliberate rather than an oversight now that
+        // half the presets are drawn for a raised one. Seven of the eight can only ever run
+        // at stock drive, and the eighth pairing -- a Bright preset at stock drive -- is a
+        // legitimate state: the drive can trip off under a Bright curve and the curve stays.
+        // The reverse, a standard curve at raised drive, is the state the family gate makes
+        // unreachable, so nothing here needs to model it. tools/CurveSim.java sweeps the
+        // raised plant with --scale high=1.208 and its verdicts, including the one place the
+        // Bright family is worse than the standard one, are recorded against the preset
+        // lines in CurveConfig.
         final double tauFast = 230.0;
         final double[] tauSlow = {0.0, 900.0, 1500.0, 3000.0};
         int checked = 0;
