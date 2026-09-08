@@ -22,6 +22,42 @@ operating points may shift.
 Display reports **1920x1080 @ 60 Hz** internally regardless of the UHD setting — the panel
 is 1080p and UHD is an input/processing option, not an output resolution.
 
+## "Ambient" in this repository means intake air, not the room
+
+Every table in `curve.md` is indexed by an ambient that is **the air the projector draws**,
+and on this unit that runs several degrees above the room the owner is sitting in. This was
+not known when those tables were written and they read as though the two were the same.
+
+Measured 2026-09-08, from the five factory-drive holds of the plant run (fan pinned at 45,
+each mode's settled asymptote minus that mode's measured factory rise):
+
+| hold | LED asymptote | table rise at duty 45 | implied ambient |
+|---|---:|---:|---:|
+| Super Eco | 32.94 °C | 7.60 | **25.34 °C** |
+| Eco | 38.58 °C | 12.80 | **25.78 °C** |
+| Normal | 43.32 °C | 17.10 | **26.22 °C** |
+| Presentation | 51.61 °C | 24.90 | **26.71 °C** |
+| Presentation, 30 min later | 51.65 °C | 24.90 | **26.75 °C** |
+
+**The owner reported the room at 22 °C throughout.** So the offset is roughly **+3.3 °C in
+Super Eco rising to +4.7 °C in Presentation** — it is not a constant, it grows with the
+machine's own power, which is what recirculating some of your own exhaust looks like.
+
+Two things stop this being written off as a bad plant table. The five readings agree to
+1.4 °C across four modes whose rises span 7.6 to 24.9 °C; for the table to be the culprit it
+would have to be about 47 % low on Super Eco and 5 % low on Presentation simultaneously. And
+the same calculation on the previous night's eight 40-minute holds gives 25.1–26.9 °C — the
+same intake, in a room the owner describes as having been warmer. The last two rows above are
+the run's closing bracket, thirty minutes and one full Presentation hold apart, agreeing to
+**0.04 °C**: the room did not move underneath this run.
+
+**What to do with it.** Nothing in the control loop cares — the curve closes on the LED
+thermistor and never reads ambient, and a scaling is a ratio in which ambient cancels. It
+matters for *reading* the tables: an equilibrium listed at 27 °C is roughly what you get in a
+22 °C room. Do not convert with the 4.7 figure as though it were a constant; it is one day's
+observation in one room with the projector in one position, and it should be re-measured
+before anything is designed on it.
+
 ## What changed afterwards, and what it did
 
 **UHD was switched ON after the measurements.** Observed immediately afterwards, at the

@@ -643,10 +643,16 @@ deadband, the slew limits and the SoC guard. Knee 1 is deliberately unchanged, w
 keeps all three brightness columns identical at and below 51 °C.
 
 What the edit does is **spend the shelf**. The standard curve levels off across 51–55 °C, the
-band this machine occupies at stock drive; the Bright one climbs through it at 3.0 duty/°C
+band this machine occupies at factory drive; the Bright one climbs through it at 3.0 duty/°C
 instead. A shelf is deliberately indifferent to temperature, which is the right instinct when
 the operating point sits in the middle of the band and the wrong one once the raised drive
 has pushed it up against the ceiling.
+
+These rows were re-examined against the measured plant on 2026-09-08 and left unchanged. The
+redraw that was tried — taking the +10 off knee 2, which rests 3.7 duty points quieter and
+looked better on every static measure including `CurveSim` — hunts on the hardware, nine duty
+changes in twelve minutes against the shipped rows' zero. See
+[docs/curve.md](docs/curve.md#the-redraw-that-was-tried-against-the-measured-plant-and-rejected).
 
 **Raising the LED drive costs the dim modes their silent floor, and that is the drive raise
 rather than the preset.** The Bright steps leave Normal, Eco and Super Eco alone precisely so

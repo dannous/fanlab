@@ -82,25 +82,52 @@ SCALE = {m: 1.0 for m in MODES}
 OFFSET = {m: 0.0 for m in MODES}
 
 
+# Scalings that have actually been HELD, keyed (mode, drive). Measured 2026-09-08 with
+# tools/plantdrive.sh: each mode at its factory drive and again at its raised one, ten
+# minutes apart, pinned fan 45, ordered cool to hot, the light engine's mode and drive
+# read back and confirmed on every sample, and the run's closing bracket agreeing to
+# 0.04 C over thirty minutes. tools/fold_drive.py does the arithmetic.
+#
+# These are the four levels the LED drive override actually uses. drive_scale returns the
+# measurement for them and falls back to the fitted line for anything else, so a solve at
+# the shipped configuration is measured end to end and only an off-nominal what-if is an
+# inference.
+MEASURED_SCALE = {
+    ("Presentation", 90): 1.2404,
+    ("Normal", 75): 1.4032,
+    ("Eco", 55): 1.3866,
+    ("SuperEco", 35): 1.5763,
+}
+
+
 def drive_scale(mode, drive):
     """How much hotter a mode runs, at every duty, when its LED drive is raised.
 
-    Fitted across all four modes at duty 40: rise ~= 1.60 + 0.342 x drive, which
-    reproduces Normal and Eco to about 1 K. The duty dependence is a single
-    multiplicative shape -- the four sensors agree on it within 3 % -- so a column for a
-    new drive level is the measured column times the ratio of the two fitted rises.
-    Presentation 76 -> 90 is x1.1735, Normal 55 -> 70 x1.2513, Eco 40 -> 50 x1.2238,
-    Super Eco 20 -> 30 x1.4052.
+    For the four levels the override ships with, this is a MEASUREMENT -- see
+    MEASURED_SCALE above. For anything else it falls back to the fitted line, which is
+    where every one of these numbers used to come from:
 
-    Those four were written here as 1.180, 1.250, 1.220 and 1.378 when the flag was added,
-    which is not what the line above produces -- print(drive_scale(...)) rather than
-    trusting the docstring. The formula is the authority and it is unchanged; only these
-    four illustrative numbers were wrong, the last of them by 2 %.
+        rise ~= 1.60 + 0.342 x drive, fitted across all four modes at duty 40
 
-    This is an INFERENCE from the fit, not a measurement: nothing has yet been held at a
-    raised drive. Anything solved with a scale other than 1.0 needs confirming with a
-    measured hold before it is relied on.
+    HOW WRONG THAT FIT WAS, now that all four have been held against it:
+
+        Presentation 76 -> 90   measured x1.2404   fit said x1.1735   +5.7 %
+        Normal       55 -> 75   measured x1.4032   fit said x1.3351   +5.1 %
+        Eco          40 -> 55   measured x1.3866   fit said x1.3357   +3.8 %
+        Super Eco    20 -> 35   measured x1.5763   fit said x1.6078   -2.0 %
+
+    Wrong by -2 to +6 %, and in BOTH directions, so it was not a bias anyone could have
+    corrected for without holding the machine at each level. Three of the four read LOW,
+    which is the dangerous direction: every table solved through the fit put the light
+    engine cooler than it actually runs.
+
+    An earlier docstring here listed x1.180, x1.250, x1.220 and x1.378 as the fit's own
+    output, which is not what the formula produces. That warning stands for this block
+    too -- print(drive_scale(...)) rather than trusting prose.
     """
+    key = (mode, int(round(drive)))
+    if key in MEASURED_SCALE:
+        return MEASURED_SCALE[key]
     return (1.60 + 0.342 * drive) / (1.60 + 0.342 * STOCK_DRIVE[mode])
 
 
@@ -154,8 +181,7 @@ def plant_note():
             parts.append("%s %s" % (m, " then ".join(bits)))
     if not parts:
         return ""
-    return ("plant adjusted (INFERRED from the drive fit, not measured): "
-            + "; ".join(parts))
+    return ("plant adjusted: " + "; ".join(parts))
 
 CURVE_MD = "v1,42,48,52,55,58,62,30,32,42,56,70,83,34,36,44,56,70,83,38,40,46,56,70,83,0.5,0.25,0.12,10,35,83"
 

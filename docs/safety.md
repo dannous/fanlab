@@ -217,14 +217,25 @@ fan walk about 12 duty points at one per five seconds, and a 14-point cumulative
 one thing on this machine the owner has actually heard and objected to.
 
 **What it costs.** Under CURVE the extra heat is paid in temperature: Bright Quiet rests
-around 53.8 °C rather than Quiet's 51.9 in a 24 °C room. Under LINEAR it is paid in fan, so
-the default ceiling moves from 52.0 to **54.0 °C** while the override is on — roughly where
-the Bright Curve family rests, so the two controllers can still be compared by ear. A ceiling you
+around 54.2 °C rather than Quiet's 51.9 at a 24 °C ambient, and it was measured at 54.9 °C
+on the hardware with the intake at 26.7 °C. Under LINEAR it is paid in fan, so
+the default ceiling moves from 52.0 to **54.0 °C** while the override is on — roughly where the
+Bright Curve family rests, so the two controllers can still be compared by ear. A ceiling you
 set by hand is never moved, and nothing is written to the stored setting: switching the
-override off puts the ceiling back. **The Presentation plant scaling behind these numbers is
-measured — ×1.208 at drive 90 — but the equilibria themselves were solved at the earlier
-fitted ×1.1735 and read about half a degree low.** The dim-mode scalings are still inferred
-entirely. The two-degrees-over-50 caveat above applies with two more degrees on top.
+override off puts the ceiling back.
+
+**All four plant scalings behind these numbers are now measured** (2026-09-08, pinned fan 45,
+each mode held at factory drive and again at raised): Presentation ×1.2404, Normal ×1.4032,
+Eco ×1.3866, Super Eco ×1.5763. The fitted line they replace was low by up to 6 % on three of
+the four, so the light engine runs **hotter than every earlier version of this document said**
+— Bright Quiet's 24 °C resting point moved from 53.8 °C to 54.2. The two-degrees-over-50 caveat
+above applies with rather more than two degrees on top.
+
+One consequence is worth stating in a safety document rather than only in `curve.md`: on the
+measured plant, a **standard** step run at drive 90 reaches **61.0 °C at a 28 °C ambient**,
+past the override's own 60 °C cut-out, where Bright Quiet reaches 59.5. That pairing is what
+`CurveConfig.curveForDrive` makes unreachable, and the measurement is why the gate exists
+rather than a recommendation.
 
 The 75 °C shutdown and the fan-stall watchdog are untouched by it, like everything else here.
 

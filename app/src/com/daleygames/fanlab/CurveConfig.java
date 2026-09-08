@@ -82,8 +82,8 @@ public final class CurveConfig {
      *
      * The standard four are for the stock LED drive. The Bright four are for the drive
      * override, and each is the same rung with Presentation's row redrawn for a light
-     * engine putting out about 17 % more heat. Which family is selectable is decided by the
-     * override, not by the user -- see {@link #curveForDrive}, and
+     * engine putting out a measured 24 % more rise. Which family is selectable is decided
+     * by the override, not by the user -- see {@link #curveForDrive}, and
      * {@link #wrongFamilyRefusal} for what happens when one is asked for anyway.
      *
      * The pairing is positional and {@link #RUNGS} apart, so {@link #counterpartOf} is
@@ -199,11 +199,16 @@ public final class CurveConfig {
          * Only Bright Cool needs this, and it needs it for a reason worth writing down.
          * Below 51 C a Bright preset is its counterpart, so Bright Cool inherits Cool's
          * 4.5 duty/C rise over 47-51 C. On the plant Cool actually runs that is harmless
-         * -- nothing rests there. On the raised plant of drive 90 the operating point
-         * lands on it, and CurveSim hunts by three duty points at 14 C, over the bound of
-         * two. Starting its rise at 45 C instead halves the slope and the sweep is clean
-         * at every ambient from 14 to 34. 43 C is NOT the answer, which is the whole
-         * argument for measuring rather than reasoning: it still hunts, by two.
+         * -- nothing rests there. On the INFERRED raised plant the operating point landed
+         * on it and CurveSim hunted by three duty points at 14 C, over the bound of two;
+         * starting the rise at 45 C instead halved the slope and cleaned the whole 14-34 C
+         * sweep. 43 C was NOT the answer, which is the whole argument for measuring rather
+         * than reasoning: it still hunted, by two.
+         *
+         * The measured plant of 2026-09-08 puts that corner at two duty points rather than
+         * three, so this edge is no longer what keeps Bright Cool inside the bound. It is
+         * kept anyway: it costs nothing, and removing a preset's shape on the strength of
+         * one measurement to save nothing is the wrong trade in the wrong direction.
          *
          * Cool itself is untouched. This is the Bright rung moving, not the standard one.
          */
@@ -245,9 +250,9 @@ public final class CurveConfig {
      * The <b>standard</b> four -- Quiet, Balanced, Cool, Cold -- are the shipped curve with
      * a constant added to every knee duty above the floor, clipped at the 83 ceiling. The
      * <b>Bright</b> four are the same rungs with Presentation's row redrawn for the LED
-     * drive override, which puts roughly 17 % more rise above ambient into the light engine
-     * at every duty. Nothing else about any of the eight differs -- same hysteresis, same
-     * slew, same guard, same knee temperatures -- with one exception: Cold's floor edge, and
+     * drive override, which puts a measured 24 % more rise above ambient into the light
+     * engine at every duty. Nothing else about any of the eight differs -- same hysteresis,
+     * same slew, same guard, same knee temperatures -- with one exception: Cold's floor edge, and
      * so Bright Cold's, is 43 C where the other six share 47, for the reason given against
      * Cold's line below.
      *
@@ -411,73 +416,135 @@ public final class CurveConfig {
             // backstop is 83 by 70 C as everywhere else, and the floor is 30 below the floor
             // edge in every mode.
             //
-            // WHAT IS MEASURED AND WHAT IS NOT. Measured: the Presentation plant at drive 90
-            // is the measured drive-76 column x1.208, and Quiet at drive 90 in a 28 C room
-            // settles at 58 C against Bright Quiet's 56 -- which is the gate's whole
-            // justification and is why the drive now selects the family. Inferred: the
-            // Normal, Eco and Super Eco scalings (x1.2513, x1.2238, x1.4052) are still the
-            // fitted rise-vs-drive line, rise ~= 1.60 + 0.342 x drive, and the equilibrium
-            // tables in docs/curve.md were solved at the fitted Presentation x1.1735 rather
-            // than at the measured x1.208, so they read about half a degree low. They are
-            // labelled there rather than silently restated here.
+            // THESE ROWS WERE RE-EXAMINED AGAINST THE MEASURED PLANT ON 2026-09-08 AND LEFT
+            // ALONE. That is a result, not an omission, and it cost three hardware runs to
+            // establish -- so the alternative that was tried is recorded here rather than
+            // discovered again.
             //
-            // Stability was simulated at the MEASURED scaling, not inherited from the
-            // Curve family: CurveSim, two-pole plant, four slow poles, --scale high=1.208,
-            // 14-34 C. Three of the four are as good as their counterparts and the fourth is
-            // not -- the verdicts are on each line below, Bright Cool's at length, because it
-            // is the one place this family is worse than the family it mirrors. The host
-            // suite drives all eight at every ambient from 14 to 34 C on every build against
-            // the stock plant, bounded at two duty points, and all eight pass.
+            // The redraw tried was taking the +10 off knee 2, leaving 0, 0, 0, 12, 8, 0. On
+            // paper it is strictly better: it rests 3.7 duty points quieter, it keeps the
+            // three columns identical to 55 C instead of 51 (so a brightness change steps
+            // nothing out to a 28 C ambient rather than stepping 2 at 26.2), the trip margin
+            // is untouched because knees 3 and 4 set it, and CurveSim scored it 84 of 84
+            // steady at the measured scale. Every static argument favoured it.
+            //
+            // On the hardware it hunts. Twelve minutes at drive 90, pinned room, settled:
+            //
+            //     0, 0, 10, 12, 8, 0   duty 51, flat        0 changes   <- shipped, kept
+            //     0, 0,  7,  6, 8, 0   duty 50              1 change
+            //     0, 0,  0, 12, 8, 0   duty 46..48          9 changes   <- rejected
+            //
+            // The mechanism, once measured, is simple. Taking the bump off moves the
+            // operating point onto the 55-60 C segment and steepens that segment from 3.0 to
+            // 4.4 duty/C. The light engine wanders 0.6-0.9 C at a FIXED duty -- that is the
+            // machine, not the sensor -- and the wander times the slope is the duty travel.
+            // At 3.0 duty/C the wander stays inside the 0.8 C deadband and the fan never
+            // moves; at 4.4 it does not and the fan moves nine times in twelve minutes.
+            //
+            // CurveSim could not have caught this and still cannot: it seeds sensor noise at
+            // the ADC quantisation scale, 0.03 C, which is thirty times smaller than what the
+            // light engine actually does. Its hunting check therefore tests the curve against
+            // the slew limiter and the deadband but NOT against the plant's own restlessness.
+            // Treat a CurveSim "steady" as necessary and not sufficient, and put anything
+            // whose operating point sits on a steeper segment than 3.0 duty/C in front of
+            // tools/watch.sh before believing it.
+            //
+            // The 0, 0, 7, 6, 8, 0 middle option is genuinely steady and one duty point
+            // quieter, and it was still not taken: one duty point is inaudible by this
+            // project's own standard -- it is less than the single-point moves watch.sh
+            // calls inaudible -- and it costs about a degree of the room temperature the
+            // drive survives before it trips. A degree of ceiling for nothing anyone can
+            // hear is the wrong side of the same trade OffsetAboveFloor makes at the floor.
+            //
+            // WHAT IS MEASURED. All four scalings now are, which is new -- three of them
+            // were the fitted rise-vs-drive line until 2026-09-08. Each mode was held at its
+            // factory drive and again at its raised one, ten minutes apart, at a pinned fan
+            // 45, ordered cool to hot, with the light engine's mode and drive read back and
+            // confirmed on every sample (tools/plantdrive.sh, tools/fold_drive.py):
+            //
+            //     Presentation 76 -> 90   x1.2404   fitted said x1.1735   +5.7 %
+            //     Normal       55 -> 75   x1.4032   fitted said x1.3351   +5.1 %
+            //     Eco          40 -> 55   x1.3866   fitted said x1.3357   +3.8 %
+            //     Super Eco    20 -> 35   x1.5763   fitted said x1.6078   -2.0 %
+            //
+            // The fitted line is wrong by -2 to +6 %, and wrong in BOTH directions, so it
+            // was not a bias anyone could have corrected for. Presentation is the one that
+            // matters here and it is the worst of the four: the machine runs hotter at drive
+            // 90 than every table drawn before this said, which is why the rows above moved.
+            //
+            // The gate's justification survives the better number and is strengthened by it.
+            // Standard Quiet run at drive 90 -- the pairing the gate forbids -- reaches
+            // 61.03 C in a 28 C room on the measured plant, PAST the 60 C trip, against
+            // Bright Quiet's 59.45. The trip drops the drive silently, so the failure a user
+            // sees is the picture going back to factory brightness with nothing saying why.
+            //
+            // Stability was simulated at the MEASURED scaling, not inherited from the Curve
+            // family: CurveSim, two-pole plant, four slow poles, --scale high=1.2404,
+            // 14-34 C. Bright Quiet, Bright Balanced and Bright Cold are 84 of 84; Bright
+            // Cool is 81 of 84 at two duty points, on ground it shares with Cool rather than
+            // on the redrawn row -- see its line. Bright Quiet's old three-run wobble at
+            // 16 C is gone, not because it was fixed but because the true plant does not put
+            // the operating point on that knife-edge; it was an artefact of the inferred
+            // scale. The host suite drives all eight at every ambient from 14 to 34 C on
+            // every build against the stock plant, bounded at two duty points, and all eight
+            // pass.
             //
             // The cost, and it is real: Presentation and the dim modes no longer share a
             // column, so FanCurve's immediate-jump exception can fire on a brightness
             // change. The two rows are identical at and below 51 C in every rung, which is
             // asserted in the host test, and the dim modes settle below that on the raised
-            // drive -- so the jump is zero where the machine actually lives. It grows in a
-            // room warmer than this unit has recorded: on Bright Quiet a Normal ->
-            // Presentation switch steps 0 points to a 25 C room, 1 at 26, 2 at 26.2 -- the
-            // warmest recorded -- then 3, 5 and 6 at 27, 28 and 30. Offsetting the dim
-            // columns to match would have removed that at the price of making three modes
-            // that are already louder on the raised drive louder again, for no ceiling worth
-            // defending. The step was the cheaper thing to accept.
+            // drive -- so the jump is zero where the machine actually lives. Solved on the
+            // MEASURED plant it grows sooner than the fitted one suggested: a Normal ->
+            // Presentation switch on Bright Quiet steps 0 duty points out to a 25 C ambient,
+            // 1 at 26, 2 at 26.2 -- the warmest this unit has recorded -- then 4 at 28 and 7
+            // at 30. Offsetting the dim columns to match would have removed that at the
+            // price of making three modes that are already louder on the raised drive louder
+            // again, for no ceiling worth defending. Taking the bump off knee 2 would also
+            // have removed it, and that was measured and rejected for the reason above. The
+            // step was the cheaper thing to accept.
             //
             // Bright Quiet: Quiet's 30/38 to 51 C, then 50 at 55 and 62 at 60. The rung the
-            // override lands on from a fresh install. 81 of 84 steady; the three that are not
-            // are the two-point wobble at 16 C that shipped Quiet already has -- below 51 C
-            // this IS Quiet, so it is the same knife-edge and not a new one.
+            // override lands on from a fresh install, and the one the owner's bar is written
+            // against. 84 of 84 steady on the measured plant -- the three-run 16 C wobble the
+            // inferred plant predicted here is gone, and was an artefact of that inference
+            // rather than a real knife-edge.
+            //
+            // MEASURED CLOSED-LOOP, 2026-09-08, drive 90, settled, twelve minutes: it rests
+            // at duty 51 and the fan does not move once. Not "moves by an inaudible amount"
+            // -- zero changes in 331 samples. Solved, it is 43.3 % at 21 C ambient and 47.5 %
+            // at 24; the hardware sat at 51 because the intake measured 26.7 C in a room the
+            // owner reported at 22, which is the offset written up in
+            // docs/measurement-conditions.md. Inside the owner's 55 % ceiling either way.
             "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,50,62,76,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
             // Bright Balanced: Balanced's 30/43, then 55 at 55 C and 67 at 60. Its 66 C knee
             // is 81 rather than clipped, so like Balanced it reaches 83 at the last knee, and
             // above 66 C it is the gentlest slope in the family at 0.5 duty/C. 84 of 84
-            // steady.
+            // steady on the measured plant.
             "v1,47,51,55,60,66,70,30,43,45,55,73,83,30,43,45,55,73,83,30,43,55,67,81,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
             // Bright Cool: Cool's 30/48, then 60 at 55 C and 72 at 60. Its 66 C knee clips to
             // 83, so the ceiling arrives at 66 as it does on Cool.
             //
-            // 81 of 84 steady, and the three that are not need stating precisely because
-            // they are NOT the accepted 16 C two-point corner the other rungs have. They sit
-            // at 14 C and they span THREE duty points, 35..38. It is on shared ground rather
-            // than on the redrawn row -- below 51 C Bright Cool is Cool exactly, and plain
-            // Cool on the same raised plant hunts by three at 14 C identically, run for run.
-            // What is new is that the pairing is now reachable: Cool never runs at drive 90,
-            // and Bright Cool is drawn to. The corner is the 4.5 duty/C rise over 47-51 C
-            // that Cool has always carried, meeting an operating point the raised plant puts
-            // on it. It clears at 15 C and every ambient above, and 15 C is five degrees
-            // below the coldest room this unit has recorded (21.9 C).
+            // 81 of 84 steady on the measured plant, and the three that are not sit at 14 C
+            // and span TWO duty points -- inside the bound, and better than the THREE the
+            // inferred plant predicted. They are on ground it shares with Cool rather than on
+            // the redrawn row: below 51 C Bright Cool is Cool exactly, and plain Cool on the
+            // same raised plant behaves identically, run for run. The corner is the 4.5
+            // duty/C rise over 47-51 C that Cool has always carried, meeting an operating
+            // point the raised plant puts on it. It clears at 15 C and every ambient above,
+            // and 15 C is well below the coldest room this unit has recorded (21.9 C).
             //
-            // Left as it is rather than redrawn, because the fix would be to move Cool's
-            // floor edge the way Cold's was moved, and that would change a Curve preset
-            // that is 84 of 84 on the plant it actually runs on to fix a raised-plant
-            // simulation nobody has held a measurement against. The host suite is not
-            // weakened for it: it runs the stock plant, where Bright Cool is 84 of 84, and
-            // stays bounded at two.
+            // Its 45 C floor edge is kept. It was introduced when the inferred plant put
+            // three duty points of hunt here; the measured plant puts two, so the edge is no
+            // longer load-bearing for the bound -- but removing it would be a change to a
+            // preset's shape made on the strength of one measurement, to save nothing, and
+            // Cool itself is untouched either way.
             "v1,45,51,55,60,66,70,30,48,50,60,78,83,30,48,50,60,78,83,30,48,60,72,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
             // Bright Cold: Cold's floor edge of 43 C and its 30/53, then 65 at 55 C and 77 at
-            // 60. Clips to 83 at 66 like Cold. 84 of 84 steady -- the 43 C floor edge that
-            // fixed Cold's four-point hunt does the same work here.
+            // 60. Clips to 83 at 66 like Cold. 84 of 84 steady on the measured plant -- the
+            // 43 C floor edge that fixed Cold's four-point hunt does the same work here.
             "v1,43,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,65,77,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
     };

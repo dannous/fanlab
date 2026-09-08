@@ -68,18 +68,42 @@ public final class CurveSim {
     /**
      * How much hotter a profile runs, at every duty, with its LED drive raised.
      *
-     * Fitted across all four brightness modes at duty 40, {@code rise ~= 1.60 + 0.342 x
-     * drive} reproduces Normal and Eco to about 1 K, and the duty dependence is one
-     * multiplicative shape that the four sensors agree on within 3 %. So a column at a
-     * new drive is the measured column times the ratio of the fitted rises: Presentation
-     * 76 -> 90 is x1.1735, Normal 55 -> 70 x1.2513, Eco 40 -> 50 x1.2238. (Super Eco
-     * 20 -> 30 is x1.4052, and has no column here -- it shares the LOW profile with Eco
-     * but not the plant, so ask {@code tools/equilibria.py} for it.)
+     * For the three levels the LED drive override ships with this is a MEASUREMENT, taken
+     * 2026-09-08 with {@code tools/plantdrive.sh}: each mode held at its factory drive and
+     * again at its raised one, ten minutes apart, pinned fan 45, cool to hot, the mode and
+     * the drive read back and confirmed on every sample, closing bracket agreeing to
+     * 0.04 C over thirty minutes.
      *
-     * Inferred, not measured. Nothing has been held at a raised drive yet, and a result
-     * produced with a scale other than 1.0 is a prediction to be confirmed by a hold.
+     * <pre>
+     *   profile        drive        measured   the fit said   error
+     *   HIGH    Presentation 76->90  x1.2404      x1.1735      +5.7 %
+     *   NORMAL  Normal       55->75  x1.4032      x1.3351      +5.1 %
+     *   LOW     Eco          40->55  x1.3866      x1.3357      +3.8 %
+     * </pre>
+     *
+     * Super Eco 20 -> 35 measured x1.5763 against a fitted x1.6078, and has no column here
+     * -- it shares the LOW profile with Eco but not the plant, so ask
+     * {@code tools/equilibria.py} for it.
+     *
+     * Anything else falls back to the fitted line, {@code rise ~= 1.60 + 0.342 x drive}
+     * across all four modes at duty 40, which is where every one of these numbers used to
+     * come from. It was wrong by -2 to +6 % and wrong in BOTH directions, so it was not a
+     * bias that could have been corrected for without holding the machine at each level;
+     * and three of the four read LOW, which is the direction that puts the light engine
+     * hotter than the table promised. A result produced at a drive not in the table above
+     * is still a prediction to be confirmed by a hold.
      */
     static double driveScale(int profile, double drive) {
+        int level = (int) Math.round(drive);
+        if (profile == CurveConfig.PROFILE_HIGH && level == 90) {
+            return 1.2404;
+        }
+        if (profile == CurveConfig.PROFILE_NORMAL && level == 75) {
+            return 1.4032;
+        }
+        if (profile == CurveConfig.PROFILE_LOW && level == 55) {
+            return 1.3866;
+        }
         return (1.60 + 0.342 * drive) / (1.60 + 0.342 * STOCK_DRIVE[profile]);
     }
 
@@ -192,7 +216,7 @@ public final class CurveSim {
             }
         }
         return sb.length() == 0 ? null
-                : "plant adjusted (INFERRED from the drive fit, not measured): " + sb;
+                : "plant adjusted: " + sb;
     }
 
     public static void main(String[] args) {

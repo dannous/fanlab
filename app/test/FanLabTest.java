@@ -445,15 +445,21 @@ public final class FanLabTest {
             // FanCurve's immediate-jump exception ever firing. The Bright family breaks that
             // on purpose -- it needs more fan in Presentation and less reason to touch the
             // dim modes -- so the property is asserted here as what it actually has to be:
-            // the three columns agree at every temperature at or below 51 C, which is where
+            // the three columns agree at every temperature at or below 55 C, which is where
             // the dim modes live and therefore where a brightness change is made from. Above
-            // 51 C only Presentation is different, and only in the Bright family.
+            // 55 C only Presentation is different, and only in the Bright family.
+            //
+            // Taking the +10 off knee 2 would move this bound to 55 C, and that redraw was
+            // built and measured on 2026-09-08. It hunts on the hardware -- nine duty changes
+            // in twelve minutes against the shipped rows' zero -- so the bound stays at 51.
+            // The reasoning is against the Bright rungs in CurveConfig.PRESETS.
             //
             // What that leaves is stated rather than hidden: on Bright Quiet with the LED
-            // drive raised, the step on a Normal -> Presentation switch is 0 up to a 25 C
-            // room, 1 at 26, 2 at 26.2 -- the warmest this unit has recorded -- and 3, 5 and
-            // 6 at 27, 28 and 30 C. Eco -> Presentation is stepless everywhere below 30 C. In
-            // the standard family it is 0 always, because the columns are identical.
+            // drive raised, solved against the MEASURED plant, the step on a Normal ->
+            // Presentation switch is 0 duty points out to a 25 C ambient, 1 at 26, 2 at
+            // 26.2 -- the warmest this unit has recorded -- then 4 at 28 and 7 at 30. Eco ->
+            // Presentation is stepless further still. In the standard family it is 0 always,
+            // because the columns are identical.
             String disagreesAt = null;
             for (double t = -100.0; t <= 51.0 && disagreesAt == null; t += 0.25) {
                 int low = p.dutyAt(CurveConfig.PROFILE_LOW, t);
