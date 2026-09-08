@@ -89,9 +89,29 @@ the fit only for a level nobody has held.
   hunting bound must not be relaxed to accommodate whatever it finds.
 - **The intake offset** is one day's observation in one room with the projector in one
   position. Do not treat +4.7 °C as a constant.
-- **`room=28C` is stored in the app's prefs** and is neither the room (22) nor the intake
-  (~26.7). It is metadata only — logged and used for sweep planning, never in the control
-  loop — but it is wrong and the owner may want to set it.
+- **`room=28C` is stored in the app's prefs and the owner has asked for it to be 0.** DO
+  THIS the next time the projector is on; it is one broadcast:
+
+      am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver           -a com.daleygames.fanlab.CONFIG --ei room 0
+
+  It is metadata only — logged and used for sweep planning, never read by the control loop —
+  so nothing about the fan changes. The point is truthfulness of the log. `roomC` defaults to
+  **0, "not stated"**, and writes a blank to the CSV; someone typed 28 on the night the room
+  genuinely was 28, nothing ever invalidated it, and it then stamped every subsequent run
+  with a figure that had stopped being true. The owner's verdict, and it is the right one:
+  **"not stated" beats a stale number.** An absent value makes a later reader go and find
+  one; a wrong value makes them trust it.
+
+  The owner's house thermometer read **23 °C** in an adjacent room while the intake measured
+  25.3–26.7 °C, so the self-heating offset is about **+2 to +4 °C**, growing with the machine's
+  own power.
+
+  **The structural fix, offered and not yet taken:** the app already logs `off_s` and the
+  first `degC` at service start, so after a few hours off that first reading IS ambient — the
+  biggest thing this project cannot measure, measured for free on every cold boot. Stamping
+  `room_c` from it (and letting a hand-typed value expire) would have prevented this
+  entirely. Today's log has the experiment showing why a SHORT off does not do: the 09:03
+  boot came after 28 minutes off and the thermistor still read 38.5 °C. It needs hours.
 
 ## 4. Do not re-open
 
