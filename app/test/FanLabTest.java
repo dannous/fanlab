@@ -132,6 +132,7 @@ public final class FanLabTest {
         testSweepUserAbort();
         testSweepTimeCap();
         testHoldSession();
+        testHoldSteadyPhase();
         testPicoReg();
         testCaic();
         testImageProcessing();
@@ -3594,6 +3595,26 @@ public final class FanLabTest {
                         && vj.indexOf("\"verdict\": \"quiet\"") >= 0,
                 "and every verdict the person in the room gave");
         check(vj.indexOf("\"kind\": \"verify\"") >= 0, "and says which kind of run it was");
+        check(vj.indexOf("\"steady_run\": false") >= 0,
+                "a hold with no closed-loop phase says so outright, so a reader can tell"
+                + " \"the fan sat still\" from \"nobody asked\"");
+        check(vj.indexOf("steady_verdict") < 0,
+                "  and carries none of the steady fields it has no numbers for");
+
+        HoldSession hsx = new HoldSession(40, 3, 0L, 0L);
+        hsx.beginSteady(CurveConfig.preset(0), 120, 40, 0L);
+        for (int t = 1; t <= 120; t++) {
+            hsx.tick(t * 1000L, 52.0);
+        }
+        String sj = SweepReport.verifyJson(hsx, m, 5000L, 120L);
+        check(jsonBalanced(sj), "a report with a steady phase is still valid JSON");
+        check(!hasBareToken(sj, "NaN"), "  with no bare NaN");
+        check(sj.indexOf("\"steady_run\": true") >= 0, "  and says the phase ran");
+        check(sj.indexOf("\"steady_verdict\": \"steady\"") >= 0,
+                "  carrying the verdict a person will read first");
+        check(sj.indexOf("\"judged_reversals\": 0") >= 0,
+                "  and the reversal count, which is what separates settling from hunting");
+        check(sj.indexOf("\"judged_span\": 0") >= 0, "  and how far the duty travelled");
 
         // The names.
         check("trace_1700000000.csv".equals(SweepReport.traceName(1700000000L, false)),
@@ -3730,6 +3751,184 @@ public final class FanLabTest {
     private static final int[] RISE_DUTY = {30, 35, 40, 45, 50, 55, 60, 70, 83};
     private static final double[] RISE_PRES =
             {33.76, 29.92, 26.91, 24.9, 23.7, 22.3, 21.5, 20.2, 19.4};
+
+    /**
+     * Drive a VERIFY steady phase against the same two-pole plant the hunting check uses.
+     *
+     * The plant starts at the equilibrium for {@code startDuty} unless {@code fromCold},
+     * in which case it starts at ambient and warms -- which is what a settling transient
+     * looks like and is the thing the judged tail exists to exclude.
+     */
+    private static HoldSession runSteady(CurveConfig cfg, double ambient, int startDuty,
+                                         int seconds, double noise, boolean fromCold) {
+        HoldSession h = new HoldSession(startDuty, 3, 0L, 0L);
+        h.beginSteady(cfg, seconds, h.duty(), 0L);
+        java.util.Random rng = new java.util.Random(7);
+        double total0 = fromCold ? 0.0 : presentationRise(h.duty());
+        double fast = total0 * 0.70;
+        double slow = total0 * 0.30;
+        final double tauFast = 230.0;
+        final double tauSlow = 1500.0;
+        for (int t = 1; t <= seconds; t++) {
+            double measured = ambient + fast + slow + rng.nextGaussian() * noise;
+            int d = h.tick(t * 1000L, measured);
+            double total = presentationRise(d);
+            fast += (total * 0.70 - fast) * (1.0 - Math.exp(-1.0 / tauFast));
+            slow += (total * 0.30 - slow) * (1.0 - Math.exp(-1.0 / tauSlow));
+        }
+        return h;
+    }
+
+    private static void testHoldSteadyPhase() {
+        section("VERIFY steady phase: does the fan sit still once the curve is driving");
+
+        // ---- the gate FanService reads to decide whether the LED drive may stay on ----
+        HoldSession g = new HoldSession(50, 3, 0L, 0L);
+        eq(g.phase(), HoldSession.PHASE_HOLD, "a session starts in the hold phase");
+        check(!g.closedLoop(), "a pinned hold is NOT closed-loop, so the LED drive is dropped");
+        check(g.steady() == null, "and there are no steady statistics yet");
+        check("too_short".equals(g.verdict()), "nor a verdict");
+        g.beginSteady(CurveConfig.preset(0), 600, 50, 0L);
+        eq(g.phase(), HoldSession.PHASE_STEADY, "beginSteady moves it on");
+        check(g.closedLoop(), "now the curve is driving, so the drive may stay applied -- "
+                + "the override's safety case is that the app is cooling the machine, and here it is");
+        g.stop("user");
+        check(!g.closedLoop(), "a finished session is never closed-loop");
+
+        // ---- guards on beginSteady ----
+        HoldSession c1 = new HoldSession(50, 3, 0L, 0L);
+        c1.beginSteady(CurveConfig.preset(0), 5, 50, 0L);
+        eq(c1.steady().seconds, 60, "a silly short phase is raised to 60 s");
+        HoldSession c2 = new HoldSession(50, 3, 0L, 0L);
+        c2.beginSteady(CurveConfig.preset(0), 99999, 50, 0L);
+        eq(c2.steady().seconds, 3600, "and an endless one is cut to an hour");
+        HoldSession c3 = new HoldSession(50, 3, 0L, 0L);
+        c3.beginSteady(null, 600, 50, 0L);
+        check(c3.steady() == null, "no curve, no phase -- it does not half-start");
+        eq(c3.phase(), HoldSession.PHASE_HOLD, "  and it stays in the hold phase");
+        HoldSession c4 = new HoldSession(50, 3, 0L, 0L);
+        c4.stop("user");
+        c4.beginSteady(CurveConfig.preset(0), 600, 50, 0L);
+        check(c4.steady() == null, "a finished session cannot be restarted into a steady phase");
+
+        // ---- the target: the fan does not move ----
+        CurveConfig quiet = CurveConfig.preset(0);
+        HoldSession st = runSteady(quiet, 24.0, 38, 900, 0.03, false);
+        check("steady".equals(st.verdict()), "Quiet resting on its shelf: the fan never moves"
+                + " (verdict \"" + st.verdict() + "\", " + st.steady().judgedChanges + " judged changes)");
+        eq(st.steady().judgedChanges, 0, "  zero changes in the judged half");
+        eq(st.steady().judgedReversals, 0, "  and nothing to reverse");
+        check(st.finished(), "  the phase ends itself");
+        check("steady_complete".equals(st.endReason()),
+                "  saying why (\"" + st.endReason() + "\")");
+
+        eq(st.steady().maxTick, 0, "  and no tick moved it at all");
+
+        // ---- settling is not hunting, and a change count alone cannot tell them apart ----
+        //
+        // Warming from cold is the honest worst case: over half an hour the duty climbs
+        // twenty-odd points, and because the slow pole is still arriving at the end, the
+        // judged half is NOT quiet. That is correct and is why the verdict leans on
+        // direction rather than on the tail alone -- a settle is overwhelmingly
+        // one-directional however long it takes.
+        HoldSession se = runSteady(quiet, 24.0, 35, 1800, 0.03, true);
+        check(se.steady().changes > 0, "warming up from cold, the duty moves ("
+                + se.steady().changes + " changes over the whole phase)");
+        check(se.steady().reversals * 4 <= se.steady().changes,
+                "  but it is overwhelmingly one-directional -- " + se.steady().reversals
+                + " reversals against " + se.steady().changes + " changes -- which is what a"
+                + " settle looks like and a hunt does not");
+        check(!"hunting".equals(se.verdict()),
+                "  so it is not called hunting (\"" + se.verdict() + "\")");
+
+        // ---- the judged tail, driven directly so the window is exact ----
+        // No plant here on purpose: this is testing the windowing arithmetic, and a plant
+        // would make the answer depend on how fast the plant happens to settle.
+        HoldSession jt = new HoldSession(40, 3, 0L, 0L);
+        jt.beginSteady(quiet, 600, 40, 0L);
+        for (int t = 1; t <= 600; t++) {
+            // swing it for the first two hundred seconds, then hold it dead flat, so the
+            // judged half beginning at 300 s sees a machine that has finished moving
+            double c = t <= 200 ? ((t / 20) % 2 == 0 ? 50.0 : 54.0) : 52.0;
+            jt.tick(t * 1000L, c);
+        }
+        check(jt.steady().changes > 0, "a swinging temperature moves the fan ("
+                + jt.steady().changes + " changes)");
+        check(jt.steady().reversals > 0, "  and turns it round (" + jt.steady().reversals + ")");
+        eq(jt.steady().judgedChanges, 0,
+                "  yet the judged half, held flat, counts none of it -- the tail is what"
+                + " stops an arrival being read as a hunt");
+        check("steady".equals(jt.verdict()),
+                "  so the verdict is steady (\"" + jt.verdict() + "\")");
+
+        // ---- a machine that is still drifting cannot be reported as well-behaved ----
+        //
+        // This is the hole the reversal count leaves on its own. A light engine still
+        // warming ratchets its duty one way and never turns round, so it scores zero
+        // reversals -- identical to a curve that is genuinely sitting still. Reading that
+        // as "no hunting" is wrong: the fan has not yet had the chance to hunt. So drift is
+        // measured, and while it is above SETTLED_C_PER_HOUR no quiet verdict is offered.
+        HoldSession dr = new HoldSession(40, 3, 0L, 0L);
+        dr.beginSteady(quiet, 600, 40, 0L);
+        for (int t = 1; t <= 600; t++) {
+            dr.tick(t * 1000L, 50.0 + 6.0 * t / 600.0);      // a steady climb, no wobble
+        }
+        check(dr.steady().changes > 0, "a warming machine moves the duty ("
+                + dr.steady().changes + " changes)");
+        eq(dr.steady().judgedReversals, 0, "  and never turns round, exactly like a good curve");
+        check(Math.abs(dr.steady().trendCPerHour()) >= HoldSession.SETTLED_C_PER_HOUR,
+                "  but the drift is measured and is well over the threshold ("
+                + Sample.fmt1(dr.steady().trendCPerHour()) + " C/h)");
+        check("unsettled".equals(dr.verdict()),
+                "  so no opinion is offered rather than a reassuring one (\""
+                + dr.verdict() + "\")");
+
+        // ...but drift must never HIDE a hunt. A reversal is proof whenever it happens.
+        HoldSession dh = new HoldSession(40, 3, 0L, 0L);
+        dh.beginSteady(quiet, 600, 40, 0L);
+        for (int t = 1; t <= 600; t++) {
+            dh.tick(t * 1000L, 50.0 + 6.0 * t / 600.0 + (t % 40 < 20 ? -1.2 : 1.2));
+        }
+        check(dh.steady().judgedReversals > 0, "the same climb with a wobble turns the fan round ("
+                + dh.steady().judgedReversals + " reversals)");
+        check(!"unsettled".equals(dh.verdict()),
+                "  and that is reported, not suppressed by the drift (\"" + dh.verdict() + "\")");
+
+        // ---- the 2026-09-08 measurement, as a regression test ----
+        //
+        // This row rested 3.7 duty points quieter than the shipped one, cleared the noise
+        // ceiling, cleared the 60 C trip by the same margin and scored 84 of 84 in
+        // CurveSim. On the hardware it moved nine times in twelve minutes where the shipped
+        // row moved zero, because it steepens the segment the machine rests on from 3.0 to
+        // 4.4 duty/C and the light engine wanders 0.6-0.9 C at a fixed duty. Nothing on the
+        // device could see that before this phase existed. Now it can, so it is pinned here.
+        CurveConfig rejected = CurveConfig.decode(
+                "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,40,62,76,83,"
+                + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5");
+        HoldSession hunt = runSteady(rejected, 27.0, 47, 1200, 0.45, false);
+        HoldSession keep = runSteady(quiet, 27.0, 40, 1200, 0.45, false);
+        check(hunt.steady().reversals > keep.steady().reversals,
+                "the rejected row turns the fan round more often than the shipped one ("
+                + hunt.steady().reversals + " reversals against " + keep.steady().reversals
+                + ") on the same plant, same noise, same seed");
+        check(hunt.steady().judgedSpan() >= keep.steady().judgedSpan(),
+                "  and travels at least as far (" + hunt.steady().judgedSpan()
+                + " duty points against " + keep.steady().judgedSpan() + ")");
+        check(!"steady".equals(hunt.verdict()),
+                "  so it is not reported as steady (\"" + hunt.verdict() + "\")");
+
+        // ---- the statistics are self-consistent ----
+        HoldSession.Steady k = keep.steady();
+        check(k.samples > 0, "every tick is counted");
+        check(k.judgedSamples > 0 && k.judgedSamples < k.samples,
+                "the judged tail is a proper subset of the phase (" + k.judgedSamples
+                + " of " + k.samples + ")");
+        check(k.judgedChanges <= k.changes, "judged changes cannot exceed total changes");
+        check(k.judgedReversals <= k.reversals, "nor judged reversals total reversals");
+        check(k.loDuty <= k.hiDuty, "the duty range is the right way round");
+        check(k.maxC >= k.minC, "so is the temperature range");
+        eq(k.judgedFromSec, k.seconds / 2, "the judged half starts half way through");
+    }
 
     private static double presentationRise(int duty) {
         if (duty <= RISE_DUTY[0]) {

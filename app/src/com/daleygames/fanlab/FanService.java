@@ -337,6 +337,8 @@ public class FanService extends Service {
     private int badReads;
     private int ticks;
     private boolean lastInteractive = true;
+    /** Whether the previous tick had a VERIFY steady phase driving. See ledDriveArmed. */
+    private boolean lastClosedLoop;
     private volatile boolean resumePending;
     private volatile boolean prefsDirty;
     private volatile boolean running;
@@ -1171,7 +1173,7 @@ public class FanService extends Service {
         } else if (hs != null) {
             desired = hs.tick(mono, sweepC);
             traceRgb = hs.rgblevel();
-            tracePhase = "hold";
+            tracePhase = hs.closedLoop() ? "steady" : "hold";
             traceStep = 0;
             sessionFinished = hs.finished();
             assertRgbLevel(null, hs, hs.rgblevel(), s, note, traceEvent);
@@ -1378,8 +1380,17 @@ public class FanService extends Service {
         // LED currents to an engine that turns out to be off is inert -- there is nothing
         // lit to drive -- so guessing wrong in this direction costs one sysfs write.
         boolean ledControls = Mode.controls(mode);
+        // A session normally forfeits the override, because it pins the fan and the
+        // override's whole safety case is that light output is only raised while this app
+        // is the thing cooling the machine. A VERIFY steady phase is the exception, and it
+        // is an exception that SATISFIES the rule rather than bending it: in that phase the
+        // real curve is closing the real loop on the real thermistor, which is precisely
+        // the coupling being required. Dropping the drive there would also make the phase
+        // pointless for the family it matters most to -- verifying a Bright preset at the
+        // factory drive measures the wrong machine.
+        boolean sessionOpenLoop = sw != null || (hs != null && !hs.closedLoop());
         boolean ledInCharge = ledFeatureOn && !stopped && ledControls
-                && !sessionRunning && !failSafeLatched;
+                && !sessionOpenLoop && !failSafeLatched;
         // Arming. The override may only start on one of three events -- see ledDriveArmed
         // for the measurement behind that -- and lastLedControlling starts false, so the
         // service's own first tick in CURVE or LINEAR is an entry edge and needs no case
@@ -1392,9 +1403,15 @@ public class FanService extends Service {
         // being switched off -- clears the arm, so coming back takes a deliberate act.
         boolean ledModeEntered = ledControls && !lastLedControlling;
         lastLedControlling = ledControls;
+        // Handing the fan to the curve mid-session is an entry edge of its own. Without it
+        // the override could never come back: the mode has not changed, so ledModeEntered
+        // is false, and startVerify dropped the drive on the way in.
+        boolean closedLoopNow = hs != null && hs.closedLoop();
+        boolean steadyEntered = closedLoopNow && !lastClosedLoop;
+        lastClosedLoop = closedLoopNow;
         if (!ledInCharge) {
             ledDriveArmed = false;
-        } else if (settingsChanged || ledModeEntered) {
+        } else if (settingsChanged || ledModeEntered || steadyEntered) {
             ledDriveArmed = true;
         }
         boolean ledAllowed = ledInCharge && ledDriveArmed && interactive && s.ledStatus != 0;
@@ -1944,6 +1961,41 @@ public class FanService extends Service {
             FanIo.writeFailSafe();
             holdSession = null;
             statusLine = "could not start VERIFY: " + t;
+            return false;
+        }
+    }
+
+    /**
+     * Hand the fan from the held duty to the stored curve, and count what it does.
+     *
+     * The second half of VERIFY. The first half asks a person whether a duty is acceptable;
+     * this asks the machine whether the curve that produces it will sit still, which is a
+     * question a pinned duty cannot answer because hunting only exists in a closed loop.
+     *
+     * The curve handed over is the one actually stored, not a copy or a candidate, so what
+     * is measured is what will run. The fan picks up from where it already is, so the
+     * handover itself is not a step.
+     */
+    public synchronized boolean beginSteadyPhase(int seconds) {
+        try {
+            HoldSession hs = holdSession;
+            if (hs == null || hs.finished()) {
+                statusLine = "no VERIFY session to hand over";
+                return false;
+            }
+            if (hs.closedLoop()) {
+                statusLine = "the curve is already driving";
+                return false;
+            }
+            int from = lastWritten > 0 ? lastWritten : hs.duty();
+            hs.beginSteady(Prefs.curve(this), seconds, from,
+                    SystemClock.elapsedRealtime());
+            statusLine = "VERIFY steady phase: the curve is driving, watching for movement";
+            note("VERIFY steady phase start from duty " + from);
+            return true;
+        } catch (Throwable t) {
+            Log.e(TAG, "beginSteadyPhase", t);
+            statusLine = "could not start the steady phase: " + t;
             return false;
         }
     }

@@ -308,6 +308,42 @@ public class ConfigReceiver extends BroadcastReceiver {
             Prefs.setLedDriveOn(context, intent.getBooleanExtra("leddriveon", false));
             did.append(" leddriveon");
         }
+        // Start VERIFY from a script. The screen is exported="false", and adb runs as
+        // shell, so without this the session -- and therefore the steady phase below --
+        // could only ever be reached by someone holding the remote. Everything else the app
+        // does is already drivable from here, and a session is bounded by the same 58 C
+        // ceiling, bad-read abort and screen-off abort whichever way it was started.
+        //
+        //     --es verify 62:3        duty : rgblevel
+        if (intent.hasExtra("verify")) {
+            FanService fs = FanService.instance;
+            String spec = intent.getStringExtra("verify");
+            int colon = spec == null ? -1 : spec.indexOf(':');
+            if (fs == null) {
+                did.append(" verify(NO SERVICE)");
+            } else if (colon <= 0) {
+                did.append(" verify(BAD SPEC, want duty:rgblevel)");
+            } else {
+                try {
+                    int d = Integer.parseInt(spec.substring(0, colon).trim());
+                    int lv = Integer.parseInt(spec.substring(colon + 1).trim());
+                    did.append(fs.startVerify(d, lv) ? " verify" : " verify(REFUSED)");
+                } catch (NumberFormatException e) {
+                    did.append(" verify(BAD SPEC, want duty:rgblevel)");
+                }
+            }
+        }
+        // Hand a running VERIFY over to the curve, so the closed-loop half can be driven
+        // from a script as well as from the remote. Seconds, clamped in HoldSession.
+        if (intent.hasExtra("steady")) {
+            FanService fs = FanService.instance;
+            if (fs == null) {
+                did.append(" steady(NO SERVICE)");
+            } else {
+                did.append(fs.beginSteadyPhase(intent.getIntExtra("steady",
+                        HoldSession.STEADY_SECONDS)) ? " steady" : " steady(REFUSED)");
+            }
+        }
         if (intent.hasExtra("manual")) {
             Prefs.setManualDuty(context, intent.getIntExtra("manual", FanIo.KERNEL_DEFAULT_DUTY));
             did.append(" manual");

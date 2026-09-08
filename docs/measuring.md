@@ -90,3 +90,49 @@ bash tools/watch.sh 10
 Ten minutes of sampling, reporting the number of fan-speed **changes** rather than a mean
 and standard deviation. A fan sitting at 47 is inaudible in a way that a fan alternating
 45/49 is not, and a summary statistic rates them identically.
+
+### The same check without a PC, and why it exists
+
+`watch.sh` needs adb. VERIFY has the same measurement built in, so anyone can run it on the
+projector alone: hold a duty, then press **MENU** to hand the fan to your curve and let the
+app count what it does for twelve minutes. From a script:
+
+```bash
+adb shell "am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --es verify 51:3"      # hold duty 51 in Presentation
+adb shell "am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --ei steady 720"       # then hand it to the curve
+```
+
+**A held duty cannot hunt.** Hunting only exists when something is choosing the fan speed
+from a temperature that the fan speed is changing, so the first half of VERIFY -- which
+pins the duty -- is structurally blind to it. That blindness cost a day on 2026-09-08: a
+redrawn Presentation row rested 3.7 duty points quieter, cleared the noise ceiling and the
+60 °C trip, and scored 84 of 84 steady in `CurveSim`. On the hardware it moved nine times
+in twelve minutes where the shipped row moved zero. Nothing on the device could see that.
+Now it can.
+
+Three things it does that `watch.sh` does not:
+
+- **It counts reversals, not just changes.** A curve arriving at a new operating point
+  changes duty repeatedly and every change points the same way; a curve hunting turns
+  round. Counting changes alone rates those identically, which is why `watch.sh`'s output
+  has to be read by a human rather than believed.
+- **It judges the second half only**, because the phase opens with the fan travelling to
+  wherever the curve wants it, and that arrival is not a hunt.
+- **It measures whether the machine was still enough for the answer to mean anything.** A
+  light engine that is still warming ratchets its duty one way and reverses nothing, which
+  looks exactly like good behaviour. Above 2 °C/h of drift in the judged tail the verdict
+  is `unsettled` and no reassurance is offered. A reversal is never suppressed, though:
+  that is proof of a hunt whenever it happens.
+
+Verdicts are `steady`, `settling`, `moving`, `hunting`, `unsettled` and `too_short`, and
+every figure behind them is in the `verify_*.json` report.
+
+**Enter the phase near the operating point.** Handing over from the held duty does that by
+itself. Blasting the fan high first to "cool it down" makes it worse rather than better --
+the displacement gets larger, and with a slow pole around 400 s the phase then spends its
+length travelling instead of measuring. The LED drive override stays applied throughout,
+which it is not during the held half: the phase is closed-loop, so the app is genuinely
+cooling the machine, and verifying a Bright preset at the factory drive would measure the
+wrong machine.

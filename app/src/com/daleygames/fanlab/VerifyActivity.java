@@ -186,6 +186,10 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
                 + "checkerboard → one-pixel grating → white. The two patterns sit right at "
                 + "the display's resolution limit, so they look crisp in focus and turn to "
                 + "flat grey the moment the optics drift."), Ui.wrap());
+        col.addView(bullet(c, "When you are satisfied with the held duty, MENU hands the fan "
+                + "to your curve and watches it for twelve minutes. A held duty cannot hunt "
+                + "- only a curve choosing its own speed can - so that second phase is the "
+                + "one that tells you whether you will hear the fan move."), Ui.wrap());
         col.addView(bullet(c, "UP says the picture is sharp, DOWN says it has gone soft. "
                 + "RIGHT says the fan is audible, LEFT says it is quiet. Each one is "
                 + "logged with the time and the temperature at that instant."), Ui.wrap());
@@ -226,6 +230,7 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
 
         keys = Ui.text(c,
                 "OK next pattern    ▲ sharp    ▼ soft    ▶ fan audible    ◀ fan quiet"
+                        + "    MENU hand it to the curve"
                         + "    BACK stop", 20f, INK);
         keys.setGravity(Gravity.CENTER);
         int q = Ui.dp(c, 8);
@@ -376,9 +381,36 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 check(HoldSession.ABOUT_FAN, HoldSession.VERDICT_QUIET);
                 return true;
+            case KeyEvent.KEYCODE_MENU:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_BUTTON_Y:
+                handToCurve();
+                return true;
             default:
                 return super.onKeyDown(keyCode, event);
         }
+    }
+
+    /**
+     * Stop pinning the duty and let the stored curve drive, while the app counts whether
+     * the fan then sits still.
+     *
+     * The held duty answered "is this acceptable". This answers "will you hear it move",
+     * which a pinned duty cannot: a fan only hunts when something is choosing its speed
+     * from a temperature that its own speed is changing.
+     */
+    private void handToCurve() {
+        FanService s = FanService.instance;
+        if (s == null) {
+            say("The telemetry service has gone; cannot hand over.");
+            return;
+        }
+        if (!s.beginSteadyPhase(HoldSession.STEADY_SECONDS)) {
+            lastVerdict.setText(FanService.statusLine);
+            return;
+        }
+        lastVerdict.setText("the curve is driving now - watching for "
+                + (HoldSession.STEADY_SECONDS / 60) + " minutes. Leave it alone and listen.");
     }
 
     private void check(String about, String verdict) {

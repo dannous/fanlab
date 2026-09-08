@@ -188,8 +188,16 @@ the drive the Bright curve family was drawn against and the drive its plant scal
 measured at, so the brightness preset and the curve now agree on one number.
 
 The safety case is one rule, and it is a conjunction: **the override applies only while
-this app is the thing cooling the machine.** CURVE or LINEAR, no AUTO or VERIFY session
-running, the light engine on, the fail-safe clear, the display awake. Anywhere else the
+this app is the thing cooling the machine.** CURVE or LINEAR, no AUTO sweep and no pinned
+VERIFY hold running, the light engine on, the fail-safe clear, the display awake.
+
+The one place that reads as an exception and is not is a **VERIFY steady phase**, where the
+override stays applied. In that phase the real curve is closing the real loop on the real
+thermistor, so the app is cooling the machine in exactly the sense the rule requires — the
+term excludes a *pinned* hold and a sweep, because a duty that is being held rather than
+chosen is not coupled to temperature at all. Dropping the drive there would also make the
+phase useless for the presets it matters most to: verifying a Bright rung at the factory
+drive measures a machine nobody runs. Anywhere else the
 kernel's own table goes straight back, within a second, because the alternative is
 Presentation-class LED heat under whatever fan ladder `rgblevel` happens to select — which
 is precisely the hazard the rest of this document exists to avoid. Any doubt, including an
