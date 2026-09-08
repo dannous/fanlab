@@ -182,7 +182,7 @@ also stores no preference that could turn one back on at boot.
 
 Separate from everything above, and off by default. It writes `rgbcurrent` and `redcurrent`
 to drive the four brightness modes at **35/55/75/90 %** instead of the kernel's own
-20/40/55/76 — 18 % more drive in Presentation, and about **+3.4 °C** on the LED thermistor
+20/40/55/76 — 18 % more drive in Presentation, and a measured **+6.0 °C** on the LED thermistor
 for every 10 points at a fixed fan duty, so roughly **+4.8 °C** for the 76 → 90 step. 90 is
 the drive the Bright curve family was drawn against and the drive its plant scaling was
 measured at, so the brightness preset and the curve now agree on one number.

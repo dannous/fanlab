@@ -55,8 +55,12 @@ package com.daleygames.fanlab;
  * swing is not, and a controller that trips and re-arms every few minutes would flicker.
  *
  * <h3>What it costs thermally</h3>
- * From the measured plant, each +10 on the Presentation level adds roughly +3.4 C on the
- * LED thermistor at a fixed fan duty. Under CURVE that is paid in temperature, under
+ * Measured 2026-09-08 at a pinned fan 45: Presentation 76 -> 90 raises the light engine's
+ * rise above ambient by a factor of 1.2404, which is +6.0 C on the LED thermistor, or about
+ * <b>+4.3 C per ten drive points</b>. An earlier estimate here said +3.4 per ten; it came
+ * from the fitted rise-vs-drive line, which the measurement showed to be 5.7 % low on
+ * Presentation. Normal 55 -> 75 is x1.4032, Eco 40 -> 55 x1.3866 and Super Eco 20 -> 35
+ * x1.5763, all measured the same day and all in tools/solve_curve.py. Under CURVE that is paid in temperature, under
  * LINEAR in fan. The 75 C shutdown and the fan-stall watchdog are untouched either way.
  *
  * <h3>Why the ceiling is 97 and not 100 -- and why overflowing goes <i>dim</i></h3>

@@ -177,6 +177,11 @@ The figures are in [The two preset families](#the-two-preset-families); the shor
 is that Quiet keeps the light engine under 55 °C up to a 28 °C room, and each step up
 extends that by about 2 °C at the cost of 5 % more fan.
 
+**A fresh install is Quiet, in the Curve family, with the LED drive off.** Nothing in the
+Bright family runs until you deliberately turn the drive on: `ledDriveOn` defaults to false
+and the drive levels default to the factory table, so the app out of the box is the measured
+curve at Philips' own brightness and nothing else.
+
 **You do not choose the family — the LED drive does.** With the override off the button
 offers Quiet, Balanced, Cool and Cold; with it on, the four Bright versions of the same
 steps and nothing else. Switching the override keeps the step you are on and swaps the
@@ -292,7 +297,7 @@ the picture goes *dimmer*, not brighter. The app clamps to 97 and a test holds i
 **What it costs.** Heat, and it lands on the red die — the lowest-rated part in the light
 path, the one that loses output fastest with temperature, and the one seven owners of this
 model have reported losing. From the measured plant each +10 on the Presentation level is
-about +3.4 °C at a fixed fan speed, so 76 → 90 is roughly **4.8 °C**. That is why the Bright
+a measured +4.3 °C at a fixed fan speed, so 76 → 90 is **6.0 °C**. That is why the Bright
 curve family exists: it spends fan to put some of that back. **Switching this row on switches
 your curve preset with it** — Quiet becomes Bright Quiet, Cool becomes Bright Cool — and
 switching it off switches them back, so the two can never be out of step. See
@@ -656,11 +661,15 @@ changes in twelve minutes against the shipped rows' zero. See
 
 **Raising the LED drive costs the dim modes their silent floor, and that is the drive raise
 rather than the preset.** The Bright steps leave Normal, Eco and Super Eco alone precisely so
-they do not make it worse, but it is worth knowing before switching the override on: with
-Normal at 70 % drive rather than 55, **Normal leaves duty 30 at an 18.8 °C room instead of a
-24.5 °C one** and sits at about 37 % / 50.5 °C in a 24 °C room. Eco at 50 % drive reaches the
-47 °C floor edge at a 27 °C room rather than a 30.7 °C one. Super Eco is untouched below a
-31 °C room. The full tables are in
+they do not make it worse, but it is worth knowing before switching the override on. All three
+scalings below were **measured** on 2026-09-08, and all three came out worse than the fitted
+line they replace: with Normal at 75 % drive rather than 55, **Normal leaves duty 30 at a
+19.2 °C ambient instead of a 27.3 °C one** and sits at about 37 % / 50.3 °C at 24 °C. Eco at
+55 % leaves the floor at 24.8 °C rather than 31.1. Super Eco at 35 % holds 30 until 30.3 °C.
+
+Set against the +2 to +4 °C the intake runs above the room, **Normal and Eco are off the
+silent floor in any room this machine will realistically be used in** once the drive is
+raised. The full tables are in
 [docs/curve.md](docs/curve.md#what-it-costs-stated-rather-than-buried).
 
 Three design points worth stating, because all three were arrived at the hard way:

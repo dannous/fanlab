@@ -504,8 +504,11 @@ public final class CurveConfig {
             // step was the cheaper thing to accept.
             //
             // Bright Quiet: Quiet's 30/38 to 51 C, then 50 at 55 and 62 at 60. The rung the
-            // override lands on from a fresh install, and the one the owner's bar is written
-            // against. 84 of 84 steady on the measured plant -- the three-run 16 C wobble the
+            // override moves you to from a fresh install -- NOT the default, which is plain
+            // Quiet with the drive off: ledDriveOn defaults false, LedDrive.Config() calls
+            // setStock(), and setDefaults() encodes Quiet byte for byte. Nothing here runs
+            // until the drive is deliberately turned on. It is the rung the owner's noise
+            // bar is written against. 84 of 84 steady on the measured plant -- the three-run 16 C wobble the
             // inferred plant predicted here is gone, and was an artefact of that inference
             // rather than a real knife-edge.
             //
