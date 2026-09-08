@@ -668,7 +668,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 syncControlsFromPrefs();
             } else if ("preset".equals(row.tagName)) {
                 // Quiet -> Balanced -> Cool -> Cold -> Quiet, and with the LED drive on the
-                // same four rungs in the Bright family instead. The loop stays inside the
+                // same four rungs in the Bright Curve family instead. The loop stays inside the
                 // family the drive allows, so the pairing the gate exists to prevent cannot
                 // be reached by pressing this at all -- there is no press count that gets
                 // from Quiet to Bright Cold. Moving the LED drive row is what moves families,

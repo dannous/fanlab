@@ -253,7 +253,7 @@ The reply is the resulting state, so diff it against what you sent. It says
 `preset(REFUSED: ...)` when a preset is asked for from the wrong family:
 
 ```
-preset(REFUSED: Quiet is a standard preset and the LED drive is on; use Bright Quiet or
+preset(REFUSED: Quiet is a Curve preset and the LED drive is on; use Bright Quiet or
 turn the drive off)
 ```
 
@@ -308,7 +308,7 @@ is also a temperature trip — above 60 °C the override drops to stock and stay
 brightness mode or the configuration changes, because brightness that cycles is worse than
 brightness that stops. The preset gate is what keeps that trip a backstop rather than a
 routine event: on a Bright preset the drive-90 equilibrium is 56 °C in a 28 °C room, four
-degrees clear, where the same drive on a standard preset settles at 58.
+degrees clear, where the same drive on a Curve preset settles at 58.
 
 **How to undo it.** Turn the row off, `--ez leddriveon false`, `--ez reset`, press
 **RELEASE CONTROL**, or switch to `OFF` or `MANUAL` — any of them restore the stock table.

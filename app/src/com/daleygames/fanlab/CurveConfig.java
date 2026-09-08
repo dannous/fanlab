@@ -95,7 +95,7 @@ public final class CurveConfig {
     };
 
     /**
-     * Rungs per family. The list above is the standard family then the Bright one, same
+     * Rungs per family. The list above is the Curve family then the Bright one, same
      * rungs in the same order, so preset {@code i} and preset {@code i + RUNGS} are the
      * same rung on the two drive levels.
      */
@@ -182,7 +182,7 @@ public final class CurveConfig {
      * See {@link #PRESETS}.
      *
      * It holds its counterpart rather than a copy of its numbers, which is what makes "a
-     * Bright preset's dim rows <i>are</i> its standard counterpart's" a fact about the file
+     * Bright preset's dim rows <i>are</i> its Curve counterpart's" a fact about the file
      * instead of a claim a later edit could quietly break.
      */
     private static final class DrawnHighRow extends PresetShape {
@@ -190,7 +190,25 @@ public final class CurveConfig {
         private final int[] high;
 
         DrawnHighRow(PresetShape standard, int[] high) {
-            super(standard.floorEdgeC);
+            this(standard, high, standard.floorEdgeC);
+        }
+
+        /**
+         * As above, but with a floor edge of its own.
+         *
+         * Only Bright Cool needs this, and it needs it for a reason worth writing down.
+         * Below 51 C a Bright preset is its counterpart, so Bright Cool inherits Cool's
+         * 4.5 duty/C rise over 47-51 C. On the plant Cool actually runs that is harmless
+         * -- nothing rests there. On the raised plant of drive 90 the operating point
+         * lands on it, and CurveSim hunts by three duty points at 14 C, over the bound of
+         * two. Starting its rise at 45 C instead halves the slope and the sweep is clean
+         * at every ambient from 14 to 34. 43 C is NOT the answer, which is the whole
+         * argument for measuring rather than reasoning: it still hunts, by two.
+         *
+         * Cool itself is untouched. This is the Bright rung moving, not the standard one.
+         */
+        DrawnHighRow(PresetShape standard, int[] high, int floorEdgeC) {
+            super(floorEdgeC);
             this.standard = standard;
             this.high = high;
         }
@@ -201,7 +219,7 @@ public final class CurveConfig {
         }
     }
 
-    // The standard family, named so the Bright family can be built out of it below rather
+    // The Curve family, named so the Bright Curve family can be built out of it below rather
     // than beside it.
     private static final PresetShape QUIET = new OffsetAboveFloor(47, 0);
     private static final PresetShape BALANCED = new OffsetAboveFloor(47, 5);
@@ -216,7 +234,7 @@ public final class CurveConfig {
             COLD,
             new DrawnHighRow(QUIET, new int[]{30, 38, 50, 62, 76, 83}),     // Bright Quiet
             new DrawnHighRow(BALANCED, new int[]{30, 43, 55, 67, 81, 83}),  // Bright Balanced
-            new DrawnHighRow(COOL, new int[]{30, 48, 60, 72, 83, 83}),      // Bright Cool
+            new DrawnHighRow(COOL, new int[]{30, 48, 60, 72, 83, 83}, 45),      // Bright Cool
             new DrawnHighRow(COLD, new int[]{30, 53, 65, 77, 83, 83}),      // Bright Cold
     };
 
@@ -248,9 +266,9 @@ public final class CurveConfig {
      * those knees untouched. The shelf and every segment above it therefore keep Quiet's
      * width and Quiet's duty/C slope, so their geometry and their stability margin are
      * unchanged. Monotonicity and identical columns across the three profiles carry across
-     * by construction. The Bright family gives the identical columns up on purpose and pays
+     * by construction. The Bright Curve family gives the identical columns up on purpose and pays
      * for it by simulation instead -- see the Bright lines. It keeps the rest: a Bright
-     * preset's dim rows <i>are</i> its standard counterpart's, taken from the counterpart's
+     * preset's dim rows <i>are</i> its Curve counterpart's, taken from the counterpart's
      * own shape rather than retyped, so the two can never drift.
      *
      * <h3>The one segment the offsets do change, and what that cost</h3>
@@ -369,9 +387,9 @@ public final class CurveConfig {
             // asking for the quietest fan, so the trade was taken.
             "v1,43,51,55,60,66,70,30,53,55,65,83,83,30,53,55,65,83,83,30,53,55,65,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
-            // ---- the Bright family: the same four rungs, for the LED drive override ----
+            // ---- the Bright Curve family: the same four rungs, for the LED drive override ----
             //
-            // Each is its standard counterpart with Presentation's row redrawn, and nothing
+            // Each is its Curve counterpart with Presentation's row redrawn, and nothing
             // else: the counterpart's knees, its floor edge, its hysteresis, slew and guard,
             // and its own duty row untouched in Normal and Eco / Super Eco. The dim rows are
             // taken from the counterpart's PresetShape rather than retyped here, so "Bright
@@ -404,7 +422,7 @@ public final class CurveConfig {
             // labelled there rather than silently restated here.
             //
             // Stability was simulated at the MEASURED scaling, not inherited from the
-            // standard family: CurveSim, two-pole plant, four slow poles, --scale high=1.208,
+            // Curve family: CurveSim, two-pole plant, four slow poles, --scale high=1.208,
             // 14-34 C. Three of the four are as good as their counterparts and the fourth is
             // not -- the verdicts are on each line below, Bright Cool's at length, because it
             // is the one place this family is worse than the family it mirrors. The host
@@ -450,12 +468,12 @@ public final class CurveConfig {
             // below the coldest room this unit has recorded (21.9 C).
             //
             // Left as it is rather than redrawn, because the fix would be to move Cool's
-            // floor edge the way Cold's was moved, and that would change a standard preset
+            // floor edge the way Cold's was moved, and that would change a Curve preset
             // that is 84 of 84 on the plant it actually runs on to fix a raised-plant
             // simulation nobody has held a measurement against. The host suite is not
             // weakened for it: it runs the stock plant, where Bright Cool is 84 of 84, and
             // stays bounded at two.
-            "v1,47,51,55,60,66,70,30,48,50,60,78,83,30,48,50,60,78,83,30,48,60,72,83,83,"
+            "v1,45,51,55,60,66,70,30,48,50,60,78,83,30,48,50,60,78,83,30,48,60,72,83,83,"
                     + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5",
             // Bright Cold: Cold's floor edge of 43 C and its 30/53, then 65 at 55 C and 77 at
             // 60. Clips to 83 at 66 like Cold. 84 of 84 steady -- the 43 C floor edge that
@@ -859,7 +877,7 @@ public final class CurveConfig {
         if (rungOf(preset) < 0 || isBrightPreset(preset) == driveOn) {
             return null;
         }
-        return PRESET_NAMES[preset] + " is a " + (driveOn ? "standard" : "Bright")
+        return PRESET_NAMES[preset] + " is a " + (driveOn ? "Curve" : "Bright Curve")
                 + " preset and the LED drive is " + (driveOn ? "on" : "off")
                 + "; use " + PRESET_NAMES[counterpartOf(preset, driveOn)]
                 + " or turn the drive " + (driveOn ? "off" : "on");

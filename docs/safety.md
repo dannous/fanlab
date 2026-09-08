@@ -219,7 +219,7 @@ one thing on this machine the owner has actually heard and objected to.
 **What it costs.** Under CURVE the extra heat is paid in temperature: Bright Quiet rests
 around 53.8 °C rather than Quiet's 51.9 in a 24 °C room. Under LINEAR it is paid in fan, so
 the default ceiling moves from 52.0 to **54.0 °C** while the override is on — roughly where
-the Bright family rests, so the two controllers can still be compared by ear. A ceiling you
+the Bright Curve family rests, so the two controllers can still be compared by ear. A ceiling you
 set by hand is never moved, and nothing is written to the stored setting: switching the
 override off puts the ceiling back. **The Presentation plant scaling behind these numbers is
 measured — ×1.208 at drive 90 — but the equilibria themselves were solved at the earlier

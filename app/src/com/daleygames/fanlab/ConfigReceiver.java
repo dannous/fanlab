@@ -37,7 +37,7 @@ import android.util.Log;
  *       {@code --ei preset <n>} takes the index into the same list. <b>A preset from the
  *       wrong family is refused rather than applied</b> -- the drive state decides which
  *       four are selectable, and the reply names the one that was probably meant:
- *       {@code preset(REFUSED: Quiet is a standard preset and the LED drive is on; use
+ *       {@code preset(REFUSED: Quiet is a Curve preset and the LED drive is on; use
  *       Bright Quiet or turn the drive off)}. The state judged against is the one the
  *       command <i>ends</i> in, so {@code --es preset "bright quiet" --ez leddriveon true}
  *       in one line is accepted even though the drive is still off when the preset is read.
@@ -460,7 +460,7 @@ public class ConfigReceiver extends BroadcastReceiver {
                 // be guessed at -- and a refusal is the one answer this receiver gives that
                 // a caller cannot work out from the rest of the line.
                 + " preset=" + CurveConfig.presetName(Prefs.preset(context))
-                + " presetfamily=" + (boost ? "Bright" : "standard")
+                + " presetfamily=" + (boost ? "Bright Curve" : "Curve")
                 + " presetsallowed=" + CurveConfig.familyWords(boost)
                 + " curve=" + c.encode()
                 + " linear=" + storedLinear;

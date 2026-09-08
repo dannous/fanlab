@@ -691,10 +691,26 @@ public final class FanLabTest {
             for (int k = 0; k < CurveConfig.POINTS; k++) {
                 eq(b.duty[CurveConfig.PROFILE_HIGH][k], wantHigh[rung][k],
                         name + " Presentation: knee " + k + " is " + wantHigh[rung][k]);
-                // The knees are the counterpart's, floor edge included -- which is how
-                // Bright Cold inherits Cold's 43 C rather than needing its own reason for it.
-                eq(b.tempC[k], s.tempC[k], name + ": knee " + k + " is at "
-                        + standard[rung] + "'s " + s.tempC[k] + " C");
+                // Knees 1..5 are the counterpart's, always: that is what makes a Bright
+                // preset one column different from its standard rung and no more.
+                //
+                // Knee 0, the floor edge, is the counterpart's for three of the four. The
+                // exception is Bright Cool, and it is an exception with a measurement
+                // behind it: below 51 C a Bright preset IS its counterpart, so Bright Cool
+                // inherits Cool's 4.5 duty/C rise over 47-51 C. Harmless on the plant Cool
+                // runs on, because nothing rests there; on the raised plant of drive 90 the
+                // operating point lands on it and CurveSim hunts by three at 14 C, over the
+                // bound of two. Starting its rise at 45 clears the whole 14-34 C sweep.
+                // Cool itself is untouched.
+                if (k > 0 || !"Bright Cool".equals(name)) {
+                    eq(b.tempC[k], s.tempC[k], name + ": knee " + k + " is at "
+                            + standard[rung] + "'s " + s.tempC[k] + " C");
+                } else {
+                    eq(b.tempC[0], 45, "Bright Cool: floor edge is 45 C, its own, because "
+                            + "Cool's 47 puts the raised plant's operating point on a rise "
+                            + "steep enough to hunt by three at 14 C");
+                    eq(s.tempC[0], 47, "while Cool itself keeps its 47 C");
+                }
                 // The dim rows ARE the counterpart's. This is the property that makes a
                 // Bright preset one column different from its standard rung and no more, and
                 // it is why the raised drive does not also make the quiet modes louder.
@@ -821,11 +837,11 @@ public final class FanLabTest {
         //
         // The words matter as much as the behaviour: this string is the whole of what a
         // caller gets back, and it has to name the preset they probably wanted.
-        check(("Quiet is a standard preset and the LED drive is on; use Bright Quiet or turn "
+        check(("Quiet is a Curve preset and the LED drive is on; use Bright Quiet or turn "
                         + "the drive off").equals(CurveConfig.wrongFamilyRefusal(0, true)),
                 "the refusal names the counterpart and both ways out  (got "
                         + quote(CurveConfig.wrongFamilyRefusal(0, true)) + ")");
-        check(("Bright Cold is a Bright preset and the LED drive is off; use Cold or turn "
+        check(("Bright Cold is a Bright Curve preset and the LED drive is off; use Cold or turn "
                         + "the drive on").equals(CurveConfig.wrongFamilyRefusal(7, false)),
                 "and reads the same way in the other direction  (got "
                         + quote(CurveConfig.wrongFamilyRefusal(7, false)) + ")");
