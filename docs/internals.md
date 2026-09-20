@@ -663,7 +663,7 @@ from the green cast that pays for it.
 ## How the tests work
 
 `app/test/FanLabTest.java` is a plain Java program — no JUnit, no Android — that runs on
-the host as part of every build. **3292 assertions**, and the build refuses to produce an
+the host as part of every build. **4586 assertions**, and the build refuses to produce an
 APK if any fail.
 
 It covers five things:

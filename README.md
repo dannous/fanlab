@@ -311,7 +311,7 @@ cd app
 
 `aapt2 → javac → d8 → apksigner`, driven by one PowerShell script. No Gradle. Set
 `ANDROID_SDK_ROOT` and `JAVA_HOME` if they aren't in the default Windows locations. The host
-test suite runs as part of every build — 2989 assertions, and the build refuses to produce an
+test suite runs as part of every build — 4586 assertions, and the build refuses to produce an
 APK if any of them fail.
 
 **Signing keys aren't included.** The system build needs the AOSP platform key, because
