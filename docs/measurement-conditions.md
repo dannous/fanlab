@@ -9,7 +9,7 @@ operating points may shift.
 
 | | |
 |---|---|
-| Firmware | 1.7.1 |
+| Firmware | 1.7.0 |
 | Ambient | **24 °C**, owner-reported, at the projector |
 | build.prop patch | `minus15pct_rounded_43-43-48-59` (floors 43/43/48/59), not stock |
 | **UHD / 4K processing** | **OFF** |

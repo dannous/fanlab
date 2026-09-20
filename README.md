@@ -9,7 +9,7 @@ and in Presentation closer to half.
 The projector runs Android, so this is just an app. You install it from a USB stick like
 anything else. Nothing is flashed, nothing is rooted, and it uninstalls from Settings.
 
-For the Screeneo U4 (model SCN350) on firmware 1.7.1.
+For the Screeneo U4 (model SCN350) on firmware 1.7.0.
 
 **[Download the latest release →](../../releases/latest)**
 
@@ -160,7 +160,7 @@ Not endorsed by or affiliated with Philips or Screeneo Innovation SA.
 
 ## Installing it
 
-You need a U4 on firmware 1.7.1 and a USB stick. No PC, no cable, no adb, no unlocking
+You need a U4 on firmware 1.7.0 and a USB stick. No PC, no cable, no adb, no unlocking
 anything.
 
 1. Download **`fanlab-system.apk`** from [the latest release](../../releases/latest).

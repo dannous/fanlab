@@ -2,7 +2,7 @@ package com.daleygames.fanlab;
 
 /**
  * The SCN350 LED thermistor conversion, reproducing the platform framework's arithmetic
- * exactly (BatteryService.shutdownIfOverTemperature in services.vdex, 1.7.1).
+ * exactly (BatteryService.shutdownIfOverTemperature in services.vdex, 1.7.0).
  *
  * <pre>
  *   adc  = int(first n-1 chars of /sys/class/ledtemp/voltage)
