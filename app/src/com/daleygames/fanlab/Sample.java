@@ -82,6 +82,16 @@ public final class Sample {
     /** Milliseconds since the commanded duty last moved, or -1 if nothing is commanded. */
     public long dutyHoldMs = -1L;
 
+    /**
+     * The LED drive level this app has put on the hardware, percent of the driver's
+     * maximum for channels 0/2/3, or -1 when the stock table is in force -- which logs as
+     * a blank, so a row with nothing here was measured under stock LED drive. Channel 1
+     * follows from it through {@link LedDrive#redFor}. A column rather than a note
+     * because the thermal cost of the override is the thing the log has to be able to
+     * separate from everything else, on every row and not only on the edges.
+     */
+    public int ledDrive = -1;
+
     /** Is the thermal governor actively throttling anything? */
     public boolean throttling() {
         for (int i = 0; i < throttle.length; i++) {
@@ -135,6 +145,7 @@ public final class Sample {
         sb.append(',').append(exclusive < 0 ? "" : Integer.toString(exclusive));
         sb.append(',').append(catchingUp < 0 ? "" : Integer.toString(catchingUp));
         sb.append(',').append(dutyHoldMs < 0 ? "" : Long.toString(dutyHoldMs / 1000L));
+        sb.append(',').append(ledDrive < 0 ? "" : Integer.toString(ledDrive));
         return sb.toString();
     }
 

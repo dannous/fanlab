@@ -1,12 +1,29 @@
 # Safety
 
-Read this before installing. It is short, and none of it is boilerplate.
+## The short version
+
+If you just want the answer: **it is safe, and it runs your projector warmer than Philips
+does.** That is the whole trade. A slower fan moves less air.
+
+The projector's own protections are untouched and cannot be switched off by an app — there
+is a shutdown at 75 °C and a watchdog that reacts if the fan ever stalls. In normal use with
+this app the light engine sits around 52–55 °C, so there is plenty of room. Every way this
+app can fail sends the fan to maximum and hands control back to Philips, never the other way
+round.
+
+The one thing that can genuinely catch you out is uninstalling without pressing **RESTORE
+STOCK FAN CONTROL** first, which leaves nothing watching the temperature. That is explained
+in the README and again below.
+
+The rest of this document is the long version: what was measured, what could not be
+measured, and where the limits of the argument are. It is worth reading if you are going to
+run the projector hard, and it does not pull its punches.
 
 ## What this actually does to your projector
 
 It runs it **hotter than Philips does**. That is the trade, stated plainly: quieter fan,
 warmer machine. On the unit this was developed against, Presentation settles at about
-**52 °C** where the stock controller holds **44–46 °C**.
+**52 °C** where Philips' controller holds **44–46 °C**.
 
 Everything below is about whether that is a sensible trade and where its limits are.
 
@@ -127,6 +144,125 @@ adb shell setprop persist.sys.fanctrl.by.temperatue 1
 ```
 
 Or reinstall the app, press the takeover control, then press RESTORE.
+
+## The three display-controller features, and why the app no longer offers any
+
+`CAIC`, `LABB` and the Looks were all controls in this app. All three were measured on the
+projector on 2026-09-07 and all three were taken off the screen. This section is here
+because a safety document that only lists live hazards is a document that keeps re-inviting
+the question; the answers are recorded so nobody has to run the experiment again.
+
+**None of them was ever a thermal hazard, and none is now.** LABB and the Looks are pure
+image processing inside the DLPC3436 — the LED drive is untouched, so the light engine draws
+what it drew before. CAIC's method is the opposite direction, less LED power rather than
+more. None of the three touches `rgbcurrent`, `redcurrent` or anything else the LED
+thermistor responds to, and the 75 °C shutdown and the fan-stall watchdog were never in
+play. The risk they carried was a bad *picture*, which is why they were behind a
+confirmation window; withdrawing them retires that risk along with the feature.
+
+**CAIC: the engine runs, and its output goes nowhere.** A/B with the fan pinned, seven
+minutes a hold, Presentation, video playing — CAIC off **52.33 °C**, CAIC on **52.33 °C**,
+within-hold spread ±0.04 °C. Identical. Raising the gain budget to the maximum 4.0 changed
+nothing either; the write was accepted and `0x85` read back `00 80 60` with the status bit
+clear. The engine is demonstrably alive — the debug gain bars move with the content and
+`0x5F` gives live per-colour currents that vary with the image — but the LED current never
+leaves the kernel's stock per-mode table, because TI routes every LED-current command to a
+DLPA200x PMIC and **this board has none**: the currents are driven by the SoC over SPI to
+two MAX20096 chips the DLPC cannot reach. Structural, not a setting.
+
+**LABB: it works, and the work is unwanted.** `w 80 2 11 80` is accepted, the register reads
+back `11 80`, and the live gain byte tracks the content — `0x20` idle, `0x27` and `0x24` on
+real video. Watched: *"really washed out seeming"*. That is LABB's documented job. Gaining
+up the darker parts of a frame raises the black floor, and a raised black floor is flattened
+contrast.
+
+**The Looks: brightness and a green cast are the same purchase.** All 19 were swept and read
+via `26h`. Look 0 is 40/40/20 R/G/B and reads white on a white field; every other Look cuts
+red to 25–33 % and gives the time to green, and Looks 1 and 15 both read visibly green.
+It cannot be rebalanced: neutral white on Look 15 needs red flux up 1.97×, so red current up
+about 2.5× to 175 %, against a hard ceiling of 97. Red is the weak primary here and has
+nothing to give. Look 0 — the only one the kernel ever selects, because it zeroes the Look
+table at probe — is optimal by construction.
+
+**What is left in the app.** The command encoders and decoders in `PicoReg`, their tests,
+and a read of all three once a minute whose result is printed under **Diagnostics**,
+read-only, beside the finding it supports. That is deliberate: a negative result is only
+worth anything if it can be re-checked, and a firmware that changed one of these answers
+would show up on that screen and nowhere else. **Nothing in the app writes `0x50`, `0x80`,
+`0x84` or `0x22`.**
+
+**If a previous build left one on.** Every one of these registers is runtime-only and the
+factory `picosetting` blob is never written, so a power cycle clears all of them. This build
+also stores no preference that could turn one back on at boot.
+
+## The LED drive override runs the light engine harder
+
+Separate from everything above, and off by default. It writes `rgbcurrent` and `redcurrent`
+to drive the four brightness modes at **35/55/75/90 %** instead of the kernel's own
+20/40/55/76 — 18 % more drive in Presentation, and a measured **+6.0 °C** on the LED thermistor
+for every 10 points at a fixed fan duty, so roughly **+4.8 °C** for the 76 → 90 step. 90 is
+the drive the Bright curve family was drawn against and the drive its plant scaling was
+measured at, so the brightness preset and the curve now agree on one number.
+
+The safety case is one rule, and it is a conjunction: **the override applies only while
+this app is the thing cooling the machine.** CURVE or LINEAR, no AUTO sweep and no pinned
+VERIFY hold running, the light engine on, the fail-safe clear, the display awake.
+
+The one place that reads as an exception and is not is a **VERIFY steady phase**, where the
+override stays applied. In that phase the real curve is closing the real loop on the real
+thermistor, so the app is cooling the machine in exactly the sense the rule requires — the
+term excludes a *pinned* hold and a sweep, because a duty that is being held rather than
+chosen is not coupled to temperature at all. Dropping the drive there would also make the
+phase useless for the presets it matters most to: verifying a Bright rung at the factory
+drive measures a machine nobody runs. Anywhere else the
+kernel's own table goes straight back, within a second, because the alternative is
+Presentation-class LED heat under whatever fan ladder `rgblevel` happens to select — which
+is precisely the hazard the rest of this document exists to avoid. Any doubt, including an
+unreadable `led_status`, resolves to *not* applied.
+
+On top of that it has a ceiling of its own: above **60 °C** on the LED thermistor the
+override is dropped and **latched off** until the brightness mode or the setting changes.
+60 is five degrees above the 55 at which the stock controller commands maximum fan. There is
+no automatic re-arm, because brightness cycling on the wall is more objectionable than a
+fan swing.
+
+**The curve preset families exist to keep that trip a backstop.** Switching the override on
+moves the stored curve to the Bright version of the step it is on, and switching it off moves
+it back; the screen only offers the family the drive allows and a broadcast naming one from
+the wrong family is refused. The reason is measured: at drive 90 in a 28 °C room a Bright step
+settles at 56 °C, four degrees under the trip, where the same drive on a standard step settles
+at **58 °C** — 2 °C under it. A pairing that close reaches the trip on a warm afternoon, and
+the trip drops the brightness with nothing on screen to say why, so the symptom is a picture
+that dims itself for no visible reason. A hand-edited curve has no counterpart and is left as
+it is, which is the one case where the pairing is still the owner's to get right.
+
+It also starts only at a service start, a settings change, or a mode change — never part
+way through a run. That is not tidiness: switching it on under LINEAR mid-session makes the
+fan walk about 12 duty points at one per five seconds, and a 14-point cumulative walk is the
+one thing on this machine the owner has actually heard and objected to.
+
+**What it costs.** Under CURVE the extra heat is paid in temperature: Bright Quiet rests
+around 54.2 °C rather than Quiet's 51.9 at a 24 °C ambient, and it was measured at 54.9 °C
+on the hardware with the intake at 26.7 °C. Under LINEAR it is paid in fan, so
+the default ceiling moves from 52.0 to **54.0 °C** while the override is on — roughly where the
+Bright Curve family rests, so the two controllers can still be compared by ear. A ceiling you
+set by hand is never moved, and nothing is written to the stored setting: switching the
+override off puts the ceiling back.
+
+**All four plant scalings behind these numbers are now measured** (2026-09-08, pinned fan 45,
+each mode held at factory drive and again at raised): Presentation ×1.2404, Normal ×1.4032,
+Eco ×1.3866, Super Eco ×1.5763. The fitted line they replace was low by up to 6 % on three of
+the four, so the light engine runs **hotter than every earlier version of this document said**
+— Bright Quiet's 24 °C resting point moved from 53.8 °C to 54.2. The two-degrees-over-50 caveat
+above applies with rather more than two degrees on top.
+
+One consequence is worth stating in a safety document rather than only in `curve.md`: on the
+measured plant, a **standard** step run at drive 90 reaches **61.0 °C at a 28 °C ambient**,
+past the override's own 60 °C cut-out, where Bright Quiet reaches 59.5. That pairing is what
+`CurveConfig.curveForDrive` makes unreachable, and the measurement is why the gate exists
+rather than a recommendation.
+
+The 75 °C shutdown and the fan-stall watchdog are untouched by it, like everything else here.
 
 ## The controller cannot see SoC temperature
 

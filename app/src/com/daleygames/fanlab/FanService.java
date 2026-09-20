@@ -51,7 +51,13 @@ import java.util.Set;
  *       never lower;</li>
  *   <li>stopping the service while it was driving the fan writes
  *       {@link FanIo#FAIL_SAFE_DUTY} on the way out, so a crash or a kill can never
- *       leave a low duty behind.</li>
+ *       leave a low duty behind;</li>
+ *   <li>the LED drive override is applied <i>only</i> while this app is the temperature
+ *       controller, and the stock table goes back on every path out of that state. See
+ *       {@link LedDrive} for why the two are inseparable;</li>
+ *   <li>nothing here writes the display controller. The three DLPC features the app once
+ *       offered were measured and none of them helps -- see {@link PicoReg} -- so what is
+ *       left is a read, once a minute, feeding {@link DiagActivity}.</li>
  * </ul>
  */
 public class FanService extends Service {
@@ -67,6 +73,53 @@ public class FanService extends Service {
     private static final String CHANNEL_ID = "fanlab.telemetry";
 
     private static final long TICK_MS = 1000L;
+
+    /**
+     * How often the brightness mode alone is re-read, while the LED drive override is on.
+     *
+     * The kernel applies the stock LED table synchronously inside its own {@code rgblevel}
+     * write, so a mode change puts stock brightness on the screen before this app can know
+     * it happened. Measured on the projector: at 156 ms after the write the panel was still
+     * at stock 75, and the override did not land until 597 ms. That is a visible flick to
+     * the old brightness and back, and the owner saw it before any log did.
+     *
+     * Nothing can remove that window -- the kernel wins the race by construction -- but its
+     * width is ours. Re-reading at 50 ms instead of once a tick cuts it to about three
+     * frames, which is where it stops being a flick and starts being a step.
+     *
+     * It cannot be closed entirely from user space, and the docs say so rather than
+     * implying the override is seamless.
+     *
+     * Cheap on purpose: this path reads {@code rgblevel} and nothing else, whose show
+     * handler returns a stored int. It must never read {@code rgbcurrent}, which costs four
+     * SPI transactions per call.
+     */
+    private static final long LED_FAST_MS = 50L;
+
+    /**
+     * How long after a brightness-mode change the override keeps re-asserting itself.
+     *
+     * Long enough to outlast the kernel's own four SPI writes, and bounded so a projector
+     * that never confirms cannot leave this hammering the bus. It stops the moment a
+     * read-back agrees.
+     *
+     * Measured rather than guessed: with a 600 ms window the projector still showed stock
+     * on the common channels five seconds after a mode change, because the kernel's
+     * sequence was not finished when the window closed and the ordinary rewrite limit then
+     * held the repair off. Three seconds covers the sequence with room to spare, and the
+     * loop exits as soon as the hardware agrees, so the full window is only ever spent
+     * when something is genuinely wrong.
+     */
+    private static final long LED_SETTLE_MS = 3000L;
+
+    // There is deliberately no fixed hold-off after a mode change. An earlier version
+    // waited 200 ms for the kernel to finish its four SPI writes, which was a guess at a
+    // number the hardware will state outright: while the kernel is mid-sequence the
+    // channels disagree with each other, and when it has finished they agree. Waiting for
+    // agreement is both safer than a guess and faster than the 200 ms it replaced -- the
+    // kernel was measured finishing inside 117 ms, and the owner uses the near-instant
+    // jump between brightness modes to compare them by eye, so the delay is a feature
+    // being taken away rather than an implementation detail.
     private static final int RESCAN_EVERY_TICKS = 30;
     private static final int NOTIF_EVERY_TICKS = 5;
     /** Consecutive bad temperature reads tolerated in CURVE mode before failing high. */
@@ -80,6 +133,16 @@ public class FanService extends Service {
      * put a preference commit on the control loop's path for no accuracy at all.
      */
     private static final long STAMP_EVERY_MS = 60000L;
+
+    /**
+     * How often the display controller is read, at most. One pass is five picoreg round
+     * trips -- an I2C write and a {@code logcat} scrape each -- on a thread of its own, so a
+     * minute is the budget. Nothing waits on it, because nothing acts on the answer; it
+     * feeds diagnostics and the CSV note column.
+     */
+    private static final long DLPC_READ_EVERY_MS = 60000L;
+    /** The bound on one read's round trip. On its own thread, so this stalls nothing. */
+    private static final long DLPC_READ_TIMEOUT_MS = 4000L;
 
     // ---- state the UI reads; single process, so plain volatiles are enough ----
     public static volatile FanService instance;
@@ -103,6 +166,89 @@ public class FanService extends Service {
     public static volatile String[] sweepFiles = new String[0];
     /** The most recent DLPC temperature attempt, so the UI can say so loudly. */
     public static volatile PicoReg.Reading lastDlpc;
+
+    // ---- the display controller, read only ----
+    /**
+     * What the DLPC last said about the three features the app used to offer, or null until
+     * a read has landed. {@link DiagActivity} is the only reader.
+     *
+     * <b>Nothing in this service writes any of them.</b> All three were measured on the
+     * hardware and none of them helps: CAIC computes but its output is stranded, LABB works
+     * and washes the picture out, and every Look but 0 buys its brightness with a green
+     * cast. {@link PicoReg} carries the numbers. These fields exist so the facts can be
+     * re-checked on a future firmware without putting a control back on the main screen.
+     *
+     * System variant only, because only it can read the kernel log the answers land in. On
+     * the plain build they stay null and the diagnostics say why.
+     */
+    public static volatile PicoReg.CaicReading caicReadback;
+    public static volatile PicoReg.CaicImage caicImageReadback;
+    public static volatile PicoReg.Labb labbReadback;
+    public static volatile PicoReg.Look lookReadback;
+
+    /**
+     * A read is in flight on the picoreg node, so no second one is started.
+     *
+     * A read is a write of the {@code r} command followed by a look at what came back, and
+     * two of those interleaving on one node means each can find the other's command sitting
+     * in it. The echo guard and the byte-count check refuse that rather than decoding it, so
+     * the failure mode is a lost reading rather than a wrong one -- but a lost reading is
+     * still lost. The pass therefore runs its round trips in sequence on one thread, behind
+     * this flag.
+     */
+    private volatile boolean dlpcReading;
+    /** Monotonic time of the last sampling pass; 0 means never. */
+    private long dlpcReadMonoMs;
+    /** The previous pass's summary, so the log carries the change and not the minute. */
+    private volatile String lastDisplayReadLine = "";
+    /** Which build this is. Read once; it decides whether a read-back can ever succeed. */
+    private boolean systemVariant;
+
+    // ---- the LED drive override ----
+    /**
+     * The override's own state machine: what it believes is on the hardware, its ceiling
+     * latch and its rate limits. Not static -- it is the service's, and the two paths that
+     * reach it from another thread ({@link #releaseControl} and the session starts) go
+     * through {@link #restoreLedDriveNow}, which is synchronized inside {@link LedDrive}.
+     */
+    private final LedDrive ledDrive = new LedDrive();
+
+    /**
+     * The override may only <b>start</b> here: at a service start, a settings change, or the
+     * tick the mode becomes one this app controls.
+     *
+     * <b>Never spontaneously mid-run</b>, and that is a measurement rather than a
+     * preference. The owner's ear caught a 14-point cumulative fan sweep, and switching the
+     * boost on under LINEAR part way through a session makes it walk about 12 duty points at
+     * one per 5 s -- the same event, arriving by a different route. Gating the <i>start</i>
+     * rather than the whole thing is what lets the override survive a standby or a
+     * light-engine cycle without either re-applying out of nowhere or silently staying off.
+     */
+    private boolean ledDriveArmed;
+
+    /** Was this app the temperature controller last tick? Edge-triggers the arm above. */
+    private boolean lastLedControlling;
+
+    /** Set by the tick: is the fast brightness-mode watch worth running right now? */
+    private volatile boolean ledFastArmed;
+
+    /** The brightness mode the fast watch last acted on, or -1 before it has run. */
+    private volatile int ledFastLevel = -1;
+
+    /** Last plausible light-engine temperature, so the fast path can honour the trip. */
+    private volatile double ledFastC = Double.NaN;
+
+    /** While non-zero, the deadline until which a mode change is still being chased. */
+    private volatile long ledFastSettleUntil;
+
+    /** Was LINEAR's ceiling promoted for the boost last tick? Edge-triggers the log note. */
+    private boolean linearCeilingWasRaised;
+
+    /**
+     * One phrase describing the override, for the screen and the broadcast reply:
+     * {@code off}, {@code stock}, {@code applied 90/84}, or a reason it is being held off.
+     */
+    public static volatile String ledDriveStatus = "off";
 
     private HandlerThread thread;
     private Handler handler;
@@ -191,6 +337,8 @@ public class FanService extends Service {
     private int badReads;
     private int ticks;
     private boolean lastInteractive = true;
+    /** Whether the previous tick had a VERIFY steady phase driving. See ledDriveArmed. */
+    private boolean lastClosedLoop;
     private volatile boolean resumePending;
     private volatile boolean prefsDirty;
     private volatile boolean running;
@@ -263,6 +411,17 @@ public class FanService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        // A fresh instance has read nothing yet, and it never writes the display
+        // controller, so there is nothing here to hand back -- only stale readings to drop.
+        caicReadback = null;
+        caicImageReadback = null;
+        labbReadback = null;
+        lookReadback = null;
+        try {
+            systemVariant = android.os.Process.myUid() == android.os.Process.SYSTEM_UID;
+        } catch (Throwable ignored) {
+            systemVariant = false;
+        }
         Sysfs.sink = new Sysfs.Sink() {
             @Override
             public void note(String msg, Throwable t) {
@@ -342,6 +501,7 @@ public class FanService extends Service {
             // lands on the first row, which is where a run boundary belongs.
             note(resync(FanIo.readDuty(), "service_start"));
             handler.post(tickRunnable);
+            handler.postDelayed(ledFastRunnable, LED_FAST_MS);
         } catch (Throwable t) {
             Log.e(TAG, "onCreate loop", t);
             statusLine = "loop failed to start: " + t;
@@ -390,6 +550,16 @@ public class FanService extends Service {
             }
         } catch (Throwable ignored) {
             // nothing useful to do
+        }
+        // The LED drive first, and before the fan, for the reason releaseControl() gives:
+        // the restore rewrites rgblevel, the stock ladder answers that by writing its own
+        // tier floor, and with the loop already stopped the fail-safe write below has to be
+        // the last thing that touches the node. Unconditional, unlike the fan handback --
+        // forceRestore does nothing at all unless an override is believed to be applied.
+        try {
+            restoreLedDriveNow("service_stop");
+        } catch (Throwable t) {
+            Log.e(TAG, "onDestroy leddrive", t);
         }
         // Hand the hardware back in a state that cannot cook it. If we were driving the
         // fan and we are going away, the last thing we wrote may be low and nothing else
@@ -502,6 +672,11 @@ public class FanService extends Service {
             // which nothing at all is responsible for cooling. Mode is already OFF above,
             // so a tick racing us reaches the same conclusion.
             syncStockLadder();
+            // And put the stock LED table back before the fan write, not after. Restoring
+            // it rewrites rgblevel, which fires the stock ladder's mode-change branch and
+            // slams that tier's floor into fan_ctrl; with the mode already OFF no tick will
+            // take that back, so the fail-safe below has to be the last thing on the node.
+            restoreLedDriveNow("release");
             boolean ok = FanIo.writeFailSafe();
             lastWritten = ok ? FanIo.FAIL_SAFE_DUTY : -1;
             curve.reset();
@@ -711,6 +886,61 @@ public class FanService extends Service {
 
     // ------------------------------------------------------------------ the loop
 
+    /**
+     * Watch the brightness mode between ticks and put the override back the moment it
+     * changes. See {@link #LED_FAST_MS} for why this exists at all.
+     *
+     * It re-posts unconditionally so it survives the override being switched off and on,
+     * and does nothing but a single small read while disarmed. {@link LedDrive} is
+     * synchronized, so racing the 1 Hz tick is safe by construction rather than by timing;
+     * the read-back is passed as null because a mode change is an edge, and an edge applies
+     * without needing to compare anything.
+     */
+    private final Runnable ledFastRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (ledFastArmed) {
+                    long now = SystemClock.elapsedRealtime();
+                    int level = Sysfs.readInt(Sysfs.RGBLEVEL, -1);
+                    if (level > 0 && level != ledFastLevel) {
+                        ledFastLevel = level;
+                        ledFastSettleUntil = now + LED_SETTLE_MS;
+                    }
+                    if (level > 0 && now < ledFastSettleUntil) {
+                        // Inside the window the read-back is worth its four SPI reads: it
+                        // is the only thing that says whether the kernel has finished.
+                        LedDrive.Config cfg = Prefs.ledDrive(FanService.this);
+                        String rbText = Sysfs.read(Sysfs.RGBCURRENT);
+                        int[] rb = LedDrive.parseReadback(rbText);
+                        if (rb != null && rb[1] == rb[2]) {
+                            // Coherent: whatever is on the hardware, all of it is on the
+                            // hardware. Either it is already ours, or the kernel has
+                            // finished and this is the first safe moment to write.
+                            if (ledDrive.confirmed(cfg, level, rbText)) {
+                                ledFastSettleUntil = 0L;
+                            } else {
+                                LedDrive.Plan plan = ledDrive.decide(cfg, level, true,
+                                        ledFastC, rbText, now, true);
+                                if (plan.action != LedDrive.Plan.NONE) {
+                                    ledDrive.perform(plan);
+                                }
+                            }
+                        }
+                        // Incoherent or unreadable: the kernel is still pushing channels
+                        // out, or the SPI read dropped. Writing now is what produced a
+                        // colour cast on the projector. Wait for the next 50 ms look.
+                    }
+                }
+            } catch (Throwable t) {
+                // The fan is not involved here and the tick will do this again within a
+                // second. Never let a brightness cosmetic take the loop down.
+                Log.w(TAG, "ledfast", t);
+            }
+            handler.postDelayed(this, LED_FAST_MS);
+        }
+    };
+
     private final Runnable tickRunnable = new Runnable() {
         @Override
         public void run() {
@@ -819,7 +1049,8 @@ public class FanService extends Service {
 
         // ---------------- the light engine, and ambient ----------------
         int engineState = s.ledStatus < 0 ? lastEngineState : (s.ledStatus == 0 ? 0 : 1);
-        if (engineState == 1 && lastEngineState != 1) {
+        boolean engineOnEdge = engineState == 1 && lastEngineState != 1;
+        if (engineOnEdge) {
             // A power-on. Record the reading and the evidence needed to grade it, rather
             // than gating on a threshold: the thermistor is still 4.7 C above its resting
             // value five hours in, so an hour-long gate would pass a reading several
@@ -852,6 +1083,20 @@ public class FanService extends Service {
                 stampEngineOn(now, mono, engineOnBootMs);
             }
         }
+
+        // ---------------- the display controller ----------------
+        // Read only, and a minute apart at most. Nothing here writes it.
+        sampleDisplay(interactive, mono);
+
+        // ---------------- the LED drive override, first half ----------------
+        // Loaded here because two different parts of the tick need the answer and neither
+        // should ask twice: LINEAR's ceiling has to know about the boost before it steps,
+        // just below, and the override itself is applied after the fan write, further down,
+        // where an extra sysfs read and a couple of writes cannot get in front of a cooling
+        // decision. The same question Prefs.ledBoostOn answers, asked from a config this
+        // tick has to load anyway.
+        LedDrive.Config ledCfg = Prefs.ledDrive(this);
+        boolean ledFeatureOn = Prefs.ledDriveOn(this) && !ledCfg.isStock();
 
         // A read-back that is not what we last wrote is another writer on the node: the
         // stock ladder, or the kernel reimposing 55 % after a stall. It is a free
@@ -928,7 +1173,7 @@ public class FanService extends Service {
         } else if (hs != null) {
             desired = hs.tick(mono, sweepC);
             traceRgb = hs.rgblevel();
-            tracePhase = "hold";
+            tracePhase = hs.closedLoop() ? "steady" : "hold";
             traceStep = 0;
             sessionFinished = hs.finished();
             assertRgbLevel(null, hs, hs.rgblevel(), s, note, traceEvent);
@@ -997,6 +1242,22 @@ public class FanService extends Service {
                 failSafeLatched = false;
                 boolean engineOn = s.ledStatus != 0;
                 LinearConfig lin = Prefs.linear(this);
+                // LINEAR needs no new mode for the LED drive override -- it holds a
+                // temperature, so it absorbs the extra heat by itself and pays for it in
+                // fan. What it needs is a different number: at drive 90 the stock 52.0
+                // costs duty 50 in a 24 C room where today it rests at 38, and gives up at
+                // 29.1 C ambient instead of 32.6. The default moves to 54.0 while the
+                // override is on -- inferred from the x1.18 scaling, never written to the
+                // preferences, and never applied to a ceiling the owner set by hand.
+                boolean raised = LinearConfig.promoteForBoost(lin, ledFeatureOn);
+                if (raised != linearCeilingWasRaised) {
+                    append(note, raised
+                            ? "linear ceiling " + Sample.fmt1(LinearConfig.DEFAULT_CEILING_C)
+                              + "->" + Sample.fmt1(lin.ceilingC)
+                              + " for the LED drive override (inferred)"
+                            : "linear ceiling back to " + Sample.fmt1(lin.ceilingC));
+                    linearCeilingWasRaised = raised;
+                }
                 desired = linear.step(lin, Prefs.curve(this), s.profile, s.degC,
                         s.socC[0], engineOn, mono);
                 guardBoost = linear.guardBoost();
@@ -1100,6 +1361,84 @@ public class FanService extends Service {
                     }
                 }
             }
+        }
+
+        // ---------------- the LED drive override, second half ----------------
+        // Deliberately after the write, exactly like the DLPC read below: one sysfs read
+        // and up to two writes, none of which may sit in front of a cooling decision.
+        //
+        // The coupling rule is the entire safety case and it is a conjunction. Raising LED
+        // output while this app is not the fan controller runs Presentation-class heat
+        // under whatever fan ladder rgblevel happens to select, which is the hazard the
+        // notes forbid outright -- so every term below is required, and any doubt about
+        // one of them resolves to not-allowed.
+        //
+        // The one term where that reads oddly is led_status, which is tested for "not 0"
+        // and so treats an unreadable node as "on", exactly as the curve does. It is the
+        // conservative answer here as well, for a different reason: the hazard is the fan
+        // coupling, and every term that establishes the coupling is checked above. Writing
+        // LED currents to an engine that turns out to be off is inert -- there is nothing
+        // lit to drive -- so guessing wrong in this direction costs one sysfs write.
+        boolean ledControls = Mode.controls(mode);
+        // A session normally forfeits the override, because it pins the fan and the
+        // override's whole safety case is that light output is only raised while this app
+        // is the thing cooling the machine. A VERIFY steady phase is the exception, and it
+        // is an exception that SATISFIES the rule rather than bending it: in that phase the
+        // real curve is closing the real loop on the real thermistor, which is precisely
+        // the coupling being required. Dropping the drive there would also make the phase
+        // pointless for the family it matters most to -- verifying a Bright preset at the
+        // factory drive measures the wrong machine.
+        boolean sessionOpenLoop = sw != null || (hs != null && !hs.closedLoop());
+        boolean ledInCharge = ledFeatureOn && !stopped && ledControls
+                && !sessionOpenLoop && !failSafeLatched;
+        // Arming. The override may only start on one of three events -- see ledDriveArmed
+        // for the measurement behind that -- and lastLedControlling starts false, so the
+        // service's own first tick in CURVE or LINEAR is an entry edge and needs no case
+        // of its own.
+        //
+        // Losing the display or the light engine is a pause, not a disarm: both come back
+        // through a discontinuity the loop already resyncs across, so re-applying there is
+        // the service-start case rather than a change nobody asked for. Everything else --
+        // the mode leaving, a session taking the node, the fail-safe latching, the feature
+        // being switched off -- clears the arm, so coming back takes a deliberate act.
+        boolean ledModeEntered = ledControls && !lastLedControlling;
+        lastLedControlling = ledControls;
+        // Handing the fan to the curve mid-session is an entry edge of its own. Without it
+        // the override could never come back: the mode has not changed, so ledModeEntered
+        // is false, and startVerify dropped the drive on the way in.
+        boolean closedLoopNow = hs != null && hs.closedLoop();
+        boolean steadyEntered = closedLoopNow && !lastClosedLoop;
+        lastClosedLoop = closedLoopNow;
+        if (!ledInCharge) {
+            ledDriveArmed = false;
+        } else if (settingsChanged || ledModeEntered || steadyEntered) {
+            ledDriveArmed = true;
+        }
+        boolean ledAllowed = ledInCharge && ledDriveArmed && interactive && s.ledStatus != 0;
+        try {
+            // One extra read a tick, and only while the feature is asking for something:
+            // with the override off there is nothing to compare a read-back against.
+            String rgbCurrent = ledFeatureOn ? Sysfs.read(Sysfs.RGBCURRENT) : null;
+            LedDrive.Plan plan = ledDrive.decide(ledFeatureOn ? ledCfg : null, s.rgblevel,
+                    ledAllowed, Thermistor.plausible(s.degC) ? s.degC : Double.NaN,
+                    rgbCurrent, mono);
+            ledDrive.perform(plan);
+            s.ledDrive = ledDrive.appliedLevel();
+            if (plan.note != null && plan.note.length() > 0) {
+                append(note, plan.note);
+            }
+            ledDriveStatus = ledDriveLine(ledFeatureOn, ledInCharge, interactive, s.ledStatus);
+            // Hand the fast watch its inputs. Arming it only while the override is
+            // genuinely in force keeps it a no-op the rest of the time, and re-reading
+            // rgblevel here means a mode change the tick saw first is not acted on twice.
+            ledFastLevel = s.rgblevel;
+            ledFastC = Thermistor.plausible(s.degC) ? s.degC : Double.NaN;
+            ledFastArmed = ledAllowed && ledFeatureOn && !ledCfg.isStock();
+        } catch (Throwable t) {
+            // Sysfs does not throw and LedDrive catches its own arithmetic, so this is the
+            // outermost belt: the fan has already been written this tick and nothing about
+            // the LEDs is worth losing a tick over.
+            Log.w(TAG, "leddrive", t);
         }
 
         // ---------------- exclusive control ----------------
@@ -1257,7 +1596,162 @@ public class FanService extends Service {
         return Provenance.offSource(engineOnWallMs, engineOnBootMs, bootWallMs());
     }
 
-    /** Persist the stamp, off the control loop. See {@link #runOffLoop}. */
+    // ---- the display controller, read only ----
+
+    /**
+     * Ask the DLPC what its three image features are doing, and record the answer.
+     *
+     * <h3>Why this reads and never writes</h3>
+     * All three were offered as controls and all three were withdrawn, because all three
+     * were measured on the hardware and none of them helps. CAIC is identical to CAIC off
+     * on a pinned-fan A/B -- 52.33 C either way -- because TI routes every LED-current
+     * command to a DLPA200x PMIC and this board has none. LABB does work, and its work is
+     * to raise the black floor: "really washed out seeming". Every Look but 0 takes duty
+     * cycle off red and gives it to green, and red has no headroom to give it back.
+     * {@link PicoReg} carries the numbers and the arithmetic.
+     *
+     * So what is left is the evidence, not the switch. {@link DiagActivity} prints these
+     * four readings beside the finding each of them supports, which is what makes the
+     * negative re-checkable on a firmware that might change one of the answers.
+     *
+     * <h3>Why it is off the 1 Hz path</h3>
+     * A read is an I2C write followed by a {@code logcat} scrape, and the loop it would run
+     * on is the one holding the fan. {@link #DLPC_READ_EVERY_MS} is a minute, the pass runs
+     * on a daemon thread of its own, and {@link #dlpcReading} keeps two passes from
+     * interleaving on one node. Never with the display off: the DLPC is not reliably up.
+     */
+    private void sampleDisplay(boolean interactive, long mono) {
+        if (stopped || !interactive || !systemVariant || dlpcReading) {
+            return;
+        }
+        if (dlpcReadMonoMs != 0L && mono - dlpcReadMonoMs < DLPC_READ_EVERY_MS) {
+            return;
+        }
+        dlpcReadMonoMs = mono;
+        readDisplayAsync();
+    }
+
+    /**
+     * The four readings, in sequence, on a thread that is neither the control loop nor the
+     * housekeeping looper -- a hung {@code logcat} must be able to take nothing down with
+     * it. One thread rather than four, because they share one node: two round trips
+     * overlapping means each can find the other's command sitting in it. Five round trips,
+     * not four -- the Look needs its split from {@code 0x26} and its number from {@code 0x23}.
+     *
+     * A note is filed only when the line changes, so a stable machine costs one CSV row
+     * rather than one a minute.
+     */
+    private void readDisplayAsync() {
+        dlpcReading = true;
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        PicoReg.CaicReading caic =
+                                PicoReg.readLedOutputControl(DLPC_READ_TIMEOUT_MS);
+                        caicReadback = caic;
+                        PicoReg.CaicImage img =
+                                PicoReg.readCaicImageControl(DLPC_READ_TIMEOUT_MS);
+                        if (img.known) {
+                            caicImageReadback = img;
+                        }
+                        PicoReg.Labb labb = PicoReg.readLabb(DLPC_READ_TIMEOUT_MS);
+                        labbReadback = labb;
+                        PicoReg.Look look = PicoReg.readLook(DLPC_READ_TIMEOUT_MS);
+                        if (look.known) {
+                            lookReadback = look;
+                        }
+                        String line = "dlpc_read=caic:" + caic.state
+                                + " gain:" + (img.known ? PicoReg.fmtGain(img.gain) : "?")
+                                + " labb:" + (labb.known ? labb.summary() : "?")
+                                + " look:" + (look.known ? look.summary() : "?");
+                        if (!line.equals(lastDisplayReadLine)) {
+                            lastDisplayReadLine = line;
+                            // CsvLogger.q quotes the note column, so the reasons' commas
+                            // and quotes are safe to pass through as they are.
+                            note(line);
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "dlpc read", t);
+                    } finally {
+                        dlpcReading = false;
+                    }
+                }
+            }, "fanlab-dlpc-read");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable t) {
+            dlpcReading = false;
+            Log.w(TAG, "readDisplayAsync", t);
+        }
+    }
+
+    // ---- the LED drive override ----
+
+    /**
+     * One phrase describing the override, for {@link #ledDriveStatus}.
+     *
+     * The distinction worth drawing is between "stock because nothing is asking" and "stock
+     * because something is holding it off", because the second is a state the owner has to
+     * be able to see the reason for: the row says Bright, the picture is not, and without
+     * this the screen would just look wrong.
+     */
+    private String ledDriveLine(boolean featureOn, boolean inCharge, boolean interactive,
+                                int ledStatus) {
+        if (!featureOn) {
+            return "off";
+        }
+        if (ledDrive.tripped() || ledDrive.overriding()) {
+            // "held off: tripped at 57.2 C", or "applied 90/84".
+            return ledDrive.state();
+        }
+        if (!inCharge) {
+            return "stock: this app is not the fan controller";
+        }
+        if (ledStatus == 0) {
+            return "stock: the light engine is off";
+        }
+        if (!interactive) {
+            return "stock: the display is asleep";
+        }
+        if (!ledDriveArmed) {
+            // The only state that needs the owner to do something. It is reached by the
+            // fail-safe having latched at some point, which is deliberately not
+            // self-clearing -- see ledDriveArmed.
+            return "stock: held until the mode or the settings change";
+        }
+        return "stock";
+    }
+
+    /**
+     * Put the stock LED table back, now, off the tick.
+     *
+     * The handback for the three paths that are not a tick: RELEASE, a session taking the
+     * node, and service stop. Everything a tick can see -- the mode leaving CURVE or
+     * LINEAR, the fail-safe latching, the feature being switched off -- is handled by
+     * {@link LedDrive#decide} instead, on the tick it happens, because that is the method
+     * that knows what is on the hardware and it restores within one second either way.
+     *
+     * {@link LedDrive#forceRestore} ignores the rewrite rate limit, since a handback is a
+     * one-off and a duplicate {@code rgblevel} write is harmless, and it does nothing at
+     * all unless an override is believed to be applied -- so calling this on a machine this
+     * app never boosted writes nothing.
+     */
+    private void restoreLedDriveNow(String why) {
+        try {
+            LedDrive.Plan p = ledDrive.forceRestore(SystemClock.elapsedRealtime());
+            if (p.action == LedDrive.Plan.NONE) {
+                return;
+            }
+            boolean ok = ledDrive.perform(p);
+            note("leddrive->stock:" + why + (ok ? "" : " FAILED"));
+            ledDriveStatus = ok ? "stock" : "stock write FAILED";
+        } catch (Throwable t) {
+            Log.w(TAG, "restoreLedDriveNow", t);
+        }
+    }
+
     private void stampEngineOn(final long wallMs, final long monoMs, final long bootMs) {
         runOffLoop(new Runnable() {
             @Override
@@ -1329,6 +1823,11 @@ public class FanService extends Service {
                         + Sample.fmt1(SweepPlan.MAX_START_C) + " C";
                 return false;
             }
+            // Before the session takes the node. A sweep owns rgblevel and drives the fan
+            // to a schedule, so it must not start on top of an LED drive the report would
+            // not mention -- and its own assertRgbLevel would reinstate the stock table a
+            // second later anyway, silently, which is worse than doing it here on purpose.
+            restoreLedDriveNow("session");
             openSessionFiles(false);
             meta = buildMeta("auto", ambientNote);
             lastRgbWritten = -1;
@@ -1446,6 +1945,8 @@ public class FanService extends Service {
                 statusLine = "a session is already running";
                 return false;
             }
+            // For the reason startSweep gives: a hold session owns rgblevel too.
+            restoreLedDriveNow("session");
             openSessionFiles(true);
             meta = buildMeta("verify", "");
             lastRgbWritten = -1;
@@ -1460,6 +1961,41 @@ public class FanService extends Service {
             FanIo.writeFailSafe();
             holdSession = null;
             statusLine = "could not start VERIFY: " + t;
+            return false;
+        }
+    }
+
+    /**
+     * Hand the fan from the held duty to the stored curve, and count what it does.
+     *
+     * The second half of VERIFY. The first half asks a person whether a duty is acceptable;
+     * this asks the machine whether the curve that produces it will sit still, which is a
+     * question a pinned duty cannot answer because hunting only exists in a closed loop.
+     *
+     * The curve handed over is the one actually stored, not a copy or a candidate, so what
+     * is measured is what will run. The fan picks up from where it already is, so the
+     * handover itself is not a step.
+     */
+    public synchronized boolean beginSteadyPhase(int seconds) {
+        try {
+            HoldSession hs = holdSession;
+            if (hs == null || hs.finished()) {
+                statusLine = "no VERIFY session to hand over";
+                return false;
+            }
+            if (hs.closedLoop()) {
+                statusLine = "the curve is already driving";
+                return false;
+            }
+            int from = lastWritten > 0 ? lastWritten : hs.duty();
+            hs.beginSteady(Prefs.curve(this), seconds, from,
+                    SystemClock.elapsedRealtime());
+            statusLine = "VERIFY steady phase: the curve is driving, watching for movement";
+            note("VERIFY steady phase start from duty " + from);
+            return true;
+        } catch (Throwable t) {
+            Log.e(TAG, "beginSteadyPhase", t);
+            statusLine = "could not start the steady phase: " + t;
             return false;
         }
     }

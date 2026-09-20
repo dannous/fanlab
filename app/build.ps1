@@ -127,6 +127,10 @@ $PureSources = @(
     # the same reason -- it is the half of the app that decides how fast the fan goes, so
     # it belongs where the host test can drive it directly.
     'LinearConfig.java', 'FanLinear.java',
+    # The LED drive override: its config, the read-back parser and the decision that says
+    # when the stock table has to go back. The coupling rule it enforces is a safety
+    # property, so it lives where the host test can walk it through every state.
+    'LedDrive.java',
     # Provenance: how long the projector had been off before a reading, and whether
     # anything else was writing the fan while it was taken. Judgements, not plumbing,
     # so they sit on the pure side where the host test can actually check them.

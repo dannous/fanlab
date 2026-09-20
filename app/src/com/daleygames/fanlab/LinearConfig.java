@@ -97,6 +97,32 @@ public final class LinearConfig {
     public static final double SENSOR_NOISE_SD_C = 0.078;
 
     /**
+     * The stock default ceiling, degrees C, and the value {@link #promoteForBoost} treats as
+     * "the owner has not touched this".
+     */
+    public static final double DEFAULT_CEILING_C = 52.0;
+
+    /**
+     * The default ceiling while the LED drive override is on. <b>Inferred, not measured.</b>
+     *
+     * Every number here comes from scaling the measured plant by the x1.18 the override
+     * costs at drive 90, so all of it is arithmetic on a table measured at stock drive
+     * rather than anything anyone has listened to.
+     *
+     * Holding the stock 52.0 under the boost costs duty <b>50 in a 24 C room</b> where
+     * today it rests at 38, reaches 60 by 26.6 C, and runs out of authority at about
+     * 29.1 C ambient instead of 32.6. At 54.0 it rests at about <b>44</b> at 24 C, reaches
+     * 50 at 26.0 C, and saturates around 31.1 C -- most of the headroom back, for two
+     * degrees on a sensor that is already two degrees above the stock operating point.
+     *
+     * 54 is also where the Bright CURVE preset rests, which is the reason to pick it over
+     * any other number: {@link Mode} records that LINEAR's ceiling matches where the curve
+     * settles precisely so the two can be A/B'd by ear, and a boost that moved one and not
+     * the other would confound "which controller" with "which temperature".
+     */
+    public static final double BOOST_CEILING_C = 54.0;
+
+    /**
      * The temperature the light engine is held at, degrees C.
      *
      * 52.0 by default, so that at 24 C ambient in Presentation this mode lands on the same
@@ -105,6 +131,11 @@ public final class LinearConfig {
      * the comparison from a shared point is what makes it a comparison; the owner wants to
      * A/B the two by ear, and a ceiling picked anywhere else would confound "which
      * controller" with "which temperature".
+     *
+     * A single global field, deliberately: the brightness profile only seeds the resync, and
+     * that is fine here, because Normal at drive 70 sits about 48 C at duty 30 and never
+     * reaches either ceiling. See {@link #promoteForBoost} for what the LED drive override
+     * does to it.
      */
     public double ceilingC;
 
@@ -223,7 +254,7 @@ public final class LinearConfig {
 
     /** 52 C; up every 5 s, down every 60 s near the ceiling and every 10 s below it. */
     public void setDefaults() {
-        ceilingC = 52.0;
+        ceilingC = DEFAULT_CEILING_C;
         upStepMs = 5000L;
         downStepMs = 60000L;
         downFastMs = 10000L;
@@ -240,7 +271,7 @@ public final class LinearConfig {
      */
     public void sanitise() {
         if (Double.isNaN(ceilingC) || Double.isInfinite(ceilingC)) {
-            ceilingC = 52.0;
+            ceilingC = DEFAULT_CEILING_C;
         }
         ceilingC = snap(ceilingC);
         if (ceilingC < MIN_CEILING_C) {
@@ -289,6 +320,45 @@ public final class LinearConfig {
         if (idleDuty > FanIo.MAX_DUTY) {
             idleDuty = FanIo.MAX_DUTY;
         }
+    }
+
+    /**
+     * Raise an untouched default ceiling to {@link #BOOST_CEILING_C} while the LED drive
+     * override is on, and leave a hand-set one exactly where its owner put it.
+     *
+     * <h3>Why LINEAR needs no new mode for the boost, only a different number</h3>
+     * LINEAR holds a temperature and lets the fan float, so it self-corrects for the extra
+     * LED heat with no help at all -- it simply pays for it in duty. The problem is only how
+     * <i>much</i> duty: at drive 90 the stock 52.0 costs 50 points in a 24 C room where
+     * today it rests at 38, and gives up at 29.1 C ambient. {@link #BOOST_CEILING_C} has the
+     * inferred numbers for both ceilings.
+     *
+     * <h3>Why this is not a change to the stored setting</h3>
+     * <b>Nothing here writes a preference.</b> The promotion is applied to the config as it
+     * is loaded, every time, so switching the override off puts the ceiling back to 52.0 by
+     * itself and an existing user's stored default is never quietly rewritten underneath
+     * them. It also means the promotion can be reported honestly wherever the ceiling is --
+     * the status line, the tick note, the broadcast reply -- rather than looking like a
+     * number the owner chose.
+     *
+     * A ceiling that is anything other than the default is left alone whether or not the
+     * boost is on: someone who typed 49 meant 49, and a controller that moved it because a
+     * different feature was switched on would be exactly the kind of surprise this file's
+     * other comments spend their length avoiding.
+     *
+     * @return true if the ceiling was moved, which the caller should say out loud.
+     */
+    public static boolean promoteForBoost(LinearConfig cfg, boolean boostOn) {
+        if (cfg == null || !boostOn) {
+            return false;
+        }
+        // Half a tenth: ceilingC is snapped to a tenth on every load, so this is an exact
+        // comparison with room for the double, not a tolerance for a value near 52.
+        if (Math.abs(cfg.ceilingC - DEFAULT_CEILING_C) > 0.05) {
+            return false;
+        }
+        cfg.ceilingC = BOOST_CEILING_C;
+        return true;
     }
 
     /**

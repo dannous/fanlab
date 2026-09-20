@@ -182,6 +182,33 @@ public final class SweepReport {
         j.put("duty_floor", SweepPlan.DUTY_FLOOR);
         j.put("stock_controller_disabled", false);
 
+        // The closed-loop half. Absent when the phase was never started, so a reader can
+        // tell "the fan sat still" from "nobody asked".
+        HoldSession.Steady st = h == null ? null : h.steady();
+        j.put("steady_run", st != null);
+        if (st != null) {
+            j.put("steady_verdict", h.verdict());
+            j.put("steady_seconds", st.seconds);
+            j.put("steady_judged_from_s", st.judgedFromSec);
+            j.put("steady_samples", st.samples);
+            j.put("steady_changes", st.changes);
+            j.put("steady_reversals", st.reversals);
+            j.put("steady_duty_lo", st.loDuty);
+            j.put("steady_duty_hi", st.hiDuty);
+            j.put("steady_max_tick", st.maxTick);
+            j.put("steady_min_c", st.minC, 2);
+            j.put("steady_max_c", st.maxC, 2);
+            j.put("judged_samples", st.judgedSamples);
+            j.put("judged_changes", st.judgedChanges);
+            j.put("judged_reversals", st.judgedReversals);
+            j.put("judged_duty_lo", st.judgedLo);
+            j.put("judged_duty_hi", st.judgedHi);
+            j.put("judged_span", st.judgedSpan());
+            j.put("judged_max_tick", st.judgedMaxTick);
+            j.put("judged_trend_c_per_h", st.trendCPerHour(), 2);
+            j.put("settled_threshold_c_per_h", HoldSession.SETTLED_C_PER_HOUR, 1);
+        }
+
         j.arr("checks");
         if (h != null) {
             List<HoldSession.Check> cs = h.checks();

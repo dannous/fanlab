@@ -6,6 +6,7 @@ import com.daleygames.fanlab.FanIo;
 import com.daleygames.fanlab.FanLinear;
 import com.daleygames.fanlab.HoldSession;
 import com.daleygames.fanlab.Json;
+import com.daleygames.fanlab.LedDrive;
 import com.daleygames.fanlab.LinearConfig;
 import com.daleygames.fanlab.Mode;
 import com.daleygames.fanlab.PicoReg;
@@ -108,6 +109,12 @@ public final class FanLabTest {
         testLinearController();
         testLinearConfigRoundTrip();
         testLinearConvergence();
+        testLinearCeilingPromotion();
+
+        // ---- the LED drive override ----
+        testLedDriveConfig();
+        testLedDriveReadback();
+        testLedDriveDecide();
         testCurvePresetsDoNotHunt();
         testOffDuration();
         testExclusiveControl();
@@ -125,7 +132,11 @@ public final class FanLabTest {
         testSweepUserAbort();
         testSweepTimeCap();
         testHoldSession();
+        testHoldSteadyPhase();
         testPicoReg();
+        testCaic();
+        testImageProcessing();
+        testLooks();
         testReportOutput();
 
         System.out.println();
@@ -429,14 +440,43 @@ public final class FanLabTest {
                             + CurveConfig.PROFILE_NAMES[prof] + ": duty does not fall "
                             + "between knee " + (k - 1) + " and " + k);
                 }
-                // Identical columns, so a brightness change is not a tier change and
-                // FanCurve's immediate-jump exception never fires.
-                for (int k = 0; k < CurveConfig.POINTS; k++) {
-                    eq(p.duty[prof][k], high[k], name + ": "
-                            + CurveConfig.PROFILE_NAMES[prof]
-                            + " matches Presentation at knee " + k);
+            }
+            // The columns used to be identical in every preset, which made "a brightness
+            // change is not a tier change in duty terms" true by construction and stopped
+            // FanCurve's immediate-jump exception ever firing. The Bright family breaks that
+            // on purpose -- it needs more fan in Presentation and less reason to touch the
+            // dim modes -- so the property is asserted here as what it actually has to be:
+            // the three columns agree at every temperature at or below 55 C, which is where
+            // the dim modes live and therefore where a brightness change is made from. Above
+            // 55 C only Presentation is different, and only in the Bright family.
+            //
+            // Taking the +10 off knee 2 would move this bound to 55 C, and that redraw was
+            // built and measured on 2026-09-08. It hunts on the hardware -- nine duty changes
+            // in twelve minutes against the shipped rows' zero -- so the bound stays at 51.
+            // The reasoning is against the Bright rungs in CurveConfig.PRESETS.
+            //
+            // What that leaves is stated rather than hidden: on Bright Quiet with the LED
+            // drive raised, solved against the MEASURED plant, the step on a Normal ->
+            // Presentation switch is 0 duty points out to a 25 C ambient, 1 at 26, 2 at
+            // 26.2 -- the warmest this unit has recorded -- then 4 at 28 and 7 at 30. Eco ->
+            // Presentation is stepless further still. In the standard family it is 0 always,
+            // because the columns are identical.
+            String disagreesAt = null;
+            for (double t = -100.0; t <= 51.0 && disagreesAt == null; t += 0.25) {
+                int low = p.dutyAt(CurveConfig.PROFILE_LOW, t);
+                for (int prof = 1; prof < CurveConfig.PROFILES; prof++) {
+                    if (p.dutyAt(prof, t) != low) {
+                        disagreesAt = CurveConfig.PROFILE_NAMES[prof] + " wants "
+                                + p.dutyAt(prof, t) + " where Eco / Super Eco wants " + low
+                                + " at " + t + " C";
+                        break;
+                    }
                 }
             }
+            check(disagreesAt == null, name + ": all three profiles command the same duty "
+                    + "at every temperature up to 51 C, so a brightness change made from "
+                    + "where the dim modes live is not a step"
+                    + (disagreesAt == null ? "" : " -- " + disagreesAt));
             // A shape check, not a stability proof. It catches a knee typed in wrong.
             //
             // It used to be described here as the stability criterion, and it is not:
@@ -466,67 +506,88 @@ public final class FanLabTest {
             }
         }
 
-        // Every preset is Quiet plus a constant at every knee ABOVE THE FLOOR, and the
-        // constant is the design rather than an implementation detail: identical knees plus
-        // a uniform offset leave the shelf's width and slope equal to Quiet's, so the
-        // margin against the deadband cannot have moved there. Assert the transform, not
-        // the resulting numbers, because it is the transform that carries the argument.
+        // What each preset IS, asserted against the published derivation rather than
+        // against a second copy of the numbers here: the derivation is what carries the
+        // stability argument, so the derivation is what wants pinning.
         //
-        // The floor is deliberately NOT offset. Below 47 C the light engine is cool enough
-        // that extra fan buys almost nothing -- measured, Cold's +15 bought 3.4 C in Super
-        // Eco on a thermistor already at 35 C -- and Normal, Eco and Super Eco spend their
-        // whole lives there. So every preset idles at 30, and the offset applies only where
-        // the ceiling is actually in question.
+        // That published derivation used to be int[] PRESET_OFFSETS, and it stopped being
+        // able to describe the set the day the first Bright curve arrived. The standard four
+        // are Quiet plus a constant at every knee above the floor, leaving the shelf's width
+        // and slope equal to Quiet's so the margin against the deadband cannot have moved
+        // there; each Bright one draws its Presentation row instead and takes its other two
+        // rows from its standard counterpart's shape. Both are a CurveConfig.PresetShape
+        // now, which is why this loop has no case in it -- the alternative was an offset
+        // array with a sentinel in it and an if in every reader.
         //
-        // Driven off the published PRESET_OFFSETS rather than a copy of it here, so a fifth
-        // curve added without an offset for it fails rather than going unchecked.
-        int[] offsets = CurveConfig.PRESET_OFFSETS;
-        eq(offsets.length, CurveConfig.PRESETS.length,
-                "there is an offset here for every preset on offer");
-        eq(offsets.length, CurveConfig.PRESET_NAMES.length,
+        // The floor is deliberately NOT offset in either shape. Below the floor edge the
+        // light engine is cool enough that extra fan buys almost nothing -- measured,
+        // Cold's +15 bought 3.4 C in Super Eco on a thermistor already at 35 C -- and
+        // Normal, Eco and Super Eco spend their whole lives there. So every preset idles at
+        // 30, and the offset applies only where the ceiling is actually in question.
+        //
+        // Driven off the published PRESET_SHAPES rather than a copy of them here, so a
+        // ninth curve added without a shape fails rather than going unchecked.
+        CurveConfig.PresetShape[] shapes = CurveConfig.PRESET_SHAPES;
+        eq(shapes.length, CurveConfig.PRESETS.length,
+                "there is a shape here for every preset on offer");
+        eq(shapes.length, CurveConfig.PRESET_NAMES.length,
                 "and a name for every one of them");
-        eq(offsets[0], 0, "Quiet is the unshifted curve");
         int[] knees = CurveConfig.preset(0).tempC;
         int[] quiet = CurveConfig.preset(0).duty[CurveConfig.PROFILE_HIGH];
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             String name = CurveConfig.PRESET_NAMES[i];
             CurveConfig p = CurveConfig.preset(i);
-            if (i > 0) {
-                check(offsets[i] > offsets[i - 1], name + " is a bigger offset than "
-                        + CurveConfig.PRESET_NAMES[i - 1] + ", so the list runs quietest "
-                        + "first");
-            }
-            for (int k = 0; k < CurveConfig.POINTS; k++) {
-                if (k == 0) {
-                    // The floor edge is the one knee a preset may move, and only downward:
-                    // with the floor pinned at 30, a preset whose shelf sits 15 points above
-                    // Quiet's has to climb 23 points where Quiet climbs 8, and over the same
-                    // 4 C that is 5.75 duty/C -- steep enough to hunt, and Cold did, by four
-                    // points at 17 C. Starting its rise earlier is the only fix that keeps
-                    // both the pinned floor and the shelf. It must never move UP: that would
-                    // narrow the rise and steepen it further.
-                    check(p.tempC[0] <= knees[0], name + ": floor edge " + p.tempC[0]
-                            + " C is at or before Quiet's " + knees[0]);
-                    continue;
-                }
+            CurveConfig.PresetShape shape = shapes[i];
+            // The floor edge is the one knee a preset may move, and only downward: with the
+            // floor pinned at 30, a preset whose shelf sits 15 points above Quiet's has to
+            // climb 23 points where Quiet climbs 8, and over the same 4 C that is 5.75
+            // duty/C -- steep enough to hunt, and Cold did, by four points at 17 C.
+            // Starting its rise earlier is the only fix that keeps both the pinned floor
+            // and the shelf. It must never move UP: that would narrow the rise and steepen
+            // it further.
+            eq(p.tempC[0], shape.floorEdgeC, name + ": floor edge is the "
+                    + shape.floorEdgeC + " C its shape declares");
+            check(p.tempC[0] <= knees[0], name + ": floor edge " + p.tempC[0]
+                    + " C is at or before Quiet's " + knees[0]);
+            for (int k = 1; k < CurveConfig.POINTS; k++) {
                 eq(p.tempC[k], knees[k], name + ": knee " + k + " is at Quiet's "
                         + knees[k] + " C, so the segment widths above the floor are Quiet's");
-                // Knee 0 is the floor and is never offset. Above it, 83 is the ceiling, so
-                // the offset clips there rather than running past it.
-                int want = (k == 0) ? quiet[0] : Math.min(83, quiet[k] + offsets[i]);
-                for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
-                    eq(p.duty[prof][k], want, name + " "
-                            + CurveConfig.PROFILE_NAMES[prof] + ": knee " + k
-                            + (k == 0 ? " is the shared floor, " + quiet[0]
-                                      : " is Quiet's " + quiet[k] + " + " + offsets[i]
-                                        + ", capped at 83"));
+            }
+            for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
+                int[] want = shape.row(prof, quiet);
+                eq(want.length, CurveConfig.POINTS, name + " "
+                        + CurveConfig.PROFILE_NAMES[prof] + ": its shape derives a row of "
+                        + CurveConfig.POINTS + " knees");
+                for (int k = 0; k < CurveConfig.POINTS; k++) {
+                    eq(p.duty[prof][k], want[k], name + " "
+                            + CurveConfig.PROFILE_NAMES[prof] + ": knee " + k + " is the "
+                            + want[k] + " its shape derives from Quiet's " + quiet[k]);
                 }
+            }
+            // Quietest rung first, WITHIN a family. The two families are the same four
+            // rungs, so the ordering is a property of each family and not of the list: the
+            // comparison is against the previous rung in the same family, which for
+            // Bright Balanced is Bright Quiet and not Cold. Across the families it would
+            // mean nothing -- Bright Quiet is louder than Cold above 51 C and quieter below
+            // it, because they are curves for two different machines.
+            if (CurveConfig.rungOf(i) > 0) {
+                int prevPreset = i - 1;
+                int[] prev = CurveConfig.preset(prevPreset).duty[CurveConfig.PROFILE_HIGH];
+                int[] mine = p.duty[CurveConfig.PROFILE_HIGH];
+                for (int k = 0; k < CurveConfig.POINTS; k++) {
+                    check(mine[k] >= prev[k], name + ": knee " + k + " is at least "
+                            + CurveConfig.PRESET_NAMES[prevPreset] + "'s, so each family "
+                            + "runs quietest first");
+                }
+                check(mine[1] > prev[1], name + ": and strictly louder than "
+                        + CurveConfig.PRESET_NAMES[prevPreset] + " at the top of the rise");
             }
             // Stated as its own assertion rather than left implicit in the loop above,
             // because it is the owner's requirement in his own words: "i want the floor to
-            // be 30 for every curve mode and every projector mode". The second half is
-            // rule 4 -- identical columns -- which is checked separately, and together they
-            // mean every preset idles at 30 in every brightness mode.
+            // be 30 for every curve mode and every projector mode". The second half is the
+            // per-profile sweep above, and together they mean every preset idles at 30 in
+            // every brightness mode -- Bright included, which is the whole reason its dim
+            // columns were left as Quiet's.
             for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
                 eq(p.duty[prof][0], 30, name + " " + CurveConfig.PROFILE_NAMES[prof]
                         + ": idles at 30, the floor every preset shares");
@@ -536,10 +597,11 @@ public final class FanLabTest {
         }
 
         // Rule 6: the ceiling has to arrive above anything the plant can produce. Clipping
-        // moves that temperature down for the two biggest offsets -- Quiet and Balanced
-        // reach 83 at the last knee, Cool and Cold at the one before it -- so it is worth
-        // saying where each one lands rather than trusting that "83 somewhere" is enough.
-        // 52.85 C is the hottest degC ever recorded on this unit.
+        // moves that temperature down for the two biggest offsets in each family -- Quiet
+        // and Balanced reach 83 at the last knee and Cool and Cold at the one before it,
+        // and the Bright rungs land the same way -- so it is worth saying where each one
+        // lands rather than trusting that "83 somewhere" is enough. 52.85 C is the hottest
+        // degC ever recorded on this unit.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             CurveConfig p = CurveConfig.preset(i);
             int[] high = p.duty[CurveConfig.PROFILE_HIGH];
@@ -552,6 +614,291 @@ public final class FanLabTest {
             check(at >= 60, CurveConfig.PRESET_NAMES[i] + ": reaches 83 by " + at
                     + " C, far above the 52.85 C this unit has ever recorded");
         }
+
+        testBrightPresetFamily();
+    }
+
+    /**
+     * The two preset families, pinned: the four Bright rows knee by knee, their relationship
+     * to their standard counterparts, and the gate that decides which family is on offer.
+     *
+     * The loops above hold every preset to the rules and to its published shape, which is
+     * the right level for a family. The Bright four get their numbers written down as well,
+     * because they are the four whose Presentation row was drawn rather than derived: there
+     * is no offset to re-derive them from, so a change should be a deliberate edit here and
+     * not a diff nobody reads.
+     *
+     * Each row is its counterpart's Presentation row plus 0, 0, 10, 12, 8, 0 at the six
+     * knees, clipped at 83. That uniformity is asserted rather than described, because a
+     * comment saying the family is uniform and a table where one rung is not would be worse
+     * than no comment.
+     *
+     * Where they settle is INFERRED for every mode but Presentation -- the drive-90
+     * Presentation plant scaling is measured at x1.208, the other three are still the fitted
+     * line -- so no equilibrium is asserted here. See CurveConfig.PRESETS and docs/curve.md.
+     * What is asserted is the shape and the gate, which are facts about the file.
+     */
+    private static void testBrightPresetFamily() {
+        section("curve: two preset families, and the drive decides which one is on offer");
+
+        eq(CurveConfig.PRESET_NAMES.length, 8, "eight presets on offer");
+        eq(CurveConfig.RUNGS, 4, "four rungs, run twice");
+        eq(CurveConfig.PRESETS.length, CurveConfig.PRESET_NAMES.length,
+                "and a curve for every name");
+
+        // Every one of the eight survives the trip out to a curve and back to an index. The
+        // label on the screen is computed this way on every sync, so a preset that did not
+        // round trip would show as Custom while running perfectly well.
+        for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            eq(CurveConfig.presetOf(CurveConfig.preset(i).encode()), i,
+                    CurveConfig.PRESET_NAMES[i] + ": preset(" + i + ") is recognised back "
+                            + "as preset " + i);
+        }
+
+        // The families, by name and by index. Positional and RUNGS apart, which is what
+        // counterpartOf relies on.
+        String[] standard = {"Quiet", "Balanced", "Cool", "Cold"};
+        String[] bright = {"Bright Quiet", "Bright Balanced", "Bright Cool", "Bright Cold"};
+        int[] std = CurveConfig.standardPresets();
+        int[] brt = CurveConfig.brightPresets();
+        eq(std.length, CurveConfig.RUNGS, "the standard family is one preset per rung");
+        eq(brt.length, CurveConfig.RUNGS, "and so is the Bright one");
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            check(standard[rung].equals(CurveConfig.PRESET_NAMES[std[rung]]),
+                    "rung " + rung + " of the standard family is " + standard[rung]);
+            check(bright[rung].equals(CurveConfig.PRESET_NAMES[brt[rung]]),
+                    "rung " + rung + " of the Bright family is " + bright[rung]);
+            check(!CurveConfig.isBrightPreset(std[rung]),
+                    standard[rung] + " is not a Bright preset");
+            check(CurveConfig.isBrightPreset(brt[rung]), bright[rung] + " is");
+            eq(CurveConfig.rungOf(std[rung]), rung, standard[rung] + " is rung " + rung);
+            eq(CurveConfig.rungOf(brt[rung]), rung, bright[rung] + " is the same rung");
+        }
+        check(!CurveConfig.isBrightPreset(CurveConfig.PRESET_CUSTOM),
+                "a hand-edited curve is not a Bright preset");
+        eq(CurveConfig.rungOf(CurveConfig.PRESET_CUSTOM), -1, "and has no rung either");
+        eq(CurveConfig.rungOf(99), -1, "nor does an index from nowhere");
+
+        // The four Bright Presentation rows, exactly as tabled. Written out here rather than
+        // read off PRESET_SHAPES, because this is the copy a human checks the table against.
+        int[][] wantHigh = {
+                {30, 38, 50, 62, 76, 83},   // Bright Quiet
+                {30, 43, 55, 67, 81, 83},   // Bright Balanced
+                {30, 48, 60, 72, 83, 83},   // Bright Cool
+                {30, 53, 65, 77, 83, 83},   // Bright Cold
+        };
+        // The one edit that makes a Bright rung out of a standard one, at each knee.
+        int[] delta = {0, 0, 10, 12, 8, 0};
+
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            CurveConfig s = CurveConfig.preset(std[rung]);
+            CurveConfig b = CurveConfig.preset(brt[rung]);
+            String name = bright[rung];
+
+            for (int k = 0; k < CurveConfig.POINTS; k++) {
+                eq(b.duty[CurveConfig.PROFILE_HIGH][k], wantHigh[rung][k],
+                        name + " Presentation: knee " + k + " is " + wantHigh[rung][k]);
+                // Knees 1..5 are the counterpart's, always: that is what makes a Bright
+                // preset one column different from its standard rung and no more.
+                //
+                // Knee 0, the floor edge, is the counterpart's for three of the four. The
+                // exception is Bright Cool, and it is an exception with a measurement
+                // behind it: below 51 C a Bright preset IS its counterpart, so Bright Cool
+                // inherits Cool's 4.5 duty/C rise over 47-51 C. Harmless on the plant Cool
+                // runs on, because nothing rests there; on the raised plant of drive 90 the
+                // operating point lands on it and CurveSim hunts by three at 14 C, over the
+                // bound of two. Starting its rise at 45 clears the whole 14-34 C sweep.
+                // Cool itself is untouched.
+                if (k > 0 || !"Bright Cool".equals(name)) {
+                    eq(b.tempC[k], s.tempC[k], name + ": knee " + k + " is at "
+                            + standard[rung] + "'s " + s.tempC[k] + " C");
+                } else {
+                    eq(b.tempC[0], 45, "Bright Cool: floor edge is 45 C, its own, because "
+                            + "Cool's 47 puts the raised plant's operating point on a rise "
+                            + "steep enough to hunt by three at 14 C");
+                    eq(s.tempC[0], 47, "while Cool itself keeps its 47 C");
+                }
+                // The dim rows ARE the counterpart's. This is the property that makes a
+                // Bright preset one column different from its standard rung and no more, and
+                // it is why the raised drive does not also make the quiet modes louder.
+                eq(b.duty[CurveConfig.PROFILE_NORMAL][k], s.duty[CurveConfig.PROFILE_NORMAL][k],
+                        name + " Normal: knee " + k + " is " + standard[rung] + "'s "
+                                + s.duty[CurveConfig.PROFILE_NORMAL][k] + ", untouched");
+                eq(b.duty[CurveConfig.PROFILE_LOW][k], s.duty[CurveConfig.PROFILE_LOW][k],
+                        name + " Eco / Super Eco: knee " + k + " is " + standard[rung] + "'s "
+                                + s.duty[CurveConfig.PROFILE_LOW][k] + ", untouched");
+                // And the whole family is the same edit, clipped at the shared 83 ceiling.
+                int want = Math.min(83, s.duty[CurveConfig.PROFILE_HIGH][k] + delta[k]);
+                eq(b.duty[CurveConfig.PROFILE_HIGH][k], want, name + " Presentation: knee "
+                        + k + " is " + standard[rung] + "'s "
+                        + s.duty[CurveConfig.PROFILE_HIGH][k] + " + " + delta[k]
+                        + " clipped at 83, the same edit as every other rung");
+            }
+
+            // Everything that is not a duty row is the counterpart's, which is what lets the
+            // stability argument above the floor be inherited rather than remade.
+            eq(b.hysteresisC, s.hysteresisC, 1e-9, name + ": " + standard[rung] + "'s deadband");
+            eq(b.slewUpPerSec, s.slewUpPerSec, 1e-9, name + ": its rising slew");
+            eq(b.slewDownPerSec, s.slewDownPerSec, 1e-9, name + ": its falling slew");
+            eq(b.minDuty, s.minDuty, name + ": its floor");
+            eq(b.maxDuty, s.maxDuty, name + ": its ceiling");
+            eq(b.idleDuty, s.idleDuty, name + ": its idle duty");
+            check(b.socGuardEnabled == s.socGuardEnabled, name + ": the guard is armed as "
+                    + standard[rung] + "'s is");
+            eq(b.socGuardStartC, s.socGuardStartC, name + ": its guard knee");
+            eq(b.socGuardGainPerC, s.socGuardGainPerC, 1e-9, name + ": its guard gain");
+            eq(b.socGuardMaxDuty, s.socGuardMaxDuty, name + ": its guard ceiling");
+            eq(b.socGuardHystC, s.socGuardHystC, 1e-9, name + ": its guard deadband");
+
+            // Monotone in temperature and reaching the stock maximum by 70 C, checked on the
+            // controller's own output rather than on the table, because dutyAt applies the
+            // clamps and the rounding and it is dutyAt the fan sees.
+            int prev = -1;
+            boolean monotone = true;
+            for (double t = -100.0; t <= 200.0; t += 0.1) {
+                int d = b.dutyAt(CurveConfig.PROFILE_HIGH, t);
+                if (prev >= 0 && d < prev) {
+                    monotone = false;
+                    break;
+                }
+                prev = d;
+            }
+            check(monotone, name + " Presentation: never asks for less fan as it gets hotter");
+            eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 70.0), 83,
+                    name + " Presentation: 83 by 70 C, the same backstop as every preset");
+            eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 55.0), wantHigh[rung][2], name
+                    + " Presentation: " + wantHigh[rung][2] + " at 55 C, where "
+                    + standard[rung] + " is flat at " + s.duty[CurveConfig.PROFILE_HIGH][2]);
+            eq(b.dutyAt(CurveConfig.PROFILE_HIGH, 51.0), s.duty[CurveConfig.PROFILE_HIGH][1],
+                    name + " Presentation: " + s.duty[CurveConfig.PROFILE_HIGH][1]
+                            + " at 51 C, where " + standard[rung] + "'s shelf starts");
+        }
+
+        // ---- counterpartOf: the same rung in the family the drive selects ----
+        //
+        // An involution across the two families, which is the property the gate needs: a
+        // user who switches the override on and off again must get back the preset they
+        // started with and not a neighbouring rung.
+        for (int i = 0; i < CurveConfig.PRESET_NAMES.length; i++) {
+            String name = CurveConfig.PRESET_NAMES[i];
+            int rung = CurveConfig.rungOf(i);
+            eq(CurveConfig.counterpartOf(i, false), std[rung],
+                    name + " with the drive off is " + standard[rung]);
+            eq(CurveConfig.counterpartOf(i, true), brt[rung],
+                    name + " with the drive on is " + bright[rung]);
+            eq(CurveConfig.counterpartOf(CurveConfig.counterpartOf(i, !CurveConfig
+                            .isBrightPreset(i)), CurveConfig.isBrightPreset(i)), i,
+                    name + ": crossing to the other family and back lands on itself");
+            check(CurveConfig.isBrightPreset(CurveConfig.counterpartOf(i, true)),
+                    name + "'s drive-on counterpart is a Bright preset");
+            check(!CurveConfig.isBrightPreset(CurveConfig.counterpartOf(i, false)),
+                    name + "'s drive-off counterpart is a standard one");
+        }
+        // Custom has no counterpart and must not be given one -- see curveForDrive.
+        eq(CurveConfig.counterpartOf(CurveConfig.PRESET_CUSTOM, true),
+                CurveConfig.PRESET_CUSTOM, "a hand-edited curve has no Bright counterpart");
+        eq(CurveConfig.counterpartOf(CurveConfig.PRESET_CUSTOM, false),
+                CurveConfig.PRESET_CUSTOM, "nor a standard one");
+
+        // ---- the gate itself ----
+        //
+        // Prefs.setLedDriveOn is Android and cannot run here, so what is driven is the pure
+        // decision it delegates to. The wiring above it -- all three LED drive writers call
+        // it, and they ask Prefs.ledBoostOn rather than the raw flag -- is the part this
+        // suite cannot reach.
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            String off = CurveConfig.PRESETS[std[rung]];
+            String on = CurveConfig.PRESETS[brt[rung]];
+            check(CurveConfig.curveForDrive(off, true).equals(on),
+                    "enabling the drive moves " + standard[rung] + " to " + bright[rung]);
+            check(CurveConfig.curveForDrive(on, false).equals(off),
+                    "disabling it moves " + bright[rung] + " back to " + standard[rung]);
+            check(CurveConfig.curveForDrive(off, false).equals(off),
+                    standard[rung] + " with the drive already off is left alone");
+            check(CurveConfig.curveForDrive(on, true).equals(on),
+                    bright[rung] + " with the drive already on is left alone");
+        }
+        // Stated on its own for rung 0, because it is the transition the owner described and
+        // the one a fresh install makes.
+        check(CurveConfig.curveForDrive(CurveConfig.PRESETS[0], true)
+                        .equals(CurveConfig.PRESETS[4]),
+                "so Quiet becomes Bright Quiet when the LED drive comes on");
+        check(CurveConfig.curveForDrive(CurveConfig.PRESETS[4], false)
+                        .equals(CurveConfig.PRESETS[0]),
+                "and Bright Quiet becomes Quiet again when it goes off");
+
+        // A hand-edited curve survives both, untouched. Silently replacing thirty numbers
+        // somebody typed is worse than the pairing the gate exists to prevent, and there is
+        // no counterpart to replace them with anyway.
+        String custom = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
+        eq(CurveConfig.presetOf(custom), CurveConfig.PRESET_CUSTOM,
+                "the hand-edited curve really is Custom");
+        check(CurveConfig.curveForDrive(custom, true).equals(custom),
+                "a Custom curve is untouched by the drive coming on");
+        check(CurveConfig.curveForDrive(custom, false).equals(custom),
+                "and untouched by it going off");
+        check(CurveConfig.curveForDrive(null, true) == null,
+                "and so is no curve at all, rather than becoming one");
+
+        // ---- the broadcast refusal ----
+        //
+        // The words matter as much as the behaviour: this string is the whole of what a
+        // caller gets back, and it has to name the preset they probably wanted.
+        check(("Quiet is a Curve preset and the LED drive is on; use Bright Quiet or turn "
+                        + "the drive off").equals(CurveConfig.wrongFamilyRefusal(0, true)),
+                "the refusal names the counterpart and both ways out  (got "
+                        + quote(CurveConfig.wrongFamilyRefusal(0, true)) + ")");
+        check(("Bright Cold is a Bright Curve preset and the LED drive is off; use Cold or turn "
+                        + "the drive on").equals(CurveConfig.wrongFamilyRefusal(7, false)),
+                "and reads the same way in the other direction  (got "
+                        + quote(CurveConfig.wrongFamilyRefusal(7, false)) + ")");
+        for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
+            check(CurveConfig.wrongFamilyRefusal(std[rung], false) == null,
+                    standard[rung] + " with the drive off is not refused");
+            check(CurveConfig.wrongFamilyRefusal(brt[rung], true) == null,
+                    bright[rung] + " with the drive on is not refused");
+            check(CurveConfig.wrongFamilyRefusal(std[rung], true) != null,
+                    standard[rung] + " with the drive on is refused");
+            check(CurveConfig.wrongFamilyRefusal(brt[rung], false) != null,
+                    bright[rung] + " with the drive off is refused");
+        }
+        // Not a preset at all is somebody else's error message -- the receiver has already
+        // rejected it by name before this is asked.
+        check(CurveConfig.wrongFamilyRefusal(CurveConfig.PRESET_CUSTOM, true) == null,
+                "a curve that is no preset is not refused on family grounds");
+        check(CurveConfig.wrongFamilyRefusal(99, false) == null, "nor is an index from nowhere");
+
+        // ---- the names a broadcast accepts ----
+        //
+        // A two-word preset typed into a shell arrives in three spellings and none of them
+        // is a mistake worth an error message.
+        eq(CurveConfig.presetNamed("Bright Quiet"), 4, "\"Bright Quiet\" is preset 4");
+        eq(CurveConfig.presetNamed("bright quiet"), 4, "and so is \"bright quiet\"");
+        eq(CurveConfig.presetNamed("brightquiet"), 4, "and \"brightquiet\"");
+        eq(CurveConfig.presetNamed("bright-quiet"), 4, "and \"bright-quiet\"");
+        eq(CurveConfig.presetNamed("  BRIGHT_QUIET  "), 4, "and \"  BRIGHT_QUIET  \"");
+        eq(CurveConfig.presetNamed("quiet"), 0, "\"quiet\" is still preset 0");
+        eq(CurveConfig.presetNamed("bright"), CurveConfig.PRESET_CUSTOM,
+                "and bare \"bright\" is no longer a preset, because there are four of them");
+        eq(CurveConfig.presetNamed("brightest"), CurveConfig.PRESET_CUSTOM,
+                "a name close to one is still not one");
+        eq(CurveConfig.presetNamed(""), CurveConfig.PRESET_CUSTOM, "nor is an empty name");
+        eq(CurveConfig.presetNamed("  "), CurveConfig.PRESET_CUSTOM, "nor is whitespace");
+        eq(CurveConfig.presetNamed(null), CurveConfig.PRESET_CUSTOM, "nor is no name");
+        for (int i = 0; i < CurveConfig.PRESET_NAMES.length; i++) {
+            eq(CurveConfig.presetNamed(CurveConfig.PRESET_NAMES[i]), i,
+                    CurveConfig.PRESET_NAMES[i] + " is accepted under the name it is shown "
+                            + "under, so the two cannot drift");
+        }
+
+        // The words the broadcast reply offers, which are the ones it will accept next.
+        check("quiet, balanced, cool or cold".equals(CurveConfig.familyWords(false)),
+                "with the drive off the reply offers the standard four  (got "
+                        + quote(CurveConfig.familyWords(false)) + ")");
+        check("bright quiet, bright balanced, bright cool or bright cold"
+                        .equals(CurveConfig.familyWords(true)),
+                "and with it on, the Bright four  (got "
+                        + quote(CurveConfig.familyWords(true)) + ")");
     }
 
     private static void testCurveVsStockAtRungs() {
@@ -1027,7 +1374,7 @@ public final class FanLabTest {
         String tweaked = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
         check(!tweaked.equals(CurveConfig.PRESETS[1]), "the mutated line really differs");
         eq(CurveConfig.presetOf(tweaked), CurveConfig.PRESET_CUSTOM,
-                "a curve that is none of the four reads as Custom");
+                "a curve that is none of the presets reads as Custom");
         eq(CurveConfig.presetOf(null), CurveConfig.PRESET_CUSTOM, "and so does no curve");
         check(CurveConfig.presetName(CurveConfig.PRESET_CUSTOM).equals("Custom"),
                 "which is the word the row shows");
@@ -2257,6 +2604,872 @@ public final class FanLabTest {
         }
     }
 
+    // ----------------------------------------------------------------- CAIC
+
+    /**
+     * The CAIC toggle is one write with a one-write undo, and the whole of its safety
+     * argument is that the bytes on the wire are exactly the two DLPU078 documents and
+     * that the read-back never invents a state. So: the strings, byte for byte; the
+     * decode against good, wrong and absent bytes; and the write landing on the stub
+     * node with nothing added to it.
+     */
+    private static void testCaic() throws Exception {
+        section("CAIC (0x50/0x51) - the command bytes, and never inferring the state");
+
+        // The opcodes are DLPU078's, and the strings are the picoreg format.
+        eq(PicoReg.OPCODE_LED_OUTPUT_CONTROL_WRITE, 0x50, "Write LED Output Control Method is 0x50");
+        eq(PicoReg.OPCODE_LED_OUTPUT_CONTROL_READ, 0x51, "Read LED Output Control Method is 0x51");
+        eq(PicoReg.OPCODE_CAIC_MAX_POWER, 0x57, "Read CAIC LED Max Available Power is 0x57");
+        check("w 50 1 1".equals(PicoReg.ledOutputControlCommand(true)),
+                "CAIC on is exactly \"w 50 1 1\"");
+        check("w 50 1 0".equals(PicoReg.ledOutputControlCommand(false)),
+                "CAIC off is exactly \"w 50 1 0\" - the factory value, and the undo");
+        check("r 51 1".equals(PicoReg.readCommand(PicoReg.OPCODE_LED_OUTPUT_CONTROL_READ,
+                        PicoReg.LED_OUTPUT_CONTROL_LEN)),
+                "the read-back command is exactly \"r 51 1\"");
+        check("r 57 2".equals(PicoReg.readCommand(PicoReg.OPCODE_CAIC_MAX_POWER,
+                        PicoReg.CAIC_MAX_POWER_LEN)),
+                "the max-power read is \"r 57 2\"");
+
+        // Decoding: two values are states, everything else is a wrong answer.
+        check(PicoReg.CAIC_ON.equals(PicoReg.decodeLedOutputControl(new int[]{0x01})),
+                "0x01 decodes as on");
+        check(PicoReg.CAIC_OFF.equals(PicoReg.decodeLedOutputControl(new int[]{0x00})),
+                "0x00 decodes as off");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[]{0x02})),
+                "0x02 is neither, and is unknown rather than rounded to a state");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[]{0xFF})),
+                "0xff is unknown");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(null)),
+                "no bytes is unknown, never off");
+        check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[0])),
+                "an empty array is unknown");
+
+        // The driver's kernel-log line, for the opcode we asked about and no other.
+        int[] p = PicoReg.parseKernelLogLine(
+                "<6>[  456.789] lcd extern: read 0x51 data: 01", 0x51, 1);
+        check(p != null && p.length == 1 && p[0] == 0x01, "\"read 0x51 data: 01\" parses as on");
+        p = PicoReg.parseKernelLogLine("read 0x51 data: 00", 0x51, 1);
+        check(p != null && p[0] == 0x00, "\"read 0x51 data: 00\" parses as off");
+        check(PicoReg.parseKernelLogLine("read 0x51 data: zz", 0x51, 1) == null,
+                "garbage after data: is refused");
+        check(PicoReg.parseKernelLogLine("read 0x51 data:", 0x51, 1) == null,
+                "a line with no payload is refused");
+        check(PicoReg.parseKernelLogLine("read 0xd6 data: 2b 00", 0x51, 1) == null,
+                "a D6h response is not mistaken for a 0x51 one");
+        check(PicoReg.parseKernelLogLine("read 0x50 data: 01", 0x51, 1) == null,
+                "nor is the write opcode's own echo");
+
+        // The response handler: on, off, and every way of not knowing.
+        PicoReg.CaicReading r = PicoReg.caicFromResponseText("01\n", "sysfs");
+        check(PicoReg.CAIC_ON.equals(r.state) && r.known(), "\"01\" reads as on");
+        check("sysfs".equals(r.source) && "0x01".equals(r.rawHex()),
+                "  with its source and raw byte");
+        r = PicoReg.caicFromResponseText("00", "kernel log");
+        check(PicoReg.CAIC_OFF.equals(r.state) && r.known(), "\"00\" reads as off");
+        r = PicoReg.caicFromResponseText("07", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state) && !r.known(),
+                "\"07\" is unknown - a third value is not a state");
+        check(r.rawByte == 0x07 && r.reason.indexOf("0x07") >= 0,
+                "  and the raw byte is kept and named in the reason: " + quote(r.reason));
+        r = PicoReg.caicFromResponseText("", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state), "an empty response is unknown");
+        check(r.rawByte < 0 && r.rawHex() == null, "  with no byte to show");
+        r = PicoReg.caicFromResponseText(null, "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state), "a null response is unknown");
+        r = PicoReg.caicFromResponseText("zip", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state) && r.rawByte < 0,
+                "text with no hex in it is unknown and yields no byte");
+        // "banana" is mostly hex digits; parseHexBytes hands back 0xba and the decode
+        // refuses it. Same shape as the D6h case, and the same reason it matters.
+        r = PicoReg.caicFromResponseText("banana", "sysfs");
+        check(PicoReg.CAIC_UNKNOWN.equals(r.state),
+                "hex-looking junk is caught by the decode, not reported as a state");
+        check(new PicoReg.CaicReading().reason != null
+                        && !new PicoReg.CaicReading().known(),
+                "a fresh reading is unknown with a reason, never a default state");
+
+        // Max power: raw first, the watts interpretation flagged.
+        PicoReg.CaicPower pw = PicoReg.caicPowerFromBytes(new int[]{0x34, 0x12}, "kernel log");
+        eq(pw.rawWord, 0x1234, "0x57's word is little endian");
+        eq(pw.watts, 46.60, 0.001, "  and /100 gives watts if DLPU078's scaling holds");
+        check(pw.provisional, "  which is flagged provisional");
+        check("0x1234".equals(pw.rawHex()), "  with the raw word beside it");
+        check(PicoReg.caicPowerFromBytes(new int[]{0x34}, "x").rawWord < 0
+                        && Double.isNaN(PicoReg.caicPowerFromBytes(null, "x").watts),
+                "one byte, or none, is no power reading");
+
+        // Against the stub tree: the write lands as the bare command, and the read never
+        // manufactures a state out of an echo, an empty node, or a missing one.
+        File tmp = File.createTempFile("fanlab-caic", "");
+        tmp.delete();
+        tmp.mkdirs();
+        String oldRoot = Sysfs.root;
+        try {
+            Sysfs.root = tmp.getAbsolutePath();
+            check(!PicoReg.writeLedOutputControl(true),
+                    "with no picoreg node the write reports failure rather than pretending");
+            r = PicoReg.readLedOutputControl();
+            check(PicoReg.CAIC_UNKNOWN.equals(r.state)
+                            && r.reason.indexOf("does not exist") >= 0,
+                    "and the read is unknown, saying the node is missing: " + quote(r.reason));
+
+            File dir = new File(tmp, "sys/class/dlpc343x");
+            dir.mkdirs();
+            File node = new File(dir, "picoreg");
+            write(node, "");
+            check(PicoReg.writeLedOutputControl(true), "the on write succeeds against the node");
+            check("w 50 1 1".equals(slurp(node)),
+                    "and the node holds exactly \"w 50 1 1\" - no newline, nothing else");
+            check(PicoReg.writeLedOutputControl(false), "the off write succeeds");
+            check("w 50 1 0".equals(slurp(node)), "and the node holds exactly \"w 50 1 0\"");
+
+            // The stub echoes whatever was last written, which is what a file does and
+            // exactly what a node with no show() must not be mistaken for.
+            r = PicoReg.readLedOutputControl();
+            check(PicoReg.CAIC_UNKNOWN.equals(r.state),
+                    "an echo of \"r 51 1\" is not decoded as a state");
+            check("r 51 1".equals(slurp(node)), "  (the read did write the read command)");
+            check(r.reason.indexOf("show()") >= 0 && r.reason.indexOf("READ_LOGS") >= 0,
+                    "  and the reason names the obstacle and the permission: "
+                            + quote(r.reason));
+
+            PicoReg.CaicReading timed = PicoReg.readLedOutputControl(1500L);
+            check(timed != null && timed.state != null && !timed.known(),
+                    "the bounded call always answers, and here answers unknown");
+            PicoReg.CaicPower tp = PicoReg.readCaicMaxPower(1500L);
+            check(tp != null && tp.rawWord < 0 && Double.isNaN(tp.watts),
+                    "the bounded power read answers, with no watts it did not read");
+        } finally {
+            Sysfs.root = oldRoot;
+            rmrf(tmp);
+        }
+    }
+
+    // ----------------------------------------------------------------- image processing
+
+    /**
+     * The two image-processing controls, which are the reason CAIC had nothing to do.
+     *
+     * The whole case rests on bytes: the fixed-point gain, the packed LABB control byte, and
+     * the exact command strings. The projector's own read-backs -- {@code 00 20 60} and
+     * {@code 10 80 20 00} -- are in here verbatim, so a decoder that drifts from what the
+     * hardware actually said fails here rather than on the machine.
+     */
+    private static void testImageProcessing() throws Exception {
+        section("CAIC image control (0x84/0x85) and LABB (0x80/0x81) - the bytes");
+
+        eq(PicoReg.OPCODE_CAIC_IMAGE_WRITE, 0x84, "Write CAIC Image Processing Control is 0x84");
+        eq(PicoReg.OPCODE_CAIC_IMAGE_READ, 0x85, "and the read is 0x85");
+        eq(PicoReg.OPCODE_LABB_WRITE, 0x80, "Write Local Area Brightness Boost is 0x80");
+        eq(PicoReg.OPCODE_LABB_READ, 0x81, "and the read is 0x81");
+
+        // ---- the fixed-point gain: b7=2^2 down to b0=2^-5, so the byte is gain x 32 ----
+        eq(PicoReg.encodeCaicGain(1.0), 0x20, "1.0 encodes as 0x20");
+        eq(PicoReg.encodeCaicGain(1.5), 0x30, "1.5 encodes as 0x30");
+        eq(PicoReg.encodeCaicGain(2.0), 0x40, "2.0 encodes as 0x40");
+        eq(PicoReg.encodeCaicGain(4.0), 0x80, "4.0 encodes as 0x80");
+        eq(PicoReg.decodeCaicGain(0x20), 1.0, 1e-9, "and 0x20 decodes back to 1.0");
+        eq(PicoReg.decodeCaicGain(0x30), 1.5, 1e-9, "0x30 back to 1.5");
+        eq(PicoReg.decodeCaicGain(0x40), 2.0, 1e-9, "0x40 back to 2.0");
+        eq(PicoReg.decodeCaicGain(0x80), 4.0, 1e-9, "0x80 back to 4.0");
+        // Every representable step round-trips, not just the four named ones.
+        for (int b = 0x20; b <= 0x80; b++) {
+            if (PicoReg.encodeCaicGain(PicoReg.decodeCaicGain(b)) != b) {
+                check(false, "the gain round trip loses byte 0x" + Integer.toHexString(b));
+                break;
+            }
+        }
+        check(true, "and every byte from 0x20 to 0x80 survives decode-then-encode");
+
+        // Out of range is refused, not clamped: the controller rejects the whole command on
+        // an invalid write parameter, so a clamp would send a gain the caller never asked
+        // for while a pass-through would send one that silently does not execute.
+        eq(PicoReg.encodeCaicGain(0.9), -1, "0.9 is refused - below the 1.0 the DLPC accepts");
+        eq(PicoReg.encodeCaicGain(4.1), -1, "4.1 is refused - above the 4.0 the DLPC accepts");
+        eq(PicoReg.encodeCaicGain(0.0), -1, "and so is 0");
+        eq(PicoReg.encodeCaicGain(Double.NaN), -1, "and NaN");
+        check(PicoReg.caicImageControlCommand(4.1, 0x60) == null,
+                "so no command string is produced for one either - nothing is sent at all");
+        check(Double.isNaN(PicoReg.decodeCaicGain(-1)), "no byte decodes to NaN, never to 0");
+
+        // ---- what the projector actually answered ----
+        PicoReg.CaicImage img = PicoReg.caicImageFromBytes(new int[]{0x00, 0x20, 0x60}, "kernel log");
+        check(img.known, "the projector's own \"00 20 60\" is a reading");
+        eq(img.gain, 1.0, 1e-9,
+                "  and its maximum lumens gain is 1.0 - the bottom of the range, so CAIC was "
+                        + "selected with permission to lift the image by nothing");
+        eq(img.gainByte, 0x20, "  from byte 0x20");
+        eq(img.clipThreshold, 96, "  with the clipping threshold at 96");
+        check(!img.gainDisplay,
+                "  and the debug overlay off, which is where it must stay - the guide says "
+                        + "it must never be used for normal operation");
+        check(img.summary().indexOf("gain 1.0") >= 0,
+                "  summarised for the log as " + quote(img.summary()));
+        check(!PicoReg.caicImageFromBytes(new int[]{0x00, 0x20}, "x").known,
+                "two bytes is not a 0x85 reading and is refused");
+        check(!PicoReg.caicImageFromBytes(null, "x").known, "nor is none");
+        check(!PicoReg.caicImageFromResponseText("", "x").known, "nor an empty response");
+        check(PicoReg.caicImageFromResponseText("00 20 60", "sysfs").known
+                        && PicoReg.caicImageFromResponseText("002060", "sysfs").known,
+                "and it parses whether the bytes arrive spaced or packed");
+
+        // ---- the LABB control byte, and the sharpness it must not drop ----
+        eq(PicoReg.labbControlByte(1, true), 0x11,
+                "sharpness 1 with LABB enabled is 0x11: b7:4 the sharpness, b1:0 the control "
+                        + "- and 0x11 is the byte that was actually written on 2026-09-07, "
+                        + "read back as \"11 80\", with a live gain that then moved");
+        eq(PicoReg.labbControlByte(1, false), 0x10, "and disabled is 0x10, which is what the "
+                + "projector was found holding");
+        eq(PicoReg.labbControlByte(0, true), 0x01, "sharpness 0 enabled is 0x01");
+        eq(PicoReg.labbControlByte(15, true), 0xF1, "sharpness 15 enabled is 0xf1");
+        eq(PicoReg.labbControlByte(15, false), 0xF0, "and disabled 0xf0");
+        for (int s = 0; s <= 15; s++) {
+            int on = PicoReg.labbControlByte(s, true);
+            int off = PicoReg.labbControlByte(s, false);
+            if (PicoReg.labbSharpnessOf(on) != s || PicoReg.labbSharpnessOf(off) != s
+                    || PicoReg.labbControlOf(on) != PicoReg.LABB_CONTROL_ENABLED
+                    || PicoReg.labbControlOf(off) != PicoReg.LABB_CONTROL_DISABLED) {
+                check(false, "the LABB control byte loses sharpness " + s);
+                break;
+            }
+        }
+        check(true, "and every sharpness 0..15 survives the round trip through either state - "
+                + "which is the point, since the two share a byte and DLPU078A says sharpness "
+                + "does nothing unless LABB is enabled");
+        eq(PicoReg.labbControlByte(99, true), 0xF1, "an over-large sharpness is held to 15");
+        eq(PicoReg.labbControlByte(-3, true), 0x01, "and a negative one to 0");
+        eq(PicoReg.labbControlByte(1, true) & 0x0C, 0,
+                "b3:2 are left clear - which is where an earlier version of this put the "
+                        + "control field, on the datasheet alone and before anyone had run it");
+
+        // ---- what the projector actually answered ----
+        PicoReg.Labb labb = PicoReg.labbFromBytes(new int[]{0x10, 0x80, 0x20, 0x00}, "kernel log");
+        check(labb.known, "the projector's own \"10 80 20 00\" is a reading");
+        check(!labb.enabled, "  and LABB is Disabled - control field 0h");
+        eq(labb.strength, 128, "  with the strength already preset to 128");
+        eq(labb.sharpness, 1, "  and sharpness 1");
+        eq(labb.gainRaw, 0x20,
+                "  and the read-only current gain kept as the raw 0x20 - Table 3-81 gives "
+                        + "the range as 1..8 and 32 is not in it, so converting it would be "
+                        + "inventing units");
+        eq(labb.status, 0x00, "  with byte 4 recorded as it came");
+        PicoReg.Labb on = PicoReg.labbFromBytes(new int[]{0x11, 0x80, 0x27, 0x00}, "kernel log");
+        check(on.known && on.enabled && on.sharpness == 1,
+                "\"11 80 27 00\" is the same row with LABB enabled, and the gain off idle");
+        eq(on.gainRaw, 0x27, "  0x27 being what the gain byte read on real video");
+        PicoReg.Labb reserved = PicoReg.labbFromBytes(new int[]{0x12, 0x80, 0x20, 0x00}, "x");
+        check(!reserved.known && !reserved.enabled,
+                "a 2h control field is reserved, so it is unknown rather than a third state");
+        eq(reserved.strength, 128, "  though the bytes around it are still kept");
+        check(reserved.reason.indexOf("reserve") >= 0,
+                "  and the reason says so: " + quote(reserved.reason));
+        check(!PicoReg.labbFromBytes(new int[]{0x10, 0x80, 0x20}, "x").known,
+                "three bytes is not a 0x81 reading");
+        check(!PicoReg.labbFromResponseText("zip", "x").known,
+                "and text with no hex in it is not one either");
+
+        // ---- the command strings, byte for byte, against the stub node ----
+        check("w 84 3 0 40 60".equals(PicoReg.caicImageControlCommand(2.0, 0x60)),
+                "a 2.0 gain is exactly \"w 84 3 0 40 60\"");
+        check("w 84 3 0 20 60".equals(
+                        PicoReg.caicImageControlCommand(PicoReg.CAIC_GAIN_STOCK, 0x60)),
+                "and the restore is \"w 84 3 0 20 60\" - the bytes the projector was found "
+                        + "holding, so switching CAIC off leaves the machine as it was");
+        check("w 80 2 11 80".equals(PicoReg.labbCommand(true, 128, 1)),
+                "enabling LABB is exactly \"w 80 2 11 80\"");
+        check("w 80 2 10 80".equals(PicoReg.labbCommand(false, 128, 1)),
+                "and the undo is \"w 80 2 10 80\"");
+        check("r 85 3".equals(PicoReg.readCommand(PicoReg.OPCODE_CAIC_IMAGE_READ,
+                        PicoReg.CAIC_IMAGE_LEN)),
+                "the CAIC image read-back is \"r 85 3\"");
+        check("r 81 4".equals(PicoReg.readCommand(PicoReg.OPCODE_LABB_READ,
+                        PicoReg.LABB_READ_LEN)),
+                "and LABB's is \"r 81 4\"");
+
+        File tmp = File.createTempFile("fanlab-imgproc", "");
+        tmp.delete();
+        tmp.mkdirs();
+        String oldRoot = Sysfs.root;
+        try {
+            Sysfs.root = tmp.getAbsolutePath();
+            check(!PicoReg.writeCaicImageControl(2.0, 0x60),
+                    "with no picoreg node the gain write reports failure rather than pretending");
+            check(!PicoReg.writeLabb(true, 128, 1), "and so does the LABB write");
+            check(!PicoReg.readLabb().known,
+                    "and the read is unknown, not a state nobody read");
+
+            File dir = new File(tmp, "sys/class/dlpc343x");
+            dir.mkdirs();
+            File node = new File(dir, "picoreg");
+            write(node, "");
+            check(PicoReg.writeCaicImageControl(2.0, PicoReg.CAIC_CLIP_THRESHOLD_STOCK),
+                    "the gain write succeeds against the node");
+            check("w 84 3 0 40 60".equals(slurp(node)),
+                    "and the node holds exactly \"w 84 3 0 40 60\" - no newline, nothing else");
+            check(PicoReg.writeLabb(true, PicoReg.LABB_STRENGTH_STOCK,
+                            PicoReg.LABB_SHARPNESS_STOCK),
+                    "the LABB write succeeds");
+            check("w 80 2 11 80".equals(slurp(node)),
+                    "and the node holds exactly \"w 80 2 11 80\" - no newline, nothing else");
+            check(PicoReg.writeLabb(false, PicoReg.LABB_STRENGTH_STOCK,
+                            PicoReg.LABB_SHARPNESS_STOCK),
+                    "the off write succeeds");
+            check("w 80 2 10 80".equals(slurp(node)), "and holds exactly \"w 80 2 10 80\"");
+
+            // An out-of-range gain must not reach the node at all: the DLPC would reject the
+            // whole command, so the byte on the wire would change nothing while the app
+            // believed it had set a budget.
+            check(!PicoReg.writeCaicImageControl(9.0, 0x60),
+                    "a 9.0 gain is refused even with the node right there");
+            check("w 80 2 10 80".equals(slurp(node)),
+                    "  and nothing was written - the node still holds the previous command");
+
+            // The stub echoes what was last written, which is what a file does and exactly
+            // what a node with no show() must not be mistaken for.
+            PicoReg.Labb echoed = PicoReg.readLabb();
+            check(!echoed.known, "an echo of \"r 81 4\" is not decoded as a state");
+            check(echoed.reason.indexOf("show()") >= 0
+                            && echoed.reason.indexOf("READ_LOGS") >= 0,
+                    "  and the reason names the obstacle and the permission: "
+                            + quote(echoed.reason));
+            PicoReg.CaicImage echoedImg = PicoReg.readCaicImageControl();
+            check(!echoedImg.known, "the same for \"r 85 3\"");
+
+            PicoReg.Labb timed = PicoReg.readLabb(1500L);
+            check(timed != null && !timed.known,
+                    "the bounded LABB read always answers, so the 1 Hz loop cannot stall on it");
+            PicoReg.CaicImage timedImg = PicoReg.readCaicImageControl(1500L);
+            check(timedImg != null && !timedImg.known, "and so does the bounded gain read");
+        } finally {
+            Sysfs.root = oldRoot;
+            rmrf(tmp);
+        }
+    }
+
+    // ----------------------------------------------------------------- the Looks
+
+    /**
+     * The colour sequence presets, and the arithmetic that says Look 0 is the end of it.
+     *
+     * A Look divides the frame's time between the three LEDs. The total is fixed, so every
+     * Look is a trade, and the sweep of all 19 on 2026-09-07 says what each one trades:
+     * Look 0 is 40/40/20 and reads white on a white field, and every other Look takes red
+     * down to 25-33 % and gives the time to green. Looks 1 and 15 read visibly green.
+     *
+     * Two things are pinned here. The <b>duty encoding</b>, because UQ8.8 over 256 is where
+     * TI's own guide and TI's own reference Python disagree, and the guide's worked example
+     * settles it -- the three have to sum to 100 and only /256 delivers that. And the
+     * <b>sum check</b> itself, which is what makes the decode self-verifying: get the byte
+     * order or the scale wrong and the three stop adding up, so a wrong reading is refused
+     * rather than reported.
+     */
+    private static void testLooks() {
+        section("the Looks (22h/23h/26h) - the duty split, and why 0 is the only one");
+
+        eq(PicoReg.OPCODE_LOOK_SELECT_WRITE, 0x22, "Write Look Select is 0x22");
+        eq(PicoReg.OPCODE_LOOK_SELECT_READ, 0x23, "Read Look Select is 0x23");
+        eq(PicoReg.OPCODE_SEQUENCE_HEADER_READ, 0x26,
+                "and Read Sequence Header Attributes - the one with the duty cycles - is 0x26");
+        eq(PicoReg.SEQUENCE_HEADER_LEN, 30,
+                "which answers thirty bytes: the Look's fifteen, then the Sequence's fifteen");
+
+        check("w 22 1 0".equals(PicoReg.lookSelectCommand(0)),
+                "selecting Look 0 is exactly \"w 22 1 0\"");
+        check("w 22 1 f".equals(PicoReg.lookSelectCommand(15)),
+                "and Look 15 is \"w 22 1 f\"");
+        check("r 26 1e".equals(PicoReg.readCommand(PicoReg.OPCODE_SEQUENCE_HEADER_READ,
+                        PicoReg.SEQUENCE_HEADER_LEN)),
+                "the split read is \"r 26 1e\" - thirty in hex, which is what the node wants");
+
+        // ---- UQ8.8: high byte whole percent, low byte 256ths ----
+        eq(PicoReg.decodeDuty(0x00, 0x28), 40.0, 1e-9, "00 28 little endian is 40.0 %");
+        eq(PicoReg.decodeDuty(0x00, 0x14), 20.0, 1e-9, "00 14 is 20.0 %");
+        eq(PicoReg.decodeDuty(0x80, 0x1E), 30.5, 1e-9,
+                "and the guide's own 1E80 is 30.5 - exact over 256, which is how the /255 in "
+                        + "TI's reference Python is known to be the wrong one of the two");
+        eq(PicoReg.decodeDuty(0x00, 0x32), 50.0, 1e-9, "with 3200 alongside it at 50.0");
+        eq(PicoReg.decodeDuty(0x80, 0x13), 19.5, 1e-9, "and 1380 at 19.5");
+        check(Math.abs((30.5 + 50.0 + 19.5) - PicoReg.DUTY_SUM) < 1e-9,
+                "  those three summing to exactly 100, as DLPU078A requires");
+
+        // ---- Look 0, as the projector answered it ----
+        PicoReg.Look zero =
+                PicoReg.sequenceHeaderFromBytes(look(0x2800, 0x2800, 0x1400), "kernel log");
+        check(zero.known, "Look 0's own 40/40/20 is a reading");
+        eq(zero.red, 40.0, 1e-9, "  red 40.0 %");
+        eq(zero.green, 40.0, 1e-9, "  green 40.0 %");
+        eq(zero.blue, 20.0, 1e-9, "  and blue 20.0 %");
+        check(zero.blocksAgree, "  with the Sequence block's copy matching the Look's");
+        PicoReg.lookSelectIntoBytes(zero, new int[]{0, 0, 0x10, 0x27, 0, 0});
+        eq(zero.number, 0, "0x23 puts the Look number on it");
+        eq(zero.sequence, 0, "  and the sequence number");
+        check(zero.neutral(), "  and Look 0 is the neutral one");
+        check(zero.summary().indexOf("40.0/40.0/20.0") >= 0,
+                "which the screen prints as the split: " + quote(zero.summary()));
+
+        // ---- and one of the eighteen that are not ----
+        PicoReg.Look fifteen =
+                PicoReg.sequenceHeaderFromBytes(look(0x1900, 0x3700, 0x1400), "kernel log");
+        check(fifteen.known, "a 25/55/20 Look reads too - the fifteen points red lost");
+        eq(fifteen.green, 55.0, 1e-9, "  green up to 55 %");
+        eq(fifteen.red, 25.0, 1e-9,
+                "  with red down to 25 % - and the time it lost went to green, which is what "
+                        + "made Looks 1 and 15 read visibly green on a white field");
+        PicoReg.lookSelectIntoBytes(fifteen, new int[]{15, 0, 0x10, 0x27, 0, 0});
+        check(!fifteen.neutral(), "  and it is not the neutral Look");
+
+        // ---- the sum check is the decode's own proof ----
+        PicoReg.Look bad = PicoReg.sequenceHeaderFromBytes(look(0x2800, 0x2800, 0x2800), "x");
+        check(!bad.known, "three duty cycles summing to 120 are not a reading");
+        check(bad.reason.indexOf("100") >= 0,
+                "  and the reason says what they should have summed to: " + quote(bad.reason));
+        int[] swapped = look(0x2800, 0x2800, 0x1400);
+        int keep = swapped[0];
+        swapped[0] = swapped[1];
+        swapped[1] = keep;
+        check(!PicoReg.sequenceHeaderFromBytes(swapped, "x").known,
+                "and getting the byte order wrong stops the three adding up, which is the "
+                        + "whole point of checking the sum rather than trusting the layout");
+
+        // ---- blocks that disagree are reported, not averaged ----
+        int[] mismatch = look(0x2800, 0x2800, 0x1400);
+        mismatch[15] = 0x01;
+        PicoReg.Look apart = PicoReg.sequenceHeaderFromBytes(mismatch, "x");
+        check(apart.known, "a Look block that disagrees with the Sequence block still decodes");
+        check(!apart.blocksAgree, "  but says the two copies differ, which DLPU078A forbids");
+        check(apart.summary().indexOf("DISAGREE") >= 0,
+                "  and puts it on the screen: " + quote(apart.summary()));
+
+        // ---- nothing short of thirty bytes is a reading ----
+        check(!PicoReg.sequenceHeaderFromBytes(new int[]{0x00, 0x28}, "x").known,
+                "two bytes is not a 0x26 reading");
+        check(!PicoReg.sequenceHeaderFromBytes(null, "x").known, "nor is none");
+        check(!PicoReg.sequenceHeaderFromResponseText("", "x").known, "nor an empty response");
+        check(!PicoReg.sequenceHeaderFromResponseText("zip", "x").known,
+                "nor text with no hex in it");
+        check(new PicoReg.Look().summary() == null && !new PicoReg.Look().known,
+                "and a reading nobody has taken says nothing at all");
+        eq(PicoReg.LOOK_COUNT, 19, "the projector answered for 19 Looks");
+        eq(PicoReg.LOOK_NEUTRAL, 0, "and exactly one of them is neutral");
+    }
+
+    /**
+     * A 0x26 response: three UQ8.8 duty words, little endian, in the Look block, and the
+     * same three again in the Sequence block fifteen bytes later. Everything between is the
+     * frame counts and the vector count, which this app does not read.
+     */
+    private static int[] look(int red, int green, int blue) {
+        int[] b = new int[PicoReg.SEQUENCE_HEADER_LEN];
+        int[] duty = {red, green, blue};
+        for (int i = 0; i < 3; i++) {
+            b[i * 2] = duty[i] & 0xFF;
+            b[i * 2 + 1] = (duty[i] >> 8) & 0xFF;
+            b[15 + i * 2] = b[i * 2];
+            b[15 + i * 2 + 1] = b[i * 2 + 1];
+        }
+        return b;
+    }
+
+    // ----------------------------------------------------------------- LED drive
+
+    /**
+     * The configured levels, and the clamp that is the whole reason this class has an upper
+     * bound at all.
+     *
+     * 97 is not a round number and not a preference. The driver turns a percent into a
+     * 7-bit DAC code, {@code code = (30*mA + 40000) / 1968}, and clamps it with
+     * {@code if (code > 0x7F) code = 0x3F} -- so an over-request does not saturate the
+     * channel, it drops it to about 40 % and the picture goes <i>dim</i>. The code crosses
+     * 127 at about 99 % of the measured 7.1 A per-channel maximum, so anything that could
+     * store 100 would be storing a dim picture.
+     */
+    private static void testLedDriveConfig() {
+        section("LED drive: the four levels, and the 97 that is not a round number");
+
+        eq(LedDrive.MAX_LEVEL, 97, "the ceiling is 97, three points below the DAC cliff");
+        eq(LedDrive.MIN_LEVEL, 20, "and the floor is Super Eco's own stock drive");
+
+        LedDrive.Config stock = new LedDrive.Config();
+        check(stock.isStock(), "a fresh config is the kernel's own table");
+        check(stock.encode().equals("d1,20,40,55,76"),
+                "which encodes as the table itself  (got " + stock.encode() + ")");
+
+        LedDrive.Config bright = LedDrive.Config.bright();
+        check(!bright.isStock(), "the Bright preset is not");
+        check(bright.encode().equals("d1,35,55,75,90"),
+                "and is 35/55/75/90  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 90, "Presentation reads 90 - 76 stock, so 18 % more drive");
+        eq(bright.levelFor(2), 75, "Normal reads 75");
+        eq(bright.levelFor(1), 55, "Eco reads 55");
+        eq(bright.levelFor(4), 35, "Super Eco reads 35");
+        bright.sanitise();
+        check(bright.encode().equals("d1,35,55,75,90"),
+                "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
+        eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
+
+        // ---- the clamp, which is the point ----
+        LedDrive.Config hot = new LedDrive.Config();
+        for (int i = 0; i < LedDrive.TIERS; i++) {
+            hot.level[i] = 100;
+        }
+        hot.sanitise();
+        eq(hot.level[3], 97,
+                "a requested 100 is stored as 97 - at 100 the DAC code passes 127 and the "
+                        + "driver answers by dropping the channel to about 40 %");
+        check(hot.encode().equals("d1,97,97,97,97"),
+                "on every tier  (got " + hot.encode() + ")");
+        check(LedDrive.Config.decode("d1,100,100,100,100").encode().equals("d1,97,97,97,97"),
+                "and a stored line asking for 100 is repaired on the way in, not obeyed");
+        check(LedDrive.Config.decode("d1,5,5,5,5").encode().equals("d1,20,20,20,20"),
+                "the floor is enforced the same way");
+        check(LedDrive.Config.decode("d1,-40,0,255,9999").encode().equals("d1,20,20,97,97"),
+                "including on a line nobody could have typed by accident");
+
+        // ---- channel 1 keeps the stock table's ratio, whatever the level ----
+        eq(LedDrive.redFor(3, 95), 89, "Presentation 95 drives the red die at 89");
+        eq(LedDrive.redFor(3, 90), 84, "and the older 90 drove it at 84");
+        eq(LedDrive.redFor(3, 97), 91, "and the ceiling level at 91");
+        eq(LedDrive.redFor(3, 76), 71, "the stock level reproduces the stock red exactly");
+        eq(LedDrive.redFor(2, 70), 61, "Normal keeps 48/55");
+        eq(LedDrive.redFor(1, 50), 45, "Eco keeps 36/40");
+        eq(LedDrive.redFor(4, 30), 30, "and Super Eco is 1:1, as the table has it");
+        eq(LedDrive.redFor(0, 50), 50, "an unknown mode gets the level unchanged");
+        eq(LedDrive.redFor(9, 50), 50, "in both directions off the end of the table");
+
+        eq(LedDrive.tierOf(4), 0, "Super Eco is the first tier");
+        eq(LedDrive.tierOf(3), 3, "Presentation the last");
+        eq(LedDrive.tierOf(5), -1, "and an unknown mode has none");
+
+        // ---- a broken setting must never leave the LEDs somewhere nobody chose ----
+        check(LedDrive.Config.decode(null).isStock(), "a missing config is stock");
+        check(LedDrive.Config.decode("").isStock(), "an empty one is stock");
+        check(LedDrive.Config.decode("d1,30,50").isStock(), "a truncated one is stock");
+        check(LedDrive.Config.decode("d1,a,b,c,d").isStock(), "an unparseable one is stock");
+        check(LedDrive.Config.decode("d9,30,50,70,90").isStock(),
+                "and an unknown version is stock, not read as if it were d1");
+        check(LedDrive.Config.decode(bright.encode()).encode().equals(bright.encode()),
+                "an edited config round trips byte for byte");
+    }
+
+    /**
+     * The {@code rgbcurrent} show handler, which is racy, off by one, and now explained.
+     *
+     * A failed SPI read hands the driver {@code 0x8080}; it computes
+     * {@code current = -1333 ma, percent = -18}; sysfs prints that percent as an unsigned
+     * byte. That is where the 238 and 241 seen in the field come from, and it is why any
+     * field above 100 has to read as "could not tell" rather than as the kernel having
+     * overwritten the drive -- treating it as a mismatch would rewrite the nodes every
+     * five seconds for ever.
+     */
+    private static void testLedDriveReadback() {
+        section("LED drive: reading back, the off-by-one and the 238/241 glitch");
+
+        // Exactly what the projector printed on 2026-09-07 with 90 written to rgbcurrent
+        // and 84 to redcurrent. duty_g is the red channel: the kernel prints ch0..ch3
+        // under the labels r/g/b/b2 while the map is green/red/b2/blue.
+        int[] rb = LedDrive.parseReadback("red_current=13 green_current=13 blue_current=13 "
+                + "duty_r=89 duty_g=83 duty_b=89 duty_b2=89");
+        check(rb != null && rb[0] == 83 && rb[1] == 89 && rb[2] == 89,
+                "duty_g carries red and the other three carry the common level");
+        check(LedDrive.parseReadback("duty_r=100 duty_g=100") != null,
+                "100 is a legal reading");
+
+        // Three fields carry the common level, so one glitching is not a lost reading.
+        rb = LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=89 duty_b2=89");
+        check(rb != null && rb[0] == 83 && rb[1] == 89 && rb[2] == 89,
+                "a glitch in one common field is covered by the other two");
+        rb = LedDrive.parseReadback("duty_r=241 duty_g=83 duty_b=238 duty_b2=89");
+        check(rb != null && rb[1] == 89 && rb[2] == 89,
+                "two glitches still leave a usable reading");
+
+        // The half-written table: the kernel writes the four channels one at a time, and
+        // this is Eco part way through, read off the projector. Agreeing with it is how a
+        // colour cast gets reported as a correct override.
+        rb = LedDrive.parseReadback("duty_r=49 duty_g=44 duty_b=39 duty_b2=39");
+        check(rb != null && rb[1] == 39 && rb[2] == 49,
+                "channels that disagree come back as a range, not as whichever was first");
+        check(!LedDrive.readbackAgrees(rb, 45, 50),
+                "and a range never agrees, however close one end of it is");
+        check(LedDrive.readbackAgrees(
+                        LedDrive.parseReadback("duty_r=49 duty_g=44 duty_b=49 duty_b2=49"),
+                        45, 50),
+                "while the fully applied table does, at the handler's one below");
+        check(LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=241 duty_b2=238") == null,
+                "but all three glitching is 'could not tell', not a mismatch");
+
+        check(LedDrive.parseReadback("duty_r=89 duty_g=241") == null,
+                "red glitching is a lost reading -- it is printed once and has no stand-in");
+        check(LedDrive.parseReadback("duty_r=89 duty_g=101") == null,
+                "anything above 100 is the failed-SPI byte, not a drive level");
+        check(LedDrive.parseReadback("duty_r=89") == null, "a missing duty_g is no reading");
+        check(LedDrive.parseReadback("duty_g=83") == null,
+                "and so is a red with nothing to compare the common level against");
+        check(LedDrive.parseReadback("duty_r=89 duty_g=") == null, "nor is an empty field");
+        check(LedDrive.parseReadback("duty_r=89 duty_g=x") == null, "nor is junk");
+        check(LedDrive.parseReadback(null) == null, "nor is nothing at all");
+        check(LedDrive.parseReadback("") == null, "nor is an empty node");
+
+        check(LedDrive.matches(75, 76), "the handler reports one below what was written");
+        check(LedDrive.matches(76, 76),
+                "and the exact value is accepted too, so a firmware that stops doing that "
+                        + "does not turn every tick into a rewrite");
+        check(!LedDrive.matches(74, 76), "two below is a mismatch");
+        check(!LedDrive.matches(55, 76), "and the stock table reappearing certainly is");
+    }
+
+    /**
+     * The decision, walked through the states it has to get right, with the writes landing
+     * on the stub tree.
+     *
+     * The sequences here are the ones that cost something when they are wrong: an override
+     * that never applies, one that rewrites the nodes every second, one that does not come
+     * back after the kernel reinstates the stock table, one that does not go away when the
+     * app stops being the fan controller, and a ceiling trip that re-arms itself and
+     * flickers the picture.
+     */
+    private static void testLedDriveDecide() throws Exception {
+        section("LED drive: apply, hold, rewrite, restore, and the ceiling latch");
+
+        File root = stubRoot();
+        String oldRoot = Sysfs.root;
+        Sysfs.root = root.getAbsolutePath();
+        try {
+            File rgbCurrent = new File(root, "sys/class/dlpc343x/rgbcurrent");
+            File redCurrent = new File(root, "sys/class/dlpc343x/redcurrent");
+            File rgbLevel = new File(root, "sys/class/dlpc343x/rgblevel");
+
+            LedDrive d = new LedDrive();
+            // Pinned at the older 90 rather than taken from Config.bright(), on purpose.
+            // This test drives the state machine against the read-back string the projector
+            // actually printed on 2026-09-07 -- "duty_r=89 duty_g=83", 90 written and one
+            // below on the way back -- so it must not move every time the one-press preset
+            // does. What bright() currently holds is testLedDriveConfig's business.
+            LedDrive.Config raised = new LedDrive.Config();
+            raised.level[2] = 70;
+            raised.level[3] = 90;
+            long t = 1000000L;
+
+            // ---- not allowed: nothing is written, and nothing is believed ----
+            LedDrive.Plan p = d.decide(raised, 3, false, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.NONE, "not allowed writes nothing at all");
+            check(!d.overriding(), "and believes nothing is applied");
+            eq(d.appliedLevel(), -1, "which is the blank the CSV column carries");
+            check("stock".equals(d.state()), "with the screen saying stock");
+
+            // ---- the enabling edge applies, immediately ----
+            p = d.decide(raised, 3, true, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.APPLY, "the enabling edge applies");
+            eq(p.other, 90, "at Presentation's configured level");
+            eq(p.red, 84, "with channel 1 held to the stock table's ratio");
+            check(d.perform(p), "and both writes land");
+            check("90".equals(slurp(rgbCurrent)),
+                    "rgbcurrent holds the level bare  (got " + quote(slurp(rgbCurrent)) + ")");
+            check("84".equals(slurp(redCurrent)), "and redcurrent the ratio");
+            eq(d.appliedLevel(), 90, "the CSV column carries the level once it is on");
+            check(d.state().startsWith("applied 90/84"),
+                    "and the screen says so  (got " + quote(d.state()) + ")");
+
+            // ---- steady state: a read-back that agrees writes nothing ----
+            t += 1000L;
+            p = d.decide(raised, 3, true, 45.0, "duty_r=89 duty_g=83", t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "a read-back one below what was written is agreement, not a mismatch");
+
+            // ---- the glitch is not a mismatch ----
+            t += 1000L;
+            p = d.decide(raised, 3, true, 45.0, "duty_r=238 duty_g=241 duty_b=238", t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "and the 238 glitch is 'could not tell', which also writes nothing");
+
+            // ---- a genuine mismatch rewrites, but not before the rate limit ----
+            // Anchored to the constant rather than to a wall-clock guess: this assertion
+            // was written against a 5 s limit and silently became untrue when the limit
+            // was shortened, which is the sort of test that only fails once it matters.
+            // Start the limit's clock from a known write rather than from whatever the
+            // steps above happened to leave behind.
+            p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t, true);
+            eq(p.action, LedDrive.Plan.APPLY,
+                    "urgent rewrites regardless of the limit -- what a mode change needs");
+            check(d.perform(p), "and that write lands");
+            long applied = t;
+
+            t = applied + LedDrive.REAPPLY_EVERY_MS / 2;
+            p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "the stock table reappearing inside REAPPLY_EVERY_MS waits its turn");
+
+            t = applied + LedDrive.REAPPLY_EVERY_MS;
+            p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t);
+            eq(p.action, LedDrive.Plan.APPLY, "and is put back once the limit has passed");
+            eq(p.other, 90, "at the same level");
+            check(d.perform(p), "and the rewrite lands");
+
+            // ---- a brightness-mode change is an edge, and ignores the limit ----
+            put(root, "sys/class/dlpc343x/rgblevel", "2\n");
+            t += 1000L;
+            p = d.decide(raised, 2, true, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.APPLY,
+                    "a brightness-mode change re-applies at once, rate limit or not");
+            eq(p.other, 70, "at Normal's configured level");
+            eq(p.red, 61, "and Normal's own ratio");
+            check(d.perform(p), "with both writes landing again");
+
+            // ---- losing the coupling puts the stock table back ----
+            t += 1000L;
+            p = d.decide(raised, 2, false, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.RESTORE,
+                    "losing the coupling restores the stock table");
+            eq(p.rgblevel, 2, "by rewriting the mode the override was applied under");
+            check(!d.overriding(), "it stops believing anything is applied");
+            eq(d.appliedLevel(), -1, "and the CSV column goes blank again");
+            check(d.perform(p), "the restore write lands");
+            check("2".equals(slurp(rgbLevel)),
+                    "as a rewrite of rgblevel with the value it already held, which is what "
+                            + "makes the kernel reinstate the whole table");
+            t += 1000L;
+            p = d.decide(raised, 2, false, 45.0, null, t);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "and it is done once, not on every tick that follows");
+
+            // ---- the ceiling: dropped, latched, and no automatic re-arm ----
+            put(root, "sys/class/dlpc343x/rgblevel", "3\n");
+            LedDrive e = new LedDrive();
+            long u = 2000000L;
+            check(e.perform(e.decide(raised, 3, true, 45.0, null, u)),
+                    "a fresh override applies while the light engine is cool");
+            u += 1000L;
+            p = e.decide(raised, 3, true, LedDrive.DEFAULT_TRIP_C + 0.2, null, u);
+            eq(p.action, LedDrive.Plan.RESTORE,
+                    "above the ceiling the override is dropped");
+            check(e.tripped(), "and latched off");
+            check(e.state().startsWith("held off"),
+                    "which the screen names  (got " + quote(e.state()) + ")");
+            check(p.note.indexOf("LEDDRIVE TRIP") >= 0,
+                    "and the log gets it as an event  (got " + quote(p.note) + ")");
+            e.perform(p);
+            u += 30000L;
+            p = e.decide(raised, 3, true, 40.0, null, u);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "cooling down does not re-arm it - brightness cycling on the wall is "
+                            + "more objectionable than a fan swing, so it waits to be asked");
+            check(e.tripped(), "the latch holds");
+
+            // ---- and releases on the two things that make the trip stale ----
+            u += 1000L;
+            p = e.decide(raised, 2, true, 40.0, null, u);
+            check(!e.tripped(), "a brightness-mode change is a different LED load, so it releases");
+            eq(p.action, LedDrive.Plan.APPLY, "and the override goes back on for the new mode");
+
+            LedDrive f = new LedDrive();
+            long v = 3000000L;
+            f.perform(f.decide(raised, 3, true, 45.0, null, v));
+            v += 1000L;
+            f.perform(f.decide(raised, 3, true, LedDrive.DEFAULT_TRIP_C + 1.0, null, v));
+            check(f.tripped(), "a second override trips the same way");
+            v += 1000L;
+            LedDrive.Config other = LedDrive.Config.decode("d1,25,45,60,80");
+            p = f.decide(other, 3, true, 45.0, null, v);
+            check(!f.tripped(), "and changing the configuration releases the latch too");
+            eq(p.action, LedDrive.Plan.APPLY, "at the new levels");
+            eq(p.other, 80, "which is the new Presentation level");
+
+            // ---- the handback that is not a tick ----
+            LedDrive g = new LedDrive();
+            long w = 4000000L;
+            check(g.forceRestore(w).action == LedDrive.Plan.NONE,
+                    "forcing a restore with nothing applied writes nothing, so calling it "
+                            + "on a machine this app never boosted is free");
+            g.perform(g.decide(raised, 3, true, 45.0, null, w));
+            check(g.overriding(), "with an override applied");
+            LedDrive.Plan back = g.forceRestore(w);
+            eq(back.action, LedDrive.Plan.RESTORE, "forcing a restore asks for the rewrite");
+            check(!g.overriding(), "and drops the belief immediately");
+
+            // ---- a stock table is the same as off, whatever the switch says ----
+            LedDrive h = new LedDrive();
+            p = h.decide(new LedDrive.Config(), 3, true, 45.0, null, w);
+            eq(p.action, LedDrive.Plan.NONE,
+                    "a stock configuration has nothing to apply, so allowed changes nothing");
+            p = h.decide(null, 3, true, 45.0, null, w);
+            eq(p.action, LedDrive.Plan.NONE, "and neither does no configuration at all");
+        } finally {
+            Sysfs.root = oldRoot;
+            rmrf(root);
+        }
+    }
+
+    /**
+     * LINEAR's ceiling under the LED drive override: promoted when it is still the untouched
+     * default, left exactly alone when somebody has set it.
+     *
+     * The numbers behind the promotion are inferred from the x1.18 the boost costs, not
+     * measured, and they are in {@link LinearConfig#BOOST_CEILING_C}. What is checked here
+     * is the rule, which is the part that can be wrong in a way nobody notices: a controller
+     * that quietly rewrote a ceiling its owner had chosen, or that stored 54 where 52 was
+     * meant, would both look correct on screen.
+     */
+    private static void testLinearCeilingPromotion() {
+        section("linear: the ceiling the LED drive override moves, and the ones it must not");
+
+        eq((int) Math.round(LinearConfig.DEFAULT_CEILING_C * 10), 520,
+                "the stock default is 52.0");
+        eq((int) Math.round(LinearConfig.BOOST_CEILING_C * 10), 540,
+                "and the boosted one is 54.0, where the Bright curve rests");
+
+        LinearConfig off = new LinearConfig();
+        check(!LinearConfig.promoteForBoost(off, false),
+                "with the override off the default is left where it is");
+        eq((int) Math.round(off.ceilingC * 10), 520, "untouched");
+
+        LinearConfig on = new LinearConfig();
+        check(LinearConfig.promoteForBoost(on, true),
+                "with the override on the untouched default is raised, and says it was");
+        eq((int) Math.round(on.ceilingC * 10), 540, "to 54.0");
+        check(!LinearConfig.promoteForBoost(on, true),
+                "and a second pass over an already-raised config moves nothing and claims "
+                        + "nothing, so the status line does not announce it twice");
+
+        // A ceiling somebody chose is a ceiling somebody chose, whatever else is on.
+        double[] hand = {35.0, 49.0, 51.9, 52.1, 54.0, 60.0};
+        for (int i = 0; i < hand.length; i++) {
+            LinearConfig h = new LinearConfig();
+            h.ceilingC = hand[i];
+            h.sanitise();
+            double was = h.ceilingC;
+            check(!LinearConfig.promoteForBoost(h, true),
+                    "a hand-set " + Sample.fmt1(was) + " C ceiling is left alone");
+            eq((int) Math.round(h.ceilingC * 10), (int) Math.round(was * 10), "  exactly");
+        }
+
+        // Nothing is stored. The promotion is applied to the copy the loop is about to use,
+        // so the encoded line -- which is what reaches SharedPreferences -- still says 52.0,
+        // and switching the override off puts the ceiling back without a migration.
+        LinearConfig stored = new LinearConfig();
+        LinearConfig loaded = LinearConfig.decode(stored.encode());
+        LinearConfig.promoteForBoost(loaded, true);
+        check(stored.encode().indexOf("52.0") >= 0,
+                "the stored line is still the 52.0 default  (got " + stored.encode() + ")");
+        check(loaded.encode().indexOf("54.0") >= 0,
+                "while the copy the loop holds says 54.0  (got " + loaded.encode() + ")");
+        check(LinearConfig.decode(stored.encode()).ceilingC == LinearConfig.DEFAULT_CEILING_C,
+                "and re-reading the stored line gives 52.0 again, so the override is "
+                        + "reversible by switching it off rather than by editing anything");
+
+        check(!LinearConfig.promoteForBoost(null, true), "a null config is not a crash");
+    }
+
+    private static String slurp(File f) throws Exception {
+        java.io.FileInputStream in = new java.io.FileInputStream(f);
+        try {
+            byte[] buf = new byte[4096];
+            int n = in.read(buf);
+            return n <= 0 ? "" : new String(buf, 0, n, "UTF-8");
+        } finally {
+            in.close();
+        }
+    }
+
     // ----------------------------------------------------------------- output
 
     private static void testReportOutput() throws Exception {
@@ -2382,6 +3595,26 @@ public final class FanLabTest {
                         && vj.indexOf("\"verdict\": \"quiet\"") >= 0,
                 "and every verdict the person in the room gave");
         check(vj.indexOf("\"kind\": \"verify\"") >= 0, "and says which kind of run it was");
+        check(vj.indexOf("\"steady_run\": false") >= 0,
+                "a hold with no closed-loop phase says so outright, so a reader can tell"
+                + " \"the fan sat still\" from \"nobody asked\"");
+        check(vj.indexOf("steady_verdict") < 0,
+                "  and carries none of the steady fields it has no numbers for");
+
+        HoldSession hsx = new HoldSession(40, 3, 0L, 0L);
+        hsx.beginSteady(CurveConfig.preset(0), 120, 40, 0L);
+        for (int t = 1; t <= 120; t++) {
+            hsx.tick(t * 1000L, 52.0);
+        }
+        String sj = SweepReport.verifyJson(hsx, m, 5000L, 120L);
+        check(jsonBalanced(sj), "a report with a steady phase is still valid JSON");
+        check(!hasBareToken(sj, "NaN"), "  with no bare NaN");
+        check(sj.indexOf("\"steady_run\": true") >= 0, "  and says the phase ran");
+        check(sj.indexOf("\"steady_verdict\": \"steady\"") >= 0,
+                "  carrying the verdict a person will read first");
+        check(sj.indexOf("\"judged_reversals\": 0") >= 0,
+                "  and the reversal count, which is what separates settling from hunting");
+        check(sj.indexOf("\"judged_span\": 0") >= 0, "  and how far the duty travelled");
 
         // The names.
         check("trace_1700000000.csv".equals(SweepReport.traceName(1700000000L, false)),
@@ -2518,6 +3751,184 @@ public final class FanLabTest {
     private static final int[] RISE_DUTY = {30, 35, 40, 45, 50, 55, 60, 70, 83};
     private static final double[] RISE_PRES =
             {33.76, 29.92, 26.91, 24.9, 23.7, 22.3, 21.5, 20.2, 19.4};
+
+    /**
+     * Drive a VERIFY steady phase against the same two-pole plant the hunting check uses.
+     *
+     * The plant starts at the equilibrium for {@code startDuty} unless {@code fromCold},
+     * in which case it starts at ambient and warms -- which is what a settling transient
+     * looks like and is the thing the judged tail exists to exclude.
+     */
+    private static HoldSession runSteady(CurveConfig cfg, double ambient, int startDuty,
+                                         int seconds, double noise, boolean fromCold) {
+        HoldSession h = new HoldSession(startDuty, 3, 0L, 0L);
+        h.beginSteady(cfg, seconds, h.duty(), 0L);
+        java.util.Random rng = new java.util.Random(7);
+        double total0 = fromCold ? 0.0 : presentationRise(h.duty());
+        double fast = total0 * 0.70;
+        double slow = total0 * 0.30;
+        final double tauFast = 230.0;
+        final double tauSlow = 1500.0;
+        for (int t = 1; t <= seconds; t++) {
+            double measured = ambient + fast + slow + rng.nextGaussian() * noise;
+            int d = h.tick(t * 1000L, measured);
+            double total = presentationRise(d);
+            fast += (total * 0.70 - fast) * (1.0 - Math.exp(-1.0 / tauFast));
+            slow += (total * 0.30 - slow) * (1.0 - Math.exp(-1.0 / tauSlow));
+        }
+        return h;
+    }
+
+    private static void testHoldSteadyPhase() {
+        section("VERIFY steady phase: does the fan sit still once the curve is driving");
+
+        // ---- the gate FanService reads to decide whether the LED drive may stay on ----
+        HoldSession g = new HoldSession(50, 3, 0L, 0L);
+        eq(g.phase(), HoldSession.PHASE_HOLD, "a session starts in the hold phase");
+        check(!g.closedLoop(), "a pinned hold is NOT closed-loop, so the LED drive is dropped");
+        check(g.steady() == null, "and there are no steady statistics yet");
+        check("too_short".equals(g.verdict()), "nor a verdict");
+        g.beginSteady(CurveConfig.preset(0), 600, 50, 0L);
+        eq(g.phase(), HoldSession.PHASE_STEADY, "beginSteady moves it on");
+        check(g.closedLoop(), "now the curve is driving, so the drive may stay applied -- "
+                + "the override's safety case is that the app is cooling the machine, and here it is");
+        g.stop("user");
+        check(!g.closedLoop(), "a finished session is never closed-loop");
+
+        // ---- guards on beginSteady ----
+        HoldSession c1 = new HoldSession(50, 3, 0L, 0L);
+        c1.beginSteady(CurveConfig.preset(0), 5, 50, 0L);
+        eq(c1.steady().seconds, 60, "a silly short phase is raised to 60 s");
+        HoldSession c2 = new HoldSession(50, 3, 0L, 0L);
+        c2.beginSteady(CurveConfig.preset(0), 99999, 50, 0L);
+        eq(c2.steady().seconds, 3600, "and an endless one is cut to an hour");
+        HoldSession c3 = new HoldSession(50, 3, 0L, 0L);
+        c3.beginSteady(null, 600, 50, 0L);
+        check(c3.steady() == null, "no curve, no phase -- it does not half-start");
+        eq(c3.phase(), HoldSession.PHASE_HOLD, "  and it stays in the hold phase");
+        HoldSession c4 = new HoldSession(50, 3, 0L, 0L);
+        c4.stop("user");
+        c4.beginSteady(CurveConfig.preset(0), 600, 50, 0L);
+        check(c4.steady() == null, "a finished session cannot be restarted into a steady phase");
+
+        // ---- the target: the fan does not move ----
+        CurveConfig quiet = CurveConfig.preset(0);
+        HoldSession st = runSteady(quiet, 24.0, 38, 900, 0.03, false);
+        check("steady".equals(st.verdict()), "Quiet resting on its shelf: the fan never moves"
+                + " (verdict \"" + st.verdict() + "\", " + st.steady().judgedChanges + " judged changes)");
+        eq(st.steady().judgedChanges, 0, "  zero changes in the judged half");
+        eq(st.steady().judgedReversals, 0, "  and nothing to reverse");
+        check(st.finished(), "  the phase ends itself");
+        check("steady_complete".equals(st.endReason()),
+                "  saying why (\"" + st.endReason() + "\")");
+
+        eq(st.steady().maxTick, 0, "  and no tick moved it at all");
+
+        // ---- settling is not hunting, and a change count alone cannot tell them apart ----
+        //
+        // Warming from cold is the honest worst case: over half an hour the duty climbs
+        // twenty-odd points, and because the slow pole is still arriving at the end, the
+        // judged half is NOT quiet. That is correct and is why the verdict leans on
+        // direction rather than on the tail alone -- a settle is overwhelmingly
+        // one-directional however long it takes.
+        HoldSession se = runSteady(quiet, 24.0, 35, 1800, 0.03, true);
+        check(se.steady().changes > 0, "warming up from cold, the duty moves ("
+                + se.steady().changes + " changes over the whole phase)");
+        check(se.steady().reversals * 4 <= se.steady().changes,
+                "  but it is overwhelmingly one-directional -- " + se.steady().reversals
+                + " reversals against " + se.steady().changes + " changes -- which is what a"
+                + " settle looks like and a hunt does not");
+        check(!"hunting".equals(se.verdict()),
+                "  so it is not called hunting (\"" + se.verdict() + "\")");
+
+        // ---- the judged tail, driven directly so the window is exact ----
+        // No plant here on purpose: this is testing the windowing arithmetic, and a plant
+        // would make the answer depend on how fast the plant happens to settle.
+        HoldSession jt = new HoldSession(40, 3, 0L, 0L);
+        jt.beginSteady(quiet, 600, 40, 0L);
+        for (int t = 1; t <= 600; t++) {
+            // swing it for the first two hundred seconds, then hold it dead flat, so the
+            // judged half beginning at 300 s sees a machine that has finished moving
+            double c = t <= 200 ? ((t / 20) % 2 == 0 ? 50.0 : 54.0) : 52.0;
+            jt.tick(t * 1000L, c);
+        }
+        check(jt.steady().changes > 0, "a swinging temperature moves the fan ("
+                + jt.steady().changes + " changes)");
+        check(jt.steady().reversals > 0, "  and turns it round (" + jt.steady().reversals + ")");
+        eq(jt.steady().judgedChanges, 0,
+                "  yet the judged half, held flat, counts none of it -- the tail is what"
+                + " stops an arrival being read as a hunt");
+        check("steady".equals(jt.verdict()),
+                "  so the verdict is steady (\"" + jt.verdict() + "\")");
+
+        // ---- a machine that is still drifting cannot be reported as well-behaved ----
+        //
+        // This is the hole the reversal count leaves on its own. A light engine still
+        // warming ratchets its duty one way and never turns round, so it scores zero
+        // reversals -- identical to a curve that is genuinely sitting still. Reading that
+        // as "no hunting" is wrong: the fan has not yet had the chance to hunt. So drift is
+        // measured, and while it is above SETTLED_C_PER_HOUR no quiet verdict is offered.
+        HoldSession dr = new HoldSession(40, 3, 0L, 0L);
+        dr.beginSteady(quiet, 600, 40, 0L);
+        for (int t = 1; t <= 600; t++) {
+            dr.tick(t * 1000L, 50.0 + 6.0 * t / 600.0);      // a steady climb, no wobble
+        }
+        check(dr.steady().changes > 0, "a warming machine moves the duty ("
+                + dr.steady().changes + " changes)");
+        eq(dr.steady().judgedReversals, 0, "  and never turns round, exactly like a good curve");
+        check(Math.abs(dr.steady().trendCPerHour()) >= HoldSession.SETTLED_C_PER_HOUR,
+                "  but the drift is measured and is well over the threshold ("
+                + Sample.fmt1(dr.steady().trendCPerHour()) + " C/h)");
+        check("unsettled".equals(dr.verdict()),
+                "  so no opinion is offered rather than a reassuring one (\""
+                + dr.verdict() + "\")");
+
+        // ...but drift must never HIDE a hunt. A reversal is proof whenever it happens.
+        HoldSession dh = new HoldSession(40, 3, 0L, 0L);
+        dh.beginSteady(quiet, 600, 40, 0L);
+        for (int t = 1; t <= 600; t++) {
+            dh.tick(t * 1000L, 50.0 + 6.0 * t / 600.0 + (t % 40 < 20 ? -1.2 : 1.2));
+        }
+        check(dh.steady().judgedReversals > 0, "the same climb with a wobble turns the fan round ("
+                + dh.steady().judgedReversals + " reversals)");
+        check(!"unsettled".equals(dh.verdict()),
+                "  and that is reported, not suppressed by the drift (\"" + dh.verdict() + "\")");
+
+        // ---- the 2026-09-08 measurement, as a regression test ----
+        //
+        // This row rested 3.7 duty points quieter than the shipped one, cleared the noise
+        // ceiling, cleared the 60 C trip by the same margin and scored 84 of 84 in
+        // CurveSim. On the hardware it moved nine times in twelve minutes where the shipped
+        // row moved zero, because it steepens the segment the machine rests on from 3.0 to
+        // 4.4 duty/C and the light engine wanders 0.6-0.9 C at a fixed duty. Nothing on the
+        // device could see that before this phase existed. Now it can, so it is pinned here.
+        CurveConfig rejected = CurveConfig.decode(
+                "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,40,62,76,83,"
+                + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5");
+        HoldSession hunt = runSteady(rejected, 27.0, 47, 1200, 0.45, false);
+        HoldSession keep = runSteady(quiet, 27.0, 40, 1200, 0.45, false);
+        check(hunt.steady().reversals > keep.steady().reversals,
+                "the rejected row turns the fan round more often than the shipped one ("
+                + hunt.steady().reversals + " reversals against " + keep.steady().reversals
+                + ") on the same plant, same noise, same seed");
+        check(hunt.steady().judgedSpan() >= keep.steady().judgedSpan(),
+                "  and travels at least as far (" + hunt.steady().judgedSpan()
+                + " duty points against " + keep.steady().judgedSpan() + ")");
+        check(!"steady".equals(hunt.verdict()),
+                "  so it is not reported as steady (\"" + hunt.verdict() + "\")");
+
+        // ---- the statistics are self-consistent ----
+        HoldSession.Steady k = keep.steady();
+        check(k.samples > 0, "every tick is counted");
+        check(k.judgedSamples > 0 && k.judgedSamples < k.samples,
+                "the judged tail is a proper subset of the phase (" + k.judgedSamples
+                + " of " + k.samples + ")");
+        check(k.judgedChanges <= k.changes, "judged changes cannot exceed total changes");
+        check(k.judgedReversals <= k.reversals, "nor judged reversals total reversals");
+        check(k.loDuty <= k.hiDuty, "the duty range is the right way round");
+        check(k.maxC >= k.minC, "so is the temperature range");
+        eq(k.judgedFromSec, k.seconds / 2, "the judged half starts half way through");
+    }
 
     private static double presentationRise(int duty) {
         if (duty <= RISE_DUTY[0]) {
@@ -3133,8 +4544,8 @@ public final class FanLabTest {
      * room temperature from 14 to 34 C. None may hunt.
      *
      * This is the check the static rules above cannot make. A segment can be four degrees
-     * wide, monotone, identical across profiles and clipped correctly, and still leave the
-     * controller with nowhere to rest: Cold's rise from the pinned floor passed every static
+     * wide, monotone, correctly clipped and exactly what its shape derives, and still leave
+     * the controller with nowhere to rest: Cold's rise from the pinned floor passed every static
      * assertion in this file and hunted by four duty points at 17 C ambient, because 23 duty
      * points in 4 C is a slope of 5.75 duty/C and the 0.8 C deadband then spans 4.6 duty
      * points. The width test never saw it. This one does.
@@ -3165,9 +4576,25 @@ public final class FanLabTest {
         // points at 17 C. A hunt on a rounding knife-edge is decided by exactly the details
         // a tidy model leaves out: the 70/30 split between the fast pole and the chassis,
         // the slow pole's value, and 0.03 C of seeded sensor noise. So they are all here.
+        //
+        // It is driven off PRESETS.length rather than a list, so adding a curve puts it
+        // under this check without anyone remembering to. That is how all four Bright rungs
+        // got here, and it is why the count assertion at the bottom exists.
+        //
+        // It runs the STOCK plant, and that is deliberate rather than an oversight now that
+        // half the presets are drawn for a raised one. Seven of the eight can only ever run
+        // at stock drive, and the eighth pairing -- a Bright preset at stock drive -- is a
+        // legitimate state: the drive can trip off under a Bright curve and the curve stays.
+        // The reverse, a standard curve at raised drive, is the state the family gate makes
+        // unreachable, so nothing here needs to model it. tools/CurveSim.java sweeps the
+        // raised plant with --scale high=1.208 and its verdicts, including the one place the
+        // Bright family is worse than the standard one, are recorded against the preset
+        // lines in CurveConfig.
         final double tauFast = 230.0;
         final double[] tauSlow = {0.0, 900.0, 1500.0, 3000.0};
+        int checked = 0;
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
+            checked++;
             String name = CurveConfig.PRESET_NAMES[i];
             CurveConfig cfg = CurveConfig.preset(i);
             for (int ambient = 14; ambient <= 34; ambient++) {
@@ -3205,6 +4632,8 @@ public final class FanLabTest {
                 }
             }
         }
+        eq(checked, CurveConfig.PRESET_NAMES.length,
+                "and every curve on offer went through it, not a list of them kept here");
     }
 
     /**
@@ -3405,7 +4834,7 @@ public final class FanLabTest {
     }
 
     /**
-     * The six columns the field questions needed, and the property that matters more than
+     * The columns the field questions needed, and the property that matters more than
      * any of them: a field nothing could read comes out blank, never as a zero and never
      * as an exception. Then the revision itself, because a header change has already
      * fired unattended once and is about to again.
@@ -3414,12 +4843,12 @@ public final class FanLabTest {
         section("csv: the ambient and provenance columns, blank against zero");
 
         String[] cols = CsvLogger.HEADER.split(",", -1);
-        eq(cols.length, 26, "the schema is twenty-six columns");
+        eq(cols.length, 27, "the schema is twenty-seven columns");
         check(CsvLogger.HEADER.startsWith(OLD_HEADER_20),
                 "the twenty that were there are unchanged and still in that order");
         check(CsvLogger.HEADER.endsWith(
-                        ",session,off_s,room_c,exclusive,catchup,duty_hold_s"),
-                "and the six new ones are on the end, so no existing column index moved");
+                        ",session,off_s,room_c,exclusive,catchup,duty_hold_s,led_drive"),
+                "and the seven new ones are on the end, so no existing column index moved");
         check(SweepReport.TRACE_HEADER.startsWith(CsvLogger.HEADER + ","),
                 "the sweep trace grew with them rather than shifting underneath its reader");
 
@@ -3449,6 +4878,13 @@ public final class FanLabTest {
                 "where exclusive=0 is a real answer and does log as a zero");
         check(f[24].equals("0"), "and so does catchup=0 -- converged, not unknown");
         check(f[25].equals("95"), "duty_hold_s is whole seconds, got '" + f[25] + "'");
+        check(f[26].length() == 0,
+                "led_drive is blank under the stock table, so a row with nothing here was "
+                + "measured under stock LED drive rather than under an unrecorded one");
+
+        s.ledDrive = 90;
+        check(s.toCsv().split(",", -1)[26].equals("90"),
+                "and is the level itself once the override is on the hardware");
 
         s.roomC = 23;
         check(s.toCsv().split(",", -1)[22].equals("23"),

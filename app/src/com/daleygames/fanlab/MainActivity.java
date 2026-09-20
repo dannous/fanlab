@@ -48,6 +48,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow modeRow;
     private StepRow presetRow;
     private StepRow ceilingRow;
+    private StepRow ledDriveRow;
     private StepRow reassertRow;
     private StepRow loggingRow;
     private StepRow autostartRow;
@@ -206,13 +207,22 @@ public class MainActivity extends Activity implements StepRow.Listener {
         presetRow = addRow(root, new StepRow(c, "Curve preset — CURVE mode").button()
                 .tag("preset", 0));
         root.addView(Ui.body(c,
-                "Fan speed in Presentation, and where the light engine settles at "
-                        + "24 °C:"
+                "Four steps, quietest first. Fan speed in Presentation and where the "
+                        + "light engine settles at 24 °C:"
                         + "\n    Quiet       38–40 %    51.9 °C"
                         + "\n    Balanced    43–45 %    50.3 °C"
                         + "\n    Cool        48–50 %    49.2 °C"
                         + "\n    Cold        53–55 %    48.3 °C"
-                        + "\nAll four idle at 30 % in Normal, Eco and Super Eco."),
+                        + "\nWith the LED drive on you get the same four steps as "
+                        + "Bright Quiet, Bright Balanced, Bright Cool and Bright Cold. "
+                        + "Those spend more fan in Presentation to cover the hotter light "
+                        + "engine, and they are the only ones this button offers while the "
+                        + "drive is on — a plain curve with the drive raised runs about "
+                        + "2 °C hotter and can trip the drive's own cut-out."
+                        + "\nSwitching the LED drive keeps your step and changes the "
+                        + "family, so Quiet becomes Bright Quiet and back."
+                        + "\nAll eight idle at 30 % in Normal, Eco and Super Eco at stock "
+                        + "drive."),
                 Ui.wrap());
         ceilingRow = addRow(root, new StepRow(c, "Temperature ceiling — LINEAR mode")
                 .range((int) LinearConfig.MIN_CEILING_C, (int) LinearConfig.MAX_CEILING_C)
@@ -229,6 +239,29 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "\nAbove a 32.5 °C room LINEAR cannot hold 52 °C and says so. "
                         + "Choose CURVE for quiet, LINEAR when the ceiling matters more."),
                 Ui.wrap());
+        ledDriveRow = addRow(root, new StepRow(c,
+                "LED drive (BETA) — a brighter picture").button()
+                .tag("leddrive", 0));
+        root.addView(Ui.body(c,
+                "Runs the LEDs harder than the projector normally does. Presentation "
+                        + "goes from 76 % to 90 % of maximum — 18 % more drive. "
+                        + "Press to cycle Stock → Bright → Stock.\n"
+                        + "\nThe curve preset moves with it: your step stays where it is "
+                        + "and switches to the Bright version of itself, which spends a "
+                        + "little more fan to cover the roughly 5 °C the raised drive "
+                        + "adds. Switching back reverses it. A curve you have edited by "
+                        + "hand is left alone, because there is no Bright version of it "
+                        + "to switch to.\n"
+                        + "\nThen put up a white image and check two things: it should "
+                        + "look brighter, and white should still look white. If it looks "
+                        + "dimmer instead, switch it off — that means the drive was set "
+                        + "too high and the hardware cut it back.\n"
+                        + "\nIt switches itself off above "
+                        + Sample.fmt1(LedDrive.DEFAULT_TRIP_C) + " °C, and whenever this "
+                        + "app is not the one driving the fan. To turn it off yourself, "
+                        + "press this row again or set Mode to OFF.\n"
+                        + "\nBETA — the temperatures quoted for it are calculated, "
+                        + "not yet measured on this projector."), Ui.wrap());
         reassertRow = addRow(root, new StepRow(c,
                 "Re-assert every second (beat the stock controller)").button()
                 .tag("reassert", 0));
@@ -365,30 +398,44 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     : "Mode — CURVE: following the temperature curve");
         }
         if (presetRow != null) {
-            // The colour tracks the noise, not the state: green for the quietest, amber
-            // for the two whose operating point reaches the owner's "just acceptable" 50 in
-            // a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 % -- and dim for a
+            // The colour tracks the noise, not the state: green for the quietest rung, amber
+            // for the ones whose operating point reaches the owner's "just acceptable" 50
+            // in a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 % -- and dim for a
             // curve that is none of them and therefore has nothing to say about how loud it
-            // is.
+            // is. Driven off the rung rather than the index, so Bright Quiet reads as
+            // quietest exactly as Quiet does; the two families are the same four rungs and
+            // the colour is about the rung.
+            //
+            // The name carries the family: the row reads "Bright Quiet", not "Quiet", so the
+            // one place a user looks to see which curve is loaded also says which drive level
+            // it was drawn for.
             //
             // Dimmed outside CURVE, because a value the loop is not currently using should
             // not look like one it is.
             int preset = Prefs.preset(this);
+            int rung = CurveConfig.rungOf(preset);
             presetRow.display(CurveConfig.presetName(preset));
             presetRow.valueColour(mode != Mode.CURVE ? Ui.DIM
-                    : preset == 0 ? Ui.GOOD
-                    : preset == 1 ? Ui.ACCENT
-                    : (preset == 2 || preset == 3) ? Ui.WARN : Ui.DIM);
+                    : rung == 0 ? Ui.GOOD
+                    : rung == 1 ? Ui.ACCENT
+                    : rung >= 2 ? Ui.WARN
+                    : Ui.DIM);
         }
         if (ceilingRow != null) {
             LinearConfig lin = Prefs.linear(this);
+            // The ceiling the controller will actually hold, promotion included. Showing
+            // the stored 52 while the loop held 54 would make the one row on this screen
+            // whose whole job is to state a temperature the one that does not.
+            boolean raised = LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(this));
             ceilingRow.set((int) Math.round(lin.ceilingC));
-            ceilingRow.display(Sample.fmt1(lin.ceilingC) + " °C");
+            ceilingRow.display(Sample.fmt1(lin.ceilingC) + " °C"
+                    + (raised ? " (LED drive)" : ""));
             // Dim unless LINEAR is the thing running, for the same reason the preset row
             // dims outside CURVE: a value the loop is not currently using should not look
             // like one it is.
             ceilingRow.valueColour(mode == Mode.LINEAR ? Ui.ACCENT : Ui.DIM);
         }
+        syncLedDriveRow();
         if (reassertRow != null) {
             boolean r = Prefs.reassert(this);
             reassertRow.display(r ? "ON" : "OFF");
@@ -429,7 +476,48 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
+    /**
+     * The LED drive row. Driven from the 1 s poll as well as from the preference sync,
+     * because what it reports is not the setting: the service holds the
+     * override off in half a dozen states the setting knows nothing about, and the trip
+     * latch drops it without anyone pressing anything.
+     *
+     * Dimmed outside CURVE and LINEAR for the same reason the preset and ceiling rows are
+     * dimmed outside their own modes -- and here it is more than a convention, because
+     * outside those two modes the override genuinely is not applied.
+     */
+    private void syncLedDriveRow() {
+        if (ledDriveRow == null) {
+            return;
+        }
+        boolean on = Prefs.ledBoostOn(this);
+        boolean controls = Mode.controls(Prefs.mode(this));
+        // The service's live word for it while there is a service; the setting otherwise,
+        // which is all a cold app can honestly say.
+        String state = FanService.instance == null
+                ? (on ? "on (service not running)" : "off")
+                : FanService.ledDriveStatus;
+        ledDriveRow.display(state);
+        int colour;
+        if (!on) {
+            colour = Ui.DIM;
+        } else if (!controls) {
+            colour = Ui.DIM;
+        } else if (state.startsWith("held off")) {
+            colour = Ui.DANGER;
+        } else if (state.startsWith("applied")) {
+            colour = Ui.WARN;
+        } else {
+            colour = Ui.ACCENT;
+        }
+        ledDriveRow.valueColour(colour);
+        ledDriveRow.label(on
+                ? "LED drive (BETA) — Bright (" + Prefs.ledDrive(this).summary() + ")"
+                : "LED drive (BETA) — a brighter picture");
+    }
+
     private void refresh() {
+        syncLedDriveRow();
         Sample s = FanService.lastSample;
         if (s == null) {
             statusView.setText("waiting for the first sample…  " + FanService.statusLine);
@@ -485,10 +573,18 @@ public class MainActivity extends Activity implements StepRow.Listener {
         } else if (FanService.throttledSec > 0) {
             sb.append("   throttled ").append(FanService.throttledSec).append("s so far");
         }
+        // The override's own line, because the row alone cannot say why it is not applied
+        // and "the LED drive says Bright but the picture is not" is a question the screen
+        // has to answer without a shell.
+        if (Prefs.ledBoostOn(this)) {
+            sb.append("\nLED drive  ").append(FanService.ledDriveStatus);
+        }
         if (Prefs.mode(this) == Mode.LINEAR) {
             LinearConfig lin = Prefs.linear(this);
+            boolean raised = LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(this));
             sb.append("\nLINEAR  ceiling ").append(Sample.fmt1(lin.ceilingC))
-                    .append(" C   ").append(lin.upStepMs / 1000).append(" s up, ")
+                    .append(raised ? " C (raised for the LED drive; predicted)   " : " C   ")
+                    .append(lin.upStepMs / 1000).append(" s up, ")
                     .append(lin.downStepMs / 1000).append(" s down within ")
                     .append(Sample.fmt1(lin.nearC)).append(" C, ")
                     .append(lin.downFastMs / 1000).append(" s below that");
@@ -571,15 +667,25 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("preset".equals(row.tagName)) {
-                // Quiet -> Balanced -> Cool -> Cold -> Quiet. Custom is a state to arrive
-                // in, not one to cycle to: it has no curve of its own, so PRESET_CUSTOM
-                // being -1 lands the next press on Quiet, which is the only sensible place
-                // to go from a curve the four names do not describe.
-                int next = Prefs.preset(this) + 1;
-                if (next >= CurveConfig.PRESET_NAMES.length) {
-                    next = 0;
+                // Quiet -> Balanced -> Cool -> Cold -> Quiet, and with the LED drive on the
+                // same four rungs in the Bright Curve family instead. The loop stays inside the
+                // family the drive allows, so the pairing the gate exists to prevent cannot
+                // be reached by pressing this at all -- there is no press count that gets
+                // from Quiet to Bright Cold. Moving the LED drive row is what moves families,
+                // and it carries the rung across.
+                //
+                // Custom is a state to arrive in, not one to cycle to: it has no curve of its
+                // own, so a curve none of the names describe is not found in the family below
+                // and the next press lands on its quietest rung.
+                int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
+                int preset = Prefs.preset(this);
+                int at = -1;
+                for (int k = 0; k < family.length; k++) {
+                    if (family[k] == preset) {
+                        at = k;
+                    }
                 }
-                Prefs.setPreset(this, next);
+                Prefs.setPreset(this, family[(at + 1) % family.length]);
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("ceiling".equals(row.tagName)) {
@@ -589,6 +695,19 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 LinearConfig lin = Prefs.linear(this);
                 lin.ceilingC = row.get();
                 Prefs.setLinear(this, lin);
+                FanService.poke(this, FanService.ACTION_REFRESH);
+                syncControlsFromPrefs();
+            } else if ("leddrive".equals(row.tagName)) {
+                // Stock -> Bright -> Stock. Poked, like the ceiling and unlike the room
+                // temperature, because it is an input to the controller: the loop has to
+                // see it as a settings change, which is also the edge that lets the
+                // override start at all.
+                if (Prefs.ledBoostOn(this)) {
+                    Prefs.resetLedDrive(this);
+                } else {
+                    Prefs.setLedDrive(this, LedDrive.Config.bright());
+                    Prefs.setLedDriveOn(this, true);
+                }
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("reassert".equals(row.tagName)) {

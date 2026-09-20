@@ -127,6 +127,56 @@ adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.Con
     -a com.daleygames.fanlab.CONFIG --ez logging true
 ```
 
+## The LED drive override
+
+Also not part of the deployment, also off by default, and also over the same broadcast. It
+drives the light engine above the per-mode table the kernel installs.
+
+```bash
+# the Bright preset -- 35/55/75/90 instead of the stock 20/40/55/76 -- and switch it on.
+# This also moves the curve preset to the Bright version of the step it is on.
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --es leddrive bright --ez leddriveon true
+
+# hand-set levels, Super Eco / Eco / Normal / Presentation
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --es leddrive "d1,35,55,75,90"
+
+# off, and back to the kernel's own table
+adb shell am broadcast -n com.daleygames.fanlab.system/com.daleygames.fanlab.ConfigReceiver \
+    -a com.daleygames.fanlab.CONFIG --es leddrive stock --ez leddriveon false
+```
+
+`leddrive` is applied before `leddriveon`, so one command can set the table and switch it
+on. The reply carries three fields, and they answer three different questions:
+
+- `leddrive=` the stored table,
+- `leddriveon=` the switch,
+- `leddrivestate=` **what is actually on the hardware right now** — `applied 90/84`,
+  `held off: tripped at 57.2 C`, or `stock:` and the reason.
+
+The third is the one to read. The override applies **only** while the app is the fan
+controller — CURVE or LINEAR, no session, light engine on, fail-safe clear, display awake —
+so `leddriveon=true leddrivestate=stock: this app is not the fan controller` is a normal and
+correct answer, not a bug. [safety.md](safety.md) has why that coupling is not negotiable.
+
+Two clamps worth knowing before typing a number:
+
+- **Levels are held to 97, not 100.** The driver converts a percent to a 7-bit DAC code as
+  `code = (30·mA + 40000)/1968` and clamps it with `if (code > 0x7F) code = 0x3F` — an
+  over-request does not saturate, it drops that channel to about 2.8 A, roughly 40 %. So
+  asking for 100 would make the picture go *dim*. The reply says `leddrive(REPAIRED)` when
+  it has clamped something.
+- **Any read-back field above 100 is a failed SPI read**, not a drive level: `0x8080` comes
+  back, the driver computes `percent = -18`, and sysfs prints it as an unsigned byte, which
+  is the 238 and 241 seen in the logs.
+
+Switching the override on while LINEAR's ceiling is still the untouched 52.0 raises it to
+54.0 — the reply says so — because holding 52.0 under the extra heat costs duty 50 in a
+24 °C room where it rests at 38 today. A hand-set ceiling is left alone, nothing is written
+to the stored value, and switching the override off puts it back. Those numbers are
+**inferred from the ×1.18 scaling, not measured**.
+
 ## Changing the curve later
 
 Edit `final_curve.txt`, check it before you ship it, then re-apply:

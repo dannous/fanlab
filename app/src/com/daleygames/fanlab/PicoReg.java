@@ -47,6 +47,25 @@ import java.io.InputStreamReader;
  * tenths, or the sign bit sits elsewhere, the trace can be reinterpreted offline without
  * re-running the sweep. Every decoded value is flagged {@code provisional} for that reason.
  *
+ * <h3>Also here: three display features, and why the app no longer offers any of them</h3>
+ * The same node carries CAIC (0x50/0x51) with its gain budget (0x84/0x85), LABB
+ * (0x80/0x81), and the Looks (0x22/0x26). All three were controls on the main screen once.
+ * All three were measured on the projector on 2026-09-07 and all three were withdrawn:
+ * <ul>
+ *   <li><b>CAIC does nothing and cannot.</b> Pinned-fan A/B, seven minutes a hold,
+ *       Presentation, video playing: CAIC off <b>52.33 C</b>, CAIC on <b>52.33 C</b>,
+ *       within-hold spread 0.04 C. See the CAIC section for why the engine can run
+ *       correctly and still change nothing.</li>
+ *   <li><b>LABB works and makes the picture worse.</b> "really washed out seeming" -- which
+ *       is LABB doing its documented job. See the image-processing section.</li>
+ *   <li><b>The Looks trade red for green.</b> Look 0 is the only neutral one. See the
+ *       Looks section for the duty splits and the arithmetic that closes the door.</li>
+ * </ul>
+ * The encoders, decoders and reads all stay. They are how each negative was established,
+ * they are how it could be re-checked on a firmware that changes one of the answers, and
+ * {@link DiagActivity} prints what they read beside the finding it supports. <b>Nothing in
+ * the app writes any of them any more.</b>
+ *
  * Pure Java (Sysfs + java.lang only), so the headless test drives it against a stub tree.
  */
 public final class PicoReg {
@@ -56,6 +75,23 @@ public final class PicoReg {
     /** DLPU078 SS 3.5.7, Read System Temperature. */
     public static final int OPCODE_SYSTEM_TEMPERATURE = 0xD6;
     public static final int SYSTEM_TEMPERATURE_LEN = 2;
+
+    /**
+     * DLPU078 Write / Read LED Output Control Method: one byte, {@code 0x00} manual RGB LED
+     * currents (CAIC off, which is how the factory {@code picosetting} templates ship,
+     * every one of them {@code caic=0x00}) and {@code 0x01} CAIC on. See
+     * {@link #writeLedOutputControl} for what CAIC is and what is not known about it here.
+     */
+    public static final int OPCODE_LED_OUTPUT_CONTROL_WRITE = 0x50;
+    public static final int OPCODE_LED_OUTPUT_CONTROL_READ = 0x51;
+    public static final int LED_OUTPUT_CONTROL_LEN = 1;
+
+    /**
+     * DLPU078 Read CAIC LED Max Available Power: two bytes, little endian, watts x 100.
+     * Only meaningful while CAIC is on; recorded raw, for the log, and never acted on.
+     */
+    public static final int OPCODE_CAIC_MAX_POWER = 0x57;
+    public static final int CAIC_MAX_POWER_LEN = 2;
 
     /** Nodes that do have a show() handler, so the LED drive can be recorded per step. */
     public static final String[] CURRENT_NODES = {
@@ -107,7 +143,7 @@ public final class PicoReg {
         return "r " + Integer.toHexString(opcode & 0xFF) + " " + Integer.toHexString(len & 0xFF);
     }
 
-    /** The command string for a write, e.g. {@code w 52 1 7}. Not used by the sweep. */
+    /** The command string for a write, e.g. {@code w 52 1 7}. The CAIC toggle is the one writer. */
     public static String writeCommand(int opcode, int[] payload) {
         StringBuilder sb = new StringBuilder();
         sb.append("w ").append(Integer.toHexString(opcode & 0xFF)).append(' ');
@@ -333,7 +369,7 @@ public final class PicoReg {
             // 2. the kernel log. The driver prints "read 0x%02x data:" there. Reading it
             //    needs READ_LOGS, which an ordinary app does not have.
             if (logRouteWorthTrying) {
-                int[] bytes = fromKernelLog();
+                int[] bytes = fromKernelLog(OPCODE_SYSTEM_TEMPERATURE, SYSTEM_TEMPERATURE_LEN);
                 if (bytes != null) {
                     double c = decodeSystemTemperature(bytes);
                     r.rawWord = word(bytes);
@@ -398,8 +434,17 @@ public final class PicoReg {
         }
     }
 
-    /** Scan the tail of the kernel log for the driver's read response. */
-    private static int[] fromKernelLog() {
+    /**
+     * Scan the tail of the kernel log for the driver's response to a read of
+     * {@code opcode}, and return the newest one.
+     *
+     * Newest, because the log is a history: a response to the same opcode from a minute
+     * ago is still in it, and this cannot tell that line from the one the read just made.
+     * Callers that poll therefore learn what the DLPC last answered, which may lag one
+     * poll behind a change; they do not learn nothing, and they never learn a fiction,
+     * because the line is the driver's own and carries the opcode.
+     */
+    private static int[] fromKernelLog(int opcode, int want) {
         String[][] attempts = {
                 {"logcat", "-d", "-b", "kernel", "-t", "300"},
                 {"dmesg"},
@@ -414,8 +459,7 @@ public final class PicoReg {
                 int[] newest = null;
                 int guard = 0;
                 while ((line = in.readLine()) != null && guard++ < 2000) {
-                    int[] bytes = parseKernelLogLine(line, OPCODE_SYSTEM_TEMPERATURE,
-                            SYSTEM_TEMPERATURE_LEN);
+                    int[] bytes = parseKernelLogLine(line, opcode, want);
                     if (bytes != null) {
                         newest = bytes;
                     }
@@ -445,6 +489,311 @@ public final class PicoReg {
         return null;
     }
 
+    // ------------------------------------------------------------------ CAIC
+
+    /*
+     * CAIC is Content Adaptive Illumination Control, the DLPC3436's IntelliBright feature.
+     * Per frame it lowers the LED current and raises the DMD duty cycle by the same factor
+     * on content that does not need full output, so the displayed white point holds while
+     * the LEDs draw less. TI's datasheet example is 27 % LED power saved at constant
+     * brightness. Stock has it OFF: caic=0x00 in every template of the factory picosetting
+     * blob, and no Java caller of Pico.setProjectorCaic anywhere in the firmware.
+     *
+     * IT DOES NOTHING HERE, AND IT CANNOT. Measured on 2026-09-07: fan pinned, Presentation,
+     * video playing, seven minutes a hold.
+     *
+     *   CAIC off   52.33 C          within-hold spread 0.04 C
+     *   CAIC on    52.33 C          identical, to two decimals
+     *
+     * Raising the gain budget to 4.0 changed nothing either -- verified accepted, 0x85 read
+     * back 00 80 60, status bit clear.
+     *
+     * The engine demonstrably runs. The debug gain bars move with the content, and 0x5F
+     * (Read CAIC RGB LED Current) gives live per-colour values that vary with the image:
+     * 13 00 14 00 12 00 on one frame, 11 00 17 00 11 00 later. CAIC computes correctly and
+     * its output is stranded, because TI defines every LED-current command as going to a
+     * DLPA200x PMIC and this board has none: the currents are driven by the SoC over SPI to
+     * two MAX20096 chips the DLPC cannot reach, and the DLPC's own current registers sit at
+     * a nominal 13 and go nowhere.
+     *
+     * So the failure is structural, not a setting. A firmware update cannot route the DLPC
+     * to a chip that is not on the board. What is left below is the read path, because a
+     * measurement this specific is worth being able to repeat rather than re-argue.
+     *
+     * The write is runtime only: "w 50 1 1" turns it on, "w 50 1 0" turns it off, and a
+     * power cycle turns it off regardless because the DLPC re-loads picosetting at boot.
+     * The picosetting partition (/dev/block/mmcblk2p21) is deliberately never touched --
+     * that would persist across reboots, and the point of a one-write undo is that it is
+     * one write.
+     *
+     * Reading it back has the same problem D6h has: picoreg's show() is NULL on this
+     * firmware, so the response only appears in the kernel log, which needs READ_LOGS,
+     * which only the system variant holds. The reading below is therefore tri-state --
+     * on, off, or unknown with a reason -- and "unknown" is the answer whenever the bytes
+     * did not actually arrive. It is never inferred from what was written.
+     */
+
+    public static final String CAIC_ON = "on";
+    public static final String CAIC_OFF = "off";
+    public static final String CAIC_UNKNOWN = "unknown";
+
+    /** One attempt at reading the LED output control method back (0x51). */
+    public static final class CaicReading {
+        /** {@link #CAIC_ON}, {@link #CAIC_OFF} or {@link #CAIC_UNKNOWN}. Never anything else. */
+        public String state = CAIC_UNKNOWN;
+        /** Where the byte came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** The raw byte as returned, or -1 if none was obtained. */
+        public int rawByte = -1;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        public boolean known() {
+            return CAIC_ON.equals(state) || CAIC_OFF.equals(state);
+        }
+
+        public String rawHex() {
+            return rawByte < 0 ? null : "0x" + pad2(Integer.toHexString(rawByte & 0xFF));
+        }
+    }
+
+    /** The command string for 0x50: {@code w 50 1 1} to turn CAIC on, {@code w 50 1 0} off. */
+    public static String ledOutputControlCommand(boolean caic) {
+        return writeCommand(OPCODE_LED_OUTPUT_CONTROL_WRITE, new int[]{caic ? 1 : 0});
+    }
+
+    /**
+     * Write the LED output control method: CAIC on or off.
+     *
+     * @return whatever {@link Sysfs#write} said. True means the bytes reached the node
+     *         and the stream closed cleanly. It does <b>not</b> mean the DLPC took the
+     *         value; only {@link #readLedOutputControl} can say that, and only where the
+     *         kernel log is readable.
+     */
+    public static boolean writeLedOutputControl(boolean caic) {
+        if (!Sysfs.exists(NODE)) {
+            return false;
+        }
+        return Sysfs.write(NODE, ledOutputControlCommand(caic));
+    }
+
+    /**
+     * Decode a 0x51 response byte. {@code 0x00} is off, {@code 0x01} is on, and anything
+     * else -- including no byte at all -- is unknown, because DLPU078 defines only those two
+     * values and a third is not a state, it is a wrong answer.
+     */
+    public static String decodeLedOutputControl(int[] bytes) {
+        if (bytes == null || bytes.length < 1) {
+            return CAIC_UNKNOWN;
+        }
+        int b = bytes[0] & 0xFF;
+        return b == 0x00 ? CAIC_OFF : b == 0x01 ? CAIC_ON : CAIC_UNKNOWN;
+    }
+
+    /**
+     * Turn a raw 0x51 response into a {@link CaicReading}. Split out from the I/O for the
+     * same reason {@link #fromResponseText} is: so the host test can drive every outcome.
+     */
+    public static CaicReading caicFromResponseText(String text, String source) {
+        CaicReading r = new CaicReading();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, LED_OUTPUT_CONTROL_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + LED_OUTPUT_CONTROL_LEN
+                    + " hex byte; treating it as unknown rather than guessing";
+            return r;
+        }
+        return caicFromBytes(bytes, source);
+    }
+
+    private static CaicReading caicFromBytes(int[] bytes, String source) {
+        CaicReading r = new CaicReading();
+        r.rawByte = bytes[0] & 0xFF;
+        String state = decodeLedOutputControl(bytes);
+        if (CAIC_UNKNOWN.equals(state)) {
+            r.reason = "the response was " + r.rawHex() + ", which is neither 0x00 (manual) "
+                    + "nor 0x01 (CAIC), so it is not a valid 0x51 answer. Recorded as unknown.";
+            return r;
+        }
+        r.state = state;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /**
+     * Ask the DLPC which LED output control method it is using right now. Never throws,
+     * never blocks on anything unbounded, and never answers on or off without the byte
+     * that says so.
+     *
+     * The kernel-log route is tried regardless of the D6h latch. That latch records that
+     * the log yielded nothing for a temperature read; whether it yields anything for this
+     * opcode is a separate question, and the caller ({@code FanService}) already restricts
+     * this to the variant that can read the log at all.
+     */
+    public static CaicReading readLedOutputControl() {
+        CaicReading r = new CaicReading();
+        try {
+            String cmd = readCommand(OPCODE_LED_OUTPUT_CONTROL_READ, LED_OUTPUT_CONTROL_LEN);
+            if (!Sysfs.exists(NODE)) {
+                r.reason = NODE + " does not exist on this firmware";
+                return r;
+            }
+            if (!Sysfs.write(NODE, cmd)) {
+                r.reason = "cannot write \"" + cmd + "\" to " + NODE
+                        + " (the node should be 0777; check the app is the API-28 build)";
+                return r;
+            }
+            // 1. the node itself; expected to fail, see readSystemTemperature. The same
+            //    echo guard: a node that plays back the command is not answering it.
+            String back = Sysfs.read(NODE);
+            if (back != null && !back.trim().startsWith(cmd)) {
+                CaicReading fromNode = caicFromResponseText(back, "sysfs");
+                if (fromNode.known() || fromNode.rawByte >= 0) {
+                    return fromNode;
+                }
+            }
+            // 2. the kernel log.
+            int[] bytes = fromKernelLog(OPCODE_LED_OUTPUT_CONTROL_READ, LED_OUTPUT_CONTROL_LEN);
+            if (bytes != null) {
+                CaicReading fromLog = caicFromBytes(bytes, "kernel log");
+                if (fromLog.known()) {
+                    fromLog.reason = "recovered from the newest \"read 0x51 data:\" line the "
+                            + "dlpc343x driver printed to the kernel log";
+                }
+                return fromLog;
+            }
+            r.reason = "the command was accepted but no response came back: " + NODE
+                    + " has no show() handler on this firmware, and the driver's "
+                    + "\"read 0x%02x data:\" line goes to the kernel log, which needs "
+                    + "READ_LOGS. CAIC state is UNKNOWN from this build.";
+            return r;
+        } catch (Throwable t) {
+            CaicReading bad = new CaicReading();
+            bad.reason = "exception while reading: " + t;
+            return bad;
+        }
+    }
+
+    /** As {@link #readLedOutputControl()}, on a throwaway thread, giving up after {@code timeoutMs}. */
+    public static CaicReading readLedOutputControl(long timeoutMs) {
+        final CaicReading[] slot = new CaicReading[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readLedOutputControl();
+                }
+            }, "fanlab-picoreg-caic");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            CaicReading r = new CaicReading();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            CaicReading r = new CaicReading();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    /** One attempt at 0x57, Read CAIC LED Max Available Power. Raw first, watts second. */
+    public static final class CaicPower {
+        /** The raw 16-bit little-endian word, or -1 if none was obtained. */
+        public int rawWord = -1;
+        /** {@code rawWord / 100} if DLPU078's "watts x 100" holds here; NaN otherwise. */
+        public double watts = Double.NaN;
+        /** True whenever watts is present: the unit interpretation is not confirmed on this board. */
+        public boolean provisional;
+        public String source;
+        public String reason = "not attempted";
+
+        public String rawHex() {
+            return rawWord < 0 ? null : "0x" + pad4(Integer.toHexString(rawWord));
+        }
+    }
+
+    /** Decode a 0x57 response. Recorded, never acted on; see {@link CaicPower}. */
+    public static CaicPower caicPowerFromBytes(int[] bytes, String source) {
+        CaicPower p = new CaicPower();
+        if (bytes == null || bytes.length < CAIC_MAX_POWER_LEN) {
+            p.reason = "no response bytes";
+            return p;
+        }
+        p.rawWord = word(bytes);
+        p.watts = p.rawWord / 100.0;
+        p.provisional = true;
+        p.source = source;
+        p.reason = "read from " + source + "; watts assumes DLPU078's x100 scaling, which "
+                + "has not been checked against this board, so the raw word is kept";
+        return p;
+    }
+
+    /**
+     * Read the CAIC max available power. Only meaningful while CAIC is on, and only
+     * reachable through the kernel log, like everything else on this node. For the log.
+     */
+    public static CaicPower readCaicMaxPower() {
+        CaicPower p = new CaicPower();
+        try {
+            String cmd = readCommand(OPCODE_CAIC_MAX_POWER, CAIC_MAX_POWER_LEN);
+            if (!Sysfs.exists(NODE) || !Sysfs.write(NODE, cmd)) {
+                p.reason = "cannot write \"" + cmd + "\" to " + NODE;
+                return p;
+            }
+            String back = Sysfs.read(NODE);
+            if (back != null && !back.trim().startsWith(cmd)) {
+                int[] bytes = parseHexBytes(back, CAIC_MAX_POWER_LEN);
+                if (bytes != null) {
+                    return caicPowerFromBytes(bytes, "sysfs");
+                }
+            }
+            int[] bytes = fromKernelLog(OPCODE_CAIC_MAX_POWER, CAIC_MAX_POWER_LEN);
+            if (bytes != null) {
+                return caicPowerFromBytes(bytes, "kernel log");
+            }
+            p.reason = "no 0x57 response in the kernel log";
+            return p;
+        } catch (Throwable t) {
+            CaicPower bad = new CaicPower();
+            bad.reason = "exception while reading: " + t;
+            return bad;
+        }
+    }
+
+    /** As {@link #readCaicMaxPower()}, bounded. */
+    public static CaicPower readCaicMaxPower(long timeoutMs) {
+        final CaicPower[] slot = new CaicPower[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readCaicMaxPower();
+                }
+            }, "fanlab-picoreg-caicpower");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            CaicPower p = new CaicPower();
+            p.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return p;
+        } catch (Throwable e) {
+            CaicPower p = new CaicPower();
+            p.reason = "could not run the picoreg read: " + e;
+            return p;
+        }
+    }
+
     // ------------------------------------------------------------------ LED currents
 
     /**
@@ -472,5 +821,764 @@ public final class PicoReg {
             sb.append(name.substring(name.lastIndexOf('/') + 1)).append('=').append(v);
         }
         return sb.toString();
+    }
+
+    // ------------------------------------------------------------------ the shared read
+
+    /**
+     * One read on this channel: write the {@code r} command, then look for the answer in
+     * the node and then in the kernel log.
+     *
+     * The route is the same for every opcode and the reason it is this shape is above:
+     * {@code picoreg}'s {@code show()} is NULL on this firmware, so the reply lands in the
+     * kernel log behind {@code READ_LOGS}. Bytes or a reason, never a guess.
+     */
+    private static final class RoundTrip {
+        int[] bytes;
+        String source;
+        String reason;
+    }
+
+    private static RoundTrip roundTrip(int opcode, int want) {
+        RoundTrip t = new RoundTrip();
+        String cmd = readCommand(opcode, want);
+        if (!Sysfs.exists(NODE)) {
+            t.reason = NODE + " does not exist on this firmware";
+            return t;
+        }
+        if (!Sysfs.write(NODE, cmd)) {
+            t.reason = "cannot write \"" + cmd + "\" to " + NODE
+                    + " (the node should be 0777; check the app is the API-28 build)";
+            return t;
+        }
+        // The node itself first. An echo of the command is not a response: without this
+        // guard a node that plays back what was written would be decoded as if it were data.
+        String back = Sysfs.read(NODE);
+        if (back != null && !back.trim().startsWith(cmd)) {
+            int[] bytes = parseHexBytes(back, want);
+            if (bytes != null) {
+                t.bytes = bytes;
+                t.source = "sysfs";
+                return t;
+            }
+        }
+        int[] bytes = fromKernelLog(opcode, want);
+        if (bytes != null) {
+            t.bytes = bytes;
+            t.source = "kernel log";
+            return t;
+        }
+        t.reason = "the command was accepted but no response came back: " + NODE
+                + " has no show() handler on this firmware, and the driver's "
+                + "\"read 0x%02x data:\" line goes to the kernel log, which needs "
+                + "READ_LOGS. This build cannot see the answer.";
+        return t;
+    }
+
+    // ------------------------------------------------------------------ image processing
+
+    /*
+     * The two IntelliBright image-processing controls. Both were tried on the hardware, and
+     * this is the record of what each one did.
+     *
+     * CAIC (above, 0x50) selects the method. What it is *allowed to do* once selected lives
+     * in a second command, Write CAIC Image Processing Control (0x84), and reading it back
+     * (0x85) on this projector answered
+     *
+     *     00 20 60
+     *
+     * -- gain display off, maximum lumens gain 0x20, clipping threshold 96. And 0x20 in
+     * that fixed-point byte is 1.0, which is the bottom of the legal range: CAIC was being
+     * selected with permission to raise the image by nothing at all. That looked like the
+     * reason switching 0x50 on alone changed nothing measurable. It was not: giving CAIC a
+     * budget of 4.0 -- accepted, 0x85 reading back 00 80 60 -- changed nothing either. The
+     * CAIC section above has the A/B and the structural reason.
+     *
+     * LABB (0x80/0x81) is the other half of IntelliBright, and DLPU078A describes it as
+     * adaptively gaining up darker parts of the image to achieve an overall brighter one.
+     * It is supported in TPG, splash and external input mode, and auto-disabled in curtain
+     * mode. The projector reads back
+     *
+     *     10 80 20 00
+     *
+     * -- sharpness strength 1, LABB control 0h = Disabled, strength already preset to 128,
+     * current gain 0x20. So the strength this board would run at has been chosen by
+     * somebody; the feature is simply switched off.
+     *
+     * LABB WORKS, AND THAT IS THE PROBLEM. Enabling it (w 80 2 11 80) is accepted, the
+     * register reads back 11 80, and the live gain byte tracks the content -- 0x20 idle,
+     * 0x27 and 0x24 on real video. The owner watched it and the verdict was "really washed
+     * out seeming". That is not a fault: it is LABB doing exactly its documented job.
+     * Gaining up the darker parts of a frame raises the black floor, and a raised black
+     * floor is flattened contrast. The mechanism works on this board precisely because it
+     * needs no LED driver, and the thing it does is a thing nobody wants.
+     *
+     * So of the two: one computes correctly and cannot reach the hardware, the other reaches
+     * the hardware and makes the picture worse. Neither is offered as a control. Both decode
+     * paths stay, because that is how each was established.
+     */
+
+    /** DLPU078A Write / Read Local Area Brightness Boost Control. */
+    public static final int OPCODE_LABB_WRITE = 0x80;
+    public static final int OPCODE_LABB_READ = 0x81;
+    /** The write takes two bytes: the control byte, then the strength. */
+    public static final int LABB_WRITE_LEN = 2;
+    /** The read answers four: control, strength, current gain, status. */
+    public static final int LABB_READ_LEN = 4;
+
+    /** DLPU078A Write / Read CAIC Image Processing Control. */
+    public static final int OPCODE_CAIC_IMAGE_WRITE = 0x84;
+    public static final int OPCODE_CAIC_IMAGE_READ = 0x85;
+    public static final int CAIC_IMAGE_LEN = 3;
+
+    /**
+     * The legal range for the maximum lumens gain, DLPU078A.
+     *
+     * <b>A value outside it is rejected as an invalid write parameter and the command does
+     * not execute</b> -- the whole command, not just the offending byte. So this is not a
+     * clamp for tidiness: sending 0.9 would silently leave the gain, the gain-display bit
+     * and the clipping threshold all at whatever they were, and the app would have no way
+     * to know. {@link #encodeCaicGain} refuses instead.
+     */
+    public static final double CAIC_GAIN_MIN = 1.0;
+    public static final double CAIC_GAIN_MAX = 4.0;
+
+    /**
+     * Byte weights for the gain, DLPU078A: b7=2^2, b6=2^1, b5=2^0, b4=2^-1, b3=2^-2,
+     * b2=2^-3, b1=2^-4, b0=2^-5. The least significant bit is a thirty-second, so the byte
+     * is simply the gain times 32: 1.0=0x20, 1.5=0x30, 2.0=0x40, 4.0=0x80.
+     */
+    public static final int CAIC_GAIN_SCALE = 32;
+
+    /** What this projector was found holding: 0x20, which is 1.0 -- no boost permitted. */
+    public static final double CAIC_GAIN_STOCK = 1.0;
+    public static final int CAIC_GAIN_STOCK_BYTE = 0x20;
+
+    /**
+     * The clipping threshold the projector was found holding, byte 3 of 0x84.
+     *
+     * Carried through every write rather than zeroed. The command sets all three bytes at
+     * once, so writing the gain means restating this, and restating it as anything other
+     * than what the machine had would be changing a setting nobody asked to change.
+     */
+    public static final int CAIC_CLIP_THRESHOLD_STOCK = 0x60;
+
+    /** LABB control field values, DLPU078A: 0h Disabled, 1h Enabled; 2h and 3h reserved. */
+    public static final int LABB_CONTROL_DISABLED = 0x0;
+    public static final int LABB_CONTROL_ENABLED = 0x1;
+
+    /** What the projector was found holding: strength 128, sharpness 1, control disabled. */
+    public static final int LABB_STRENGTH_STOCK = 0x80;
+    public static final int LABB_SHARPNESS_STOCK = 1;
+    public static final int LABB_STRENGTH_MAX = 255;
+    public static final int LABB_SHARPNESS_MAX = 15;
+
+    /**
+     * The CAIC maximum lumens gain as its fixed-point byte.
+     *
+     * @return the byte, or <b>-1 for a gain outside {@link #CAIC_GAIN_MIN}..
+     *         {@link #CAIC_GAIN_MAX}</b>. Refusing rather than clamping is deliberate: the
+     *         controller rejects the whole command on an out-of-range parameter, so an app
+     *         that sent one would believe it had set a gain it had not, and the caller has
+     *         to be able to tell that apart from a write that failed.
+     */
+    public static int encodeCaicGain(double gain) {
+        if (Double.isNaN(gain) || gain < CAIC_GAIN_MIN || gain > CAIC_GAIN_MAX) {
+            return -1;
+        }
+        // Rounding to the nearest thirty-second can move the value by at most 1/64, and the
+        // two ends of the range are exactly representable, so this can never round out of
+        // range: 1.0 -> 0x20 and 4.0 -> 0x80 are both exact.
+        return (int) Math.round(gain * CAIC_GAIN_SCALE) & 0xFF;
+    }
+
+    /** The inverse: the byte as a gain. NaN when there is no byte, never 0. */
+    public static double decodeCaicGain(int b) {
+        if (b < 0 || b > 0xFF) {
+            return Double.NaN;
+        }
+        return (b & 0xFF) / (double) CAIC_GAIN_SCALE;
+    }
+
+    /**
+     * The 0x84 command string, e.g. {@code w 84 3 0 40 60} for a 2.0 gain.
+     *
+     * Byte 1 is held at 0. Its b7 is the CAIC gain <i>display</i> enable -- a five-bar debug
+     * overlay that DLPU078A says "must never be used for normal operation" -- and b6 scales
+     * that overlay. Nothing here has any reason to switch a debug overlay on, so the bit is
+     * a constant rather than a setting.
+     *
+     * @return the command, or null if the gain is out of range; see {@link #encodeCaicGain}.
+     */
+    public static String caicImageControlCommand(double gain, int clipThreshold) {
+        int g = encodeCaicGain(gain);
+        if (g < 0) {
+            return null;
+        }
+        return writeCommand(OPCODE_CAIC_IMAGE_WRITE,
+                new int[]{0x00, g, clipThreshold & 0xFF});
+    }
+
+    /**
+     * The LABB control byte: sharpness strength in b7:4, the control field in <b>b1:0</b>.
+     *
+     * <b>b1:0, not b3:2</b>, and the hardware is what settled it. An earlier version of this
+     * put the control field in b3:2 and enabled LABB with {@code 0x14}. Nobody had run it.
+     * When it was run, on 2026-09-07, the byte that actually turned LABB on was {@code 0x11}
+     * -- written, read back as {@code 11 80}, and with a live gain byte that then moved off
+     * its idle {@code 0x20} to {@code 0x27} and {@code 0x24} on video. Under the b3:2
+     * reading, {@code 0x11} is LABB <i>disabled</i>, which is not something a disabled
+     * feature's gain does. The found-state read {@code 10 80 20 00} is consistent with
+     * either layout and so decided nothing; the enable is the measurement that did.
+     *
+     * Sharpness is carried through rather than owned by the enable, because DLPU078A ties
+     * the two together -- "The LABB function must be enabled to make use of sharpness" --
+     * so turning LABB on with sharpness zeroed would quietly drop a setting the machine
+     * already had. Enabling what the projector was found holding is {@code 0x11}.
+     */
+    public static int labbControlByte(int sharpness, boolean enabled) {
+        int s = sharpness < 0 ? 0 : (sharpness > LABB_SHARPNESS_MAX ? LABB_SHARPNESS_MAX : sharpness);
+        return (s << 4) | (enabled ? LABB_CONTROL_ENABLED : LABB_CONTROL_DISABLED);
+    }
+
+    /** The sharpness strength out of a control byte, 0..15. */
+    public static int labbSharpnessOf(int controlByte) {
+        return (controlByte >> 4) & 0x0F;
+    }
+
+    /** The raw control field out of a control byte: 0 disabled, 1 enabled, 2 and 3 reserved. */
+    public static int labbControlOf(int controlByte) {
+        return controlByte & 0x03;
+    }
+
+    /**
+     * The 0x80 command string, e.g. {@code w 80 2 11 80} to enable LABB at the strength and
+     * sharpness the projector was already holding -- the write that was actually made, and
+     * the one whose result was "really washed out seeming".
+     *
+     * Strength is 0..255 where DLPU078A says 0 is no boost and 255 "the maximum boost
+     * viable in a product" -- and that "the strength is not a direct indication of the
+     * gain, since the gain varies depending on the image content". So it is a dial, not a
+     * multiplier, and nothing here converts it into one.
+     */
+    public static String labbCommand(boolean enabled, int strength, int sharpness) {
+        return writeCommand(OPCODE_LABB_WRITE,
+                new int[]{labbControlByte(sharpness, enabled), strength & 0xFF});
+    }
+
+    /** One attempt at reading the CAIC image processing control back (0x85). */
+    public static final class CaicImage {
+        /** True only when three bytes actually arrived. Never inferred from a write. */
+        public boolean known;
+        /** b7 of byte 1: the debug overlay. This app never sets it; a true here is someone else's. */
+        public boolean gainDisplay;
+        /** The raw fixed-point gain byte, or -1. */
+        public int gainByte = -1;
+        /** The gain it decodes to, or NaN. */
+        public double gain = Double.NaN;
+        /** Byte 3, the clipping threshold, or -1. */
+        public int clipThreshold = -1;
+        /** Where the bytes came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        /** "gain 1.0 (0x20), clip 96", or null when nothing was read. */
+        public String summary() {
+            return known ? "gain " + fmtGain(gain) + " (0x" + pad2(Integer.toHexString(gainByte))
+                    + "), clip " + clipThreshold : null;
+        }
+    }
+
+    /** Decode a 0x85 response. Three bytes or nothing; a short reply is not a reading. */
+    public static CaicImage caicImageFromBytes(int[] bytes, String source) {
+        CaicImage r = new CaicImage();
+        if (bytes == null || bytes.length < CAIC_IMAGE_LEN) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        r.gainDisplay = (bytes[0] & 0x80) != 0;
+        r.gainByte = bytes[1] & 0xFF;
+        r.gain = decodeCaicGain(r.gainByte);
+        r.clipThreshold = bytes[2] & 0xFF;
+        r.known = true;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /** As {@link #caicImageFromBytes}, from arbitrary response text. For the host test. */
+    public static CaicImage caicImageFromResponseText(String text, String source) {
+        CaicImage r = new CaicImage();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, CAIC_IMAGE_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + CAIC_IMAGE_LEN
+                    + " hex bytes; treating it as unread rather than guessing";
+            return r;
+        }
+        return caicImageFromBytes(bytes, source);
+    }
+
+    /** One attempt at reading the LABB control back (0x81). */
+    public static final class Labb {
+        /**
+         * True only when four bytes arrived <i>and</i> the control field was one of the two
+         * DLPU078A defines. A reserved 2h or 3h is a wrong answer, not a third state.
+         */
+        public boolean known;
+        /** Whether LABB is running. Meaningless unless {@link #known}. */
+        public boolean enabled;
+        /** The raw control field, 0..3, or -1. */
+        public int control = -1;
+        /** Byte 2, the strength, 0..255, or -1. */
+        public int strength = -1;
+        /** The sharpness strength out of byte 1, 0..15, or -1. */
+        public int sharpness = -1;
+        /**
+         * Byte 3, the current LABB gain, read-only.
+         *
+         * Kept raw and deliberately not converted. Table 3-81 gives the range as 1..8, and
+         * this projector answers 0x20 = 32, which is not in that range -- so either the
+         * units are not whole gain steps or the table does not describe this firmware.
+         * Recording the byte lets that be settled later; inventing a gain from it would not.
+         */
+        public int gainRaw = -1;
+        /** Byte 4, further status. Recorded, not interpreted. */
+        public int status = -1;
+        /** Where the bytes came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        /** "on, strength 128, sharpness 1, gain 0x20", or null when nothing was read. */
+        public String summary() {
+            return known ? (enabled ? "on" : "off") + ", strength " + strength
+                    + ", sharpness " + sharpness
+                    + ", gain 0x" + pad2(Integer.toHexString(gainRaw)) : null;
+        }
+    }
+
+    /** Decode a 0x81 response: four bytes, control field 0h or 1h, everything else unknown. */
+    public static Labb labbFromBytes(int[] bytes, String source) {
+        Labb r = new Labb();
+        if (bytes == null || bytes.length < LABB_READ_LEN) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        r.control = labbControlOf(bytes[0]);
+        r.sharpness = labbSharpnessOf(bytes[0]);
+        r.strength = bytes[1] & 0xFF;
+        r.gainRaw = bytes[2] & 0xFF;
+        r.status = bytes[3] & 0xFF;
+        if (r.control != LABB_CONTROL_DISABLED && r.control != LABB_CONTROL_ENABLED) {
+            r.reason = "the control field read " + r.control + "h, which DLPU078A reserves. "
+                    + "Recorded as unknown rather than rounded to a state.";
+            return r;
+        }
+        r.enabled = r.control == LABB_CONTROL_ENABLED;
+        r.known = true;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /** As {@link #labbFromBytes}, from arbitrary response text. For the host test. */
+    public static Labb labbFromResponseText(String text, String source) {
+        Labb r = new Labb();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, LABB_READ_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + LABB_READ_LEN
+                    + " hex bytes; treating it as unread rather than guessing";
+            return r;
+        }
+        return labbFromBytes(bytes, source);
+    }
+
+    /**
+     * Write the CAIC image processing control: the gain budget CAIC is allowed to work
+     * within, and the clipping threshold restated as found.
+     *
+     * @return false either because the gain is out of range -- in which case
+     *         <b>nothing was written</b>, deliberately, since the controller would have
+     *         rejected the command anyway -- or because the node write failed. Callers hold
+     *         the gain to {@link #CAIC_GAIN_MIN}..{@link #CAIC_GAIN_MAX} before getting
+     *         here, so in practice a false is a node problem.
+     */
+    public static boolean writeCaicImageControl(double gain, int clipThreshold) {
+        String cmd = caicImageControlCommand(gain, clipThreshold);
+        if (cmd == null || !Sysfs.exists(NODE)) {
+            return false;
+        }
+        return Sysfs.write(NODE, cmd);
+    }
+
+    /** Ask the DLPC what gain budget CAIC has (0x85). Never invents one. */
+    public static CaicImage readCaicImageControl() {
+        try {
+            RoundTrip t = roundTrip(OPCODE_CAIC_IMAGE_READ, CAIC_IMAGE_LEN);
+            if (t.bytes == null) {
+                CaicImage r = new CaicImage();
+                r.reason = t.reason;
+                return r;
+            }
+            return caicImageFromBytes(t.bytes, t.source);
+        } catch (Throwable e) {
+            CaicImage r = new CaicImage();
+            r.reason = "exception while reading: " + e;
+            return r;
+        }
+    }
+
+    /** As {@link #readCaicImageControl()}, bounded, on a thread of its own. */
+    public static CaicImage readCaicImageControl(long timeoutMs) {
+        final CaicImage[] slot = new CaicImage[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readCaicImageControl();
+                }
+            }, "fanlab-picoreg-caicimage");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            CaicImage r = new CaicImage();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            CaicImage r = new CaicImage();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    /**
+     * Write the LABB control: enabled or not, at this strength, keeping this sharpness.
+     *
+     * @return whatever {@link Sysfs#write} said. True means the bytes reached the node, not
+     *         that the DLPC took them; only {@link #readLabb} can say that, and only where
+     *         the kernel log is readable.
+     */
+    public static boolean writeLabb(boolean enabled, int strength, int sharpness) {
+        if (!Sysfs.exists(NODE)) {
+            return false;
+        }
+        return Sysfs.write(NODE, labbCommand(enabled, strength, sharpness));
+    }
+
+    /** Ask the DLPC what LABB is doing (0x81). Never answers on or off without the bytes. */
+    public static Labb readLabb() {
+        try {
+            RoundTrip t = roundTrip(OPCODE_LABB_READ, LABB_READ_LEN);
+            if (t.bytes == null) {
+                Labb r = new Labb();
+                r.reason = t.reason;
+                return r;
+            }
+            return labbFromBytes(t.bytes, t.source);
+        } catch (Throwable e) {
+            Labb r = new Labb();
+            r.reason = "exception while reading: " + e;
+            return r;
+        }
+    }
+
+    /** As {@link #readLabb()}, bounded, on a thread of its own. */
+    public static Labb readLabb(long timeoutMs) {
+        final Labb[] slot = new Labb[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readLabb();
+                }
+            }, "fanlab-picoreg-labb");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            Labb r = new Labb();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            Labb r = new Labb();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    // ------------------------------------------------------------------ the Looks
+
+    /*
+     * A Look is a colour-sequence preset: how the frame's time is divided between the red,
+     * green and blue LEDs. Shifting time towards a primary makes that primary brighter, and
+     * the total is fixed, so every Look is a trade rather than a gain.
+     *
+     * All 19 were swept on 2026-09-07 -- selected with 0x22, split read with 0x26 -- and the
+     * result closes the question:
+     *
+     *   Look 0                40 / 40 / 20   R/G/B, and reads white on a white field
+     *   Looks 1..18           red 25..33 %, the time taken off red given to green
+     *   Looks 1 and 15        visibly green on the same white field
+     *
+     * Look 0 is the only one this projector has ever used, because the kernel zeroes its
+     * Look table at probe. It is also optimal by construction, and that is arithmetic rather
+     * than preference: restoring neutral white on Look 15 needs red flux up 1.97x, which is
+     * red current up about 2.5x to 175 %, against {@link LedDrive#MAX_LEVEL} of 97. Red is
+     * the weak primary on this engine and has no headroom to give, so the brightness the
+     * other Looks offer is inseparable from a green cast.
+     *
+     * Nothing in the app writes 0x22. The encoder is here because writing it is how the
+     * sweep was done, and a firmware that reshuffled the table would have to be swept again.
+     */
+
+    /** DLPU078A SS 3.1.16 Write Look Select: one byte, the Look number. */
+    public static final int OPCODE_LOOK_SELECT_WRITE = 0x22;
+    /** DLPU078A SS 3.1.17 Read Look Select: Look number, sequence number, frame rate. */
+    public static final int OPCODE_LOOK_SELECT_READ = 0x23;
+    public static final int LOOK_SELECT_LEN = 6;
+
+    /**
+     * DLPU078A SS 3.1.18 Read Sequence Header Attributes: thirty bytes, two identical
+     * fifteen-byte blocks -- the Look's copy first, then the Sequence's. Only the six duty
+     * bytes at the head of each are read here; the frame counts and vector count behind them
+     * are not what the Looks question turned on.
+     */
+    public static final int OPCODE_SEQUENCE_HEADER_READ = 0x26;
+    public static final int SEQUENCE_HEADER_LEN = 30;
+    /** Where the Sequence block's copy of the same three duty cycles starts. */
+    private static final int SEQUENCE_BLOCK_AT = 15;
+
+    /**
+     * Duty cycle is UQ8.8: a little-endian sixteen-bit word whose high byte is the whole
+     * percent and whose low byte is 256ths. 40 % is {@code 00 28}.
+     *
+     * <b>256, not 255</b>, and the two disagree in TI's own material: the reference Python
+     * (dlpc343x_xpr4.py) divides by 255, and the guide's own worked example -- 30.5 / 50.0 /
+     * 19.5 as {@code 1E80 3200 1380} -- comes out exact under 256 and sums to 100.0, while
+     * under 255 it gives 30.62 / 50.20 / 19.58, summing to 100.39, which matches neither the
+     * decimals TI printed nor the sum TI requires. The datasheet settles its own conflict.
+     */
+    public static final int DUTY_SCALE = 256;
+
+    /** DLPU078A: "The sum of the three duty cycles must add up to 100." */
+    public static final double DUTY_SUM = 100.0;
+
+    /**
+     * How far the three may miss 100 before the reading is refused, in percent.
+     *
+     * Half a percent is above any UQ8.8 rounding -- one LSB is 1/256 of a percent -- and far
+     * below what a misread would produce. This is the check that makes the decode
+     * self-verifying: get the byte order or the scale wrong and the sum stops being 100.
+     */
+    public static final double DUTY_SUM_TOLERANCE = 0.5;
+
+    /** How many Looks this projector answered for, 0..18. */
+    public static final int LOOK_COUNT = 19;
+
+    /** The one Look with a neutral split, and the only one the kernel ever selects. */
+    public static final int LOOK_NEUTRAL = 0;
+
+    /** The command string for 0x22, e.g. {@code w 22 1 f} to select Look 15. */
+    public static String lookSelectCommand(int number) {
+        return writeCommand(OPCODE_LOOK_SELECT_WRITE, new int[]{number & 0xFF});
+    }
+
+    /** One UQ8.8 duty word as a percentage. NaN for a word that is not there. */
+    public static double decodeDuty(int lo, int hi) {
+        if (lo < 0 || hi < 0) {
+            return Double.NaN;
+        }
+        return (((hi & 0xFF) << 8) | (lo & 0xFF)) / (double) DUTY_SCALE;
+    }
+
+    /** What the display controller says the current Look is, and how it splits the frame. */
+    public static final class Look {
+
+        /**
+         * True only when the three duty cycles arrived <i>and</i> summed to 100.
+         *
+         * The Look number is a separate read on a separate opcode, so it is separately
+         * absent: a split with no number is still a reading, and says so.
+         */
+        public boolean known;
+
+        /** The Look number from 0x23, or -1 if that read did not land. */
+        public int number = -1;
+        /** The sequence number from 0x23, or -1. */
+        public int sequence = -1;
+
+        /** The three duty cycles as percentages of frame time, or NaN. */
+        public double red = Double.NaN;
+        public double green = Double.NaN;
+        public double blue = Double.NaN;
+
+        /**
+         * Whether the Sequence block's copy of the three matched the Look block's.
+         *
+         * DLPU078A says the two must match. False is not a decode failure -- the numbers are
+         * still the numbers -- it is the flash data disagreeing with itself, which is worth
+         * seeing rather than averaging away.
+         */
+        public boolean blocksAgree;
+
+        /** Where the bytes came from: "sysfs", "kernel log", or null. */
+        public String source;
+        /** Specific, quotable reason. Always set, including on success. */
+        public String reason = "not attempted";
+
+        /** Is this the neutral Look -- the only one that reads white on a white field? */
+        public boolean neutral() {
+            return number == LOOK_NEUTRAL;
+        }
+
+        /** "Look 0 (seq 0), 40.0/40.0/20.0 R/G/B", or null when nothing was read. */
+        public String summary() {
+            if (!known) {
+                return null;
+            }
+            return "Look " + (number < 0 ? "?" : Integer.toString(number))
+                    + (sequence < 0 ? "" : " (seq " + sequence + ")")
+                    + ", " + fmtGain(red) + "/" + fmtGain(green) + "/" + fmtGain(blue)
+                    + " R/G/B" + (blocksAgree ? "" : " [blocks DISAGREE]");
+        }
+    }
+
+    /** Decode a 0x23 response into an existing reading: byte 0 the Look, byte 1 the sequence. */
+    public static void lookSelectIntoBytes(Look r, int[] bytes) {
+        if (r == null || bytes == null || bytes.length < LOOK_SELECT_LEN) {
+            return;
+        }
+        r.number = bytes[0] & 0xFF;
+        r.sequence = bytes[1] & 0xFF;
+    }
+
+    /**
+     * Decode a 0x26 response: the Look block's three duty cycles, checked against the
+     * Sequence block's copy and against the sum TI requires.
+     */
+    public static Look sequenceHeaderFromBytes(int[] bytes, String source) {
+        Look r = new Look();
+        if (bytes == null || bytes.length < SEQUENCE_HEADER_LEN) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        r.red = decodeDuty(bytes[0], bytes[1]);
+        r.green = decodeDuty(bytes[2], bytes[3]);
+        r.blue = decodeDuty(bytes[4], bytes[5]);
+        r.blocksAgree = bytes[0] == bytes[SEQUENCE_BLOCK_AT]
+                && bytes[1] == bytes[SEQUENCE_BLOCK_AT + 1]
+                && bytes[2] == bytes[SEQUENCE_BLOCK_AT + 2]
+                && bytes[3] == bytes[SEQUENCE_BLOCK_AT + 3]
+                && bytes[4] == bytes[SEQUENCE_BLOCK_AT + 4]
+                && bytes[5] == bytes[SEQUENCE_BLOCK_AT + 5];
+        double sum = r.red + r.green + r.blue;
+        if (Math.abs(sum - DUTY_SUM) > DUTY_SUM_TOLERANCE) {
+            r.reason = "the three duty cycles summed to " + fmtGain(sum)
+                    + ", and DLPU078A requires 100. Treating the reading as unread rather "
+                    + "than reporting a split the controller did not give.";
+            return r;
+        }
+        r.known = true;
+        r.source = source;
+        r.reason = "read from " + source;
+        return r;
+    }
+
+    /** As {@link #sequenceHeaderFromBytes}, from arbitrary response text. For the host test. */
+    public static Look sequenceHeaderFromResponseText(String text, String source) {
+        Look r = new Look();
+        if (text == null || text.trim().length() == 0) {
+            r.reason = "no response bytes";
+            return r;
+        }
+        int[] bytes = parseHexBytes(text, SEQUENCE_HEADER_LEN);
+        if (bytes == null) {
+            r.reason = "the response did not contain " + SEQUENCE_HEADER_LEN
+                    + " hex bytes; treating it as unread rather than guessing";
+            return r;
+        }
+        return sequenceHeaderFromBytes(bytes, source);
+    }
+
+    /**
+     * Ask the DLPC which Look is selected and how it splits the frame: 0x26 for the split,
+     * then 0x23 for the number.
+     *
+     * That order, because the split is the finding and the number is the label on it. A 0x23
+     * that does not answer leaves a reading that still says 40/40/20; a 0x26 that does not
+     * answer leaves nothing worth labelling.
+     */
+    public static Look readLook() {
+        try {
+            RoundTrip split = roundTrip(OPCODE_SEQUENCE_HEADER_READ, SEQUENCE_HEADER_LEN);
+            if (split.bytes == null) {
+                Look r = new Look();
+                r.reason = split.reason;
+                return r;
+            }
+            Look r = sequenceHeaderFromBytes(split.bytes, split.source);
+            RoundTrip which = roundTrip(OPCODE_LOOK_SELECT_READ, LOOK_SELECT_LEN);
+            if (which.bytes != null) {
+                lookSelectIntoBytes(r, which.bytes);
+            }
+            return r;
+        } catch (Throwable e) {
+            Look r = new Look();
+            r.reason = "exception while reading: " + e;
+            return r;
+        }
+    }
+
+    /** As {@link #readLook()}, bounded, on a thread of its own. */
+    public static Look readLook(long timeoutMs) {
+        final Look[] slot = new Look[1];
+        try {
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    slot[0] = readLook();
+                }
+            }, "fanlab-picoreg-look");
+            t.setDaemon(true);
+            t.start();
+            t.join(timeoutMs);
+            if (slot[0] != null) {
+                return slot[0];
+            }
+            Look r = new Look();
+            r.reason = "the picoreg round trip did not answer within " + timeoutMs + " ms";
+            return r;
+        } catch (Throwable e) {
+            Look r = new Look();
+            r.reason = "could not run the picoreg read: " + e;
+            return r;
+        }
+    }
+
+    /**
+     * A gain to one decimal, without {@link Sample} -- which is on the pure side too, but
+     * this class is used by the sweep report and should not grow a dependency for one
+     * number.
+     */
+    static String fmtGain(double v) {
+        if (Double.isNaN(v)) {
+            return "?";
+        }
+        long tenths = Math.round(v * 10.0);
+        return (tenths / 10) + "." + Math.abs(tenths % 10);
     }
 }

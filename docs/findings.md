@@ -325,8 +325,11 @@ operating is **TJ ≤ 105 °C, TA ≤ 85 °C**. The error was in the generous di
 overstated headroom by 20 °C.
 
 **9.4 `research/05`'s suggestion to read DLPC command 57h as thermal data is wrong.** It
-returns `Σ duty × current × voltage` and contains no temperature term. It is still the
-right way to measure what CAIC saves — just not a thermometer.
+returns `Σ duty × current × voltage` and contains no temperature term. It was described here
+as still being the right way to measure what CAIC saves; that turned out not to need
+measuring. A pinned-fan A/B on 2026-09-07 put CAIC off and CAIC on at the same **52.33 °C**,
+because the DLPC has no LED driver it can reach on this board. See the README under *The
+three display-controller features, and why none of them is here*.
 
 **9.5 Why D6h is dead, from the other end.** §1 above established it empirically. The
 datasheet says why: the DLPC343x has **no on-chip ADC and no on-chip temperature sensor**.
