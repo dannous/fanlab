@@ -48,6 +48,119 @@ The projector will run slightly warmer than it did. That's the trade: a slower f
 less air. The section on safety below explains why that's fine, and what protects you if it
 ever isn't.
 
+## The numbers, side by side
+
+Two things are adjustable here and they pull against each other, so it's worth seeing both
+in the same place: **how loud the fan is**, and **how much light the projector puts out**.
+Philips fixes both. FanLab lets you move both.
+
+Every fan figure is a percentage of full fan speed. Every light figure is the LED drive
+level — the percentage of the LED driver's own per-channel maximum that the light engine is
+actually being run at. Both are the numbers the firmware itself uses.
+
+### 1. How bright each mode actually is
+
+Philips runs the light engine at about three-quarters of what its own hardware scale
+permits, in every mode. FanLab's optional **LED drive** setting moves all four levels up:
+
+| Brightness mode | Philips' drive | FanLab, LED drive on | More light |
+|---|---:|---:|---:|
+| Super Eco | 20 | **35** | +75 % |
+| Eco | 40 | **55** | +38 % |
+| Normal | 55 | **75** | +36 % |
+| Presentation | 76 | **90** | +18 % |
+
+The cap is 97, not 100, and that isn't caution — the driver converts milliamps to a 7-bit
+code and *clamps an overflow downward*, so asking for 100 makes the picture dimmer, not
+brighter.
+
+### 2. How loud each mode is, at Philips' own brightness
+
+LED drive **off**, so the picture is exactly what it always was. Quiet preset, 24 °C:
+
+| Brightness mode | LED drive | **Philips' fan** | **FanLab's fan** | You save | Light engine |
+|---|---:|---:|---:|---:|---:|
+| **Presentation** | 76 | **59 %, surging to 70 %** | **38 %, steady** | 21–32 points | 51.9 °C |
+| Normal | 55 | 48 % | **30 %** | 18 points | 44 °C |
+| Eco | 40 | 43 % | **30 %** | 13 points | 40 °C |
+| Super Eco | 20 | 43 % | **30 %** | 13 points | 35 °C |
+
+30 % is inaudible from a sofa. So at unchanged brightness, three of the four modes stop
+being something you can hear at all, and the fourth roughly halves and then holds still.
+
+### 3. The interesting one — matching Philips' brightness for far less noise
+
+This is what the LED drive is really for, and it is easy to miss. **Normal at FanLab's
+raised drive (75) is within one point of Presentation at Philips' drive (76)** — essentially
+the same amount of light on the wall. But it is being cooled as Normal, not as Presentation:
+
+| What you're running | LED drive | **Fan** | Light engine |
+|---|---:|---:|---:|
+| Philips, Presentation | 76 | **59–70 %, surging** | 44–46 °C |
+| FanLab, Presentation, drive off *(Quiet)* | 76 | **38 %, steady** | 51.9 °C |
+| **FanLab, Normal, drive on** | **75** | **37–39 %, steady** | 50–53 °C |
+| FanLab, Presentation, drive on *(Bright Quiet)* | **90** | 47–51 %, steady | 54–56 °C |
+
+Read the bottom two rows together, because between them they are the whole point of this
+project:
+
+- **Same picture, far less noise.** Normal with the drive raised gives you Philips'
+  Presentation brightness while the fan sits around 37–39 % instead of surging between 59
+  and 70. That is roughly **20 to 30 points of fan speed** for a picture you can't tell
+  apart.
+- **A brighter picture than Philips will give you at all, and still quieter than Philips
+  is.** Drive 90 is 18 % more light than the projector's own maximum setting, and Bright
+  Quiet holds it at 47–51 % — measured on hardware at **51 % and 54.9 °C**. Still below
+  Philips' *floor* of 59 % for a dimmer image.
+
+**Be honest with yourself about which you want**, because one thing does get worse. See the
+next table.
+
+### 4. What raising the drive costs — the dim modes stop being silent
+
+More light is more heat, and the heat lands on the dim modes too. The number that decides
+whether you notice is the room temperature at which each mode leaves the silent 30 % floor:
+
+| Brightness mode | Drive off, leaves 30 % at | Drive on, leaves 30 % at |
+|---|---:|---:|
+| **Normal** | 27.3 °C | **19.2 °C** |
+| Eco | 31.1 °C | 24.8 °C |
+| Super Eco | 36.5 °C | 30.3 °C |
+
+So with the drive raised, **Normal and Eco are off the silent floor in any room you'd
+actually sit in**. Normal goes from 30 % to about 37 % at 24 °C. Super Eco stays silent.
+
+No preset changes this — every Bright preset deliberately leaves the dim modes' fan rows
+exactly as its ordinary counterpart has them, so that it doesn't make this worse. It is the
+price of the light, not of the preset.
+
+> **A note on the temperatures in these tables.** They are the air the projector actually
+> draws in, which on 2026-09-08 measured **4.7 °C above the room** — so a 24 °C figure here
+> is roughly a 19–20 °C room. That offset is one day's observation, not a characterised
+> function, so treat the room conversions as approximate.
+
+### 5. The four presets
+
+Fan speed at 24 °C, LED drive off. Each step up costs about 3 % more fan and buys about 1 °C.
+
+| Preset | Presentation | Normal | Eco | Super Eco | Light engine | Holds ≤ 55 °C up to |
+|---|---:|---:|---:|---:|---:|---|
+| *Philips, for comparison* | *59 → 70 %* | *48 %* | *43 %* | *43 %* | *44–46 °C* | *n/a* |
+| **Quiet** *(default)* | **38 %** | 30 % | 30 % | 30 % | 51.9 °C | 28.0 °C |
+| Balanced | 41 % | 30 % | 30 % | 30 % | 50.4 °C | 30.0 °C |
+| Cool | 43 % | 30 % | 30 % | 30 % | 49.8 °C | 31.2 °C |
+| Cold | 46 % | 30 %¹ | 30 % | 30 % | 48.6 °C | 32.6 °C |
+
+¹ Cold runs Normal at 32–39 % above roughly a 23 °C room — it starts its rise at 43 °C
+rather than 47 °C, which is necessary to stop it hunting. The other three hold Normal at
+30 % throughout.
+
+Eco and Super Eco read 30 % on every preset, deliberately: below the floor the light engine
+is already cool enough that extra fan buys almost nothing, so offsetting it would make the
+quiet modes louder for no useful cooling. **The preset is really a Presentation choice.**
+
+Start on Quiet.
+
 ## Is it safe?
 
 Short answer: yes, and here's exactly why rather than just a reassurance.
@@ -139,11 +252,25 @@ second and uses the right part of the curve for it.
 ## Making the picture brighter (optional)
 
 There's a setting called **LED drive**, and it's off by default. Turning it on runs the
-light engine harder than Philips does, so the picture is noticeably brighter.
+light engine harder than Philips does, so the picture is noticeably brighter — all four
+modes move up, from 20/40/55/76 to **35/55/75/90**. See
+[How bright each mode actually is](#1-how-bright-each-mode-actually-is).
 
-It costs you the quiet. More light means more heat, which means more fan. With it on,
-Presentation settles around 51–52 % instead of 38–40 %, and the dimmer modes stop being
-silent — Normal and Eco both come off their 30 % floor in any normal room.
+**The trick worth knowing.** Raised Normal sits at drive 75; Philips' Presentation sits at
+76. So if you switch to **Normal with the LED drive on**, you get what Philips calls
+Presentation brightness while the fan runs at 37–39 % instead of surging between 59 and 70.
+Same picture, roughly 20–30 points less fan. For a lot of people that single combination is
+the whole reason to install this.
+
+And if you want more light than the projector will otherwise give you, Presentation at
+drive 90 is 18 % brighter than Philips' maximum and still settles at 47–51 % — quieter than
+Philips' *floor* for a dimmer image.
+
+It costs you the quiet in the dim modes. More light means more heat, which means more fan.
+With it on, Presentation settles around 51–52 % instead of 38–40 %, and the dimmer modes
+stop being silent — Normal and Eco both come off their 30 % floor in any normal room. The
+exact figures are in
+[What raising the drive costs](#4-what-raising-the-drive-costs--the-dim-modes-stop-being-silent).
 
 If you turn it on, the preset list changes to `Bright Quiet`, `Bright Balanced`,
 `Bright Cool` and `Bright Cold`. These are the same four steps, redrawn for the extra heat.
