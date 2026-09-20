@@ -19,37 +19,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/**
- * AUTO - the unattended thermal characterisation.
- *
- * One button, one fixed schedule, no options. The user presses AUTO, reads what it is
- * about to do, presses START, and walks away for about ninety minutes. What comes back is
- * a machine-readable file: {@code T_eq(duty, mode)} for twenty-eight held conditions across
- * all four brightness modes, which is the single measurement the whole fan project is
- * blocked on.
- *
- * <h3>The screen is the apparatus</h3>
- * A full-screen white field runs for the whole sweep, with a small mid-grey readout on top
- * of it. Grey on white rather than a dark panel, deliberately: the average picture level
- * has to stay near 100 % so the DLPC's content-adaptive dimming cannot quietly change the
- * LED drive part way through and make the second half of the run incomparable with the
- * first. {@code FLAG_KEEP_SCREEN_ON} is held for the duration, which is legitimate here
- * because the white field genuinely is the test apparatus.
- *
- * <h3>Keys, and why OK is the stop</h3>
- * The specification asked for two things that cannot share one key: a large, always-focused
- * ABORT, and "press OK when the fan first becomes audible". Safety takes OK - a focused
- * control that does not act on OK would be a trap, and an emergency stop must be the most
- * obvious key on the remote. So:
- * <ul>
- *   <li><b>OK, or BACK</b> - abort. Writes {@link FanIo#FAIL_SAFE_DUTY} first, instantly,
- *       before anything else happens.</li>
- *   <li><b>Up</b> - "the fan just became audible". <b>Down</b> - "it is clearly loud".
- *       Both timestamp the current duty, mode and temperature. Entirely optional: a sweep
- *       with no keypresses is still a valid sweep.</li>
- * </ul>
- * Both bindings are on screen the whole time, in letters big enough to read from a sofa.
- */
+/** AUTO: the unattended thermal characterisation. One button, one fixed schedule, no options. */
 public class AutoActivity extends Activity implements StepRow.Listener {
 
     private static final int POLL_MS = 500;
@@ -81,13 +51,10 @@ public class AutoActivity extends Activity implements StepRow.Listener {
             try {
                 refresh();
             } catch (Throwable ignored) {
-                // the UI must never take a thermal run down
             }
             ui.postDelayed(this, POLL_MS);
         }
     };
-
-    // ------------------------------------------------------------------ lifecycle
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -112,8 +79,6 @@ public class AutoActivity extends Activity implements StepRow.Listener {
     protected void onPause() {
         ui.removeCallbacks(poll);
         // The white field has gone, so the run is no longer measuring what it claims to.
-        // Stop it, at the fail-safe duty. This also covers the projector being switched
-        // off part way through.
         if (running) {
             stopSweep("screen left");
         }
@@ -127,8 +92,6 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         }
         super.onDestroy();
     }
-
-    // ------------------------------------------------------------------ layout
 
     private void buildUi() {
         Context c = this;
@@ -209,9 +172,6 @@ public class AutoActivity extends Activity implements StepRow.Listener {
 
         col.addView(Ui.heading(c, "Room temperature — optional, but it is the biggest "
                 + "thing we cannot measure"), Ui.wrap());
-        // The same stored value the main screen edits, so a figure typed in either place
-        // reaches both the sweep report and every row of fanlab.csv. It used to live only
-        // in the sweep's own metadata and go no further.
         ambientRow = new StepRow(c, "Room temperature").range(0, 40).steps(1, 5)
                 .tag("ambient", 0);
         int amb = Prefs.roomC(c);
@@ -260,9 +220,8 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         int q = Ui.dp(c, 10);
         abortBox.setPadding(q * 2, q, q * 2, q);
         abortBox.setBackground(border(c, INK));
-        // Focusable so it is unmistakably the thing OK acts on, but not clickable: every
-        // key is handled by the activity, so UP and DOWN reach the audibility markers
-        // instead of being swallowed by a focus search that has nowhere to go.
+        // Focusable so OK unmistakably acts on it, but not clickable: the activity handles every
+        // key, so UP and DOWN reach the audibility markers instead of a focus search.
         abortBox.setFocusable(true);
         abortBox.setFocusableInTouchMode(false);
         abortBox.setOnFocusChangeListener(new View.OnFocusChangeListener() {
@@ -301,8 +260,6 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         parent.addView(row, lp);
         return row;
     }
-
-    // ------------------------------------------------------------------ actions
 
     @Override
     public void onStepRow(StepRow row) {
@@ -361,16 +318,13 @@ public class AutoActivity extends Activity implements StepRow.Listener {
 
     private void abortAndLeave() {
         stopSweep("user");
-        // Show what happened rather than dropping straight back to the menu, so it is
-        // obvious the fan was handed back.
         field.setVisibility(View.GONE);
         overlay.setVisibility(View.GONE);
         confirmView.setVisibility(View.VISIBLE);
         if (startRow != null) {
             startRow.requestFocus();
         }
-        // The service closes the files on its own thread; give it a moment so the message
-        // can name where they actually landed rather than saying "somewhere".
+        // The service closes the files on its own thread; give it a moment so the message can name them.
         ui.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -387,11 +341,8 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                     .setPositiveButton("OK", null)
                     .show();
         } catch (Throwable ignored) {
-            // a dialog failing must not matter
         }
     }
-
-    // ------------------------------------------------------------------ keys
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -430,8 +381,6 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                 + "      ▲ audible   ▼ clearly loud");
     }
 
-    // ------------------------------------------------------------------ refresh
-
     private void refresh() {
         if (!running) {
             Sample s = FanService.lastSample;
@@ -455,7 +404,6 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         SweepEngine e = FanService.sweepEngine;
         Sample s = FanService.lastSample;
         if (e == null) {
-            // The service finished or aborted the run underneath us.
             running = false;
             field.setVisibility(View.GONE);
             overlay.setVisibility(View.GONE);

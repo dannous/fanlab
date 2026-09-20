@@ -1,31 +1,16 @@
-"""Where does a given fan curve actually settle, on the measured plant?
-
-A fan curve and a thermal plant are a feedback loop: the curve maps temperature to duty,
-the plant maps duty to temperature. The operating point is the fixed point of the round
-trip, and it is the only number that matters -- the curve's shape away from it is a
-contingency plan, not a description of what you will hear.
-
-This solves that fixed point per brightness mode per ambient, and reports the loop gain,
-which is what says whether the point is stable and whether the fan will hunt.
+"""Solve where a fan curve settles on the measured plant: the fixed point of
+duty -> temperature -> duty, per brightness mode per ambient, with its loop gain.
 
     python solve_curve.py                       # the curve in CURVE.md
     python solve_curve.py --curve "v1,42,..."   # any encoded CurveConfig
     python solve_curve.py --curve ... --drive Presentation=90,Normal=70,Eco=50,SuperEco=30
-                                                # the same on a machine with the LED drive
-                                                # raised: an inferred plant, see drive_scale
 """
 import sys
 
-# Rise above ambient, degrees C, from the fitted steady state at each duty.
-#
-# Sources, and it matters which: run 1 (ambient 23 C, ~170 s holds) and run 2 (ambient
-# 24 C, ~730 s holds, marked R2 below). Where the two overlap they agree to 0.3 C.
-#
-# Run 1's Presentation rows at duty 35 and 30 were EXTRAPOLATIONS below its swept range,
-# and run 2 has now shown them to be optimistic by 1.6 C at duty 35 -- the real plant
-# steepens faster than the extension assumed. Any remaining None is a pair nobody has
-# held long enough to fit; the solver reports when a fixed point lands on one rather than
-# quietly interpolating across it.
+# Rise above ambient, degrees C, from the fitted steady state at each duty. Sourced from
+# run 1 (ambient 23 C, ~170 s holds) and run 2 (ambient 24 C, ~730 s holds); where they
+# overlap they agree to 0.3 C. A None is a pair nobody has held long enough to fit, and
+# the solver reports when a fixed point lands on one rather than interpolating across it.
 PLANT = {
     # duty:  Presentation, Normal, Eco,  SuperEco
     83:     (19.4, 13.5, None, None),
@@ -39,28 +24,6 @@ PLANT = {
     30:     (33.76, None, 16.41, 11.00),
 }
 
-# Provenance for the run-2 cells, because "measured" is not one thing. Each hold was
-# graded by its own end-of-hold drift (see fold_plant.py): a hold taken while the chassis
-# is still moving yields a confident-looking asymptote that is simply wrong, and the LED
-# trace alone will not tell you.
-#
-#   Presentation 40   26.91  12 min, chassis warming monotonically      trustworthy
-#   Presentation 35   29.92  12 min                                     trustworthy
-#   Presentation 30   33.76  12 min                                     trustworthy
-#   Eco          40   13.51  drift -0.8 C/h   CLEAN -- and it lands within 0.1 C of
-#                            run 1's 13.4, the best cross-run agreement in the project
-#   Eco          30   16.41  drift +4.5 C/h   still warming, so this is a LOWER bound;
-#                            the true value is somewhat above it
-#   SuperEco     30   11.00  drift +2.5 C/h   a few tenths low, usable
-#   SuperEco     40   --     drift -15.9 C/h  DISCARDED. Measured first, straight off the
-#                            Presentation block, so it absorbed the whole cool-down.
-#                            Run 1's 8.1 is retained above; the truth is between 8.1 and
-#                            the 9.97 that contaminated reading gave.
-#   Normal 40/35      --     both upper bounds for the same reason; run 1's values kept.
-#
-# The pattern that now holds across THREE independent modes: run 1's extrapolations below
-# duty 40 all read low, by 1-4 C, growing as the duty falls.
-
 
 MODES = ["Presentation", "Normal", "Eco", "SuperEco"]
 # Curve profile index for each mode: LOW=0 (Eco and Super Eco), NORMAL=1, HIGH=2.
@@ -70,28 +33,17 @@ PROFILE_OF = {"Presentation": 2, "Normal": 1, "Eco": 0, "SuperEco": 0}
 STOCK_DRIVE = {"Presentation": 76, "Normal": 55, "Eco": 40, "SuperEco": 20}
 
 # Per-mode adjustments to the measured plant, for asking what a curve does on a machine
-# that is not the one measured. Both default to "the table as it stands". Set them with
-# --drive, --scale or --rise-offset (see plant_args), never by editing here.
-#
-#   OFFSET  additive, degrees C, applied first. Its one real use is Normal, whose table
-#           column is a lower bound: the field log has Normal settling at 46.5 C on duty
-#           30 in a 24 C room, about 2.5 C above the table (docs/curve.md, "The floor
-#           stops at 47 C").
+# that is not the one measured. Set them with --drive, --scale or --rise-offset (see
+# plant_args), never by editing here.
+#   OFFSET  additive, degrees C, applied first.
 #   SCALE   multiplicative, applied second, for a different LED drive level.
 SCALE = {m: 1.0 for m in MODES}
 OFFSET = {m: 0.0 for m in MODES}
 
 
 # Scalings that have actually been HELD, keyed (mode, drive). Measured 2026-09-08 with
-# tools/plantdrive.sh: each mode at its factory drive and again at its raised one, ten
-# minutes apart, pinned fan 45, ordered cool to hot, the light engine's mode and drive
-# read back and confirmed on every sample, and the run's closing bracket agreeing to
-# 0.04 C over thirty minutes. tools/fold_drive.py does the arithmetic.
-#
-# These are the four levels the LED drive override actually uses. drive_scale returns the
-# measurement for them and falls back to the fitted line for anything else, so a solve at
-# the shipped configuration is measured end to end and only an off-nominal what-if is an
-# inference.
+# tools/plantdrive.sh at a pinned fan 45; tools/fold_drive.py does the arithmetic. These
+# are the four levels the LED drive override ships with.
 MEASURED_SCALE = {
     ("Presentation", 90): 1.2404,
     ("Normal", 75): 1.4032,
@@ -103,27 +55,9 @@ MEASURED_SCALE = {
 def drive_scale(mode, drive):
     """How much hotter a mode runs, at every duty, when its LED drive is raised.
 
-    For the four levels the override ships with, this is a MEASUREMENT -- see
-    MEASURED_SCALE above. For anything else it falls back to the fitted line, which is
-    where every one of these numbers used to come from:
-
-        rise ~= 1.60 + 0.342 x drive, fitted across all four modes at duty 40
-
-    HOW WRONG THAT FIT WAS, now that all four have been held against it:
-
-        Presentation 76 -> 90   measured x1.2404   fit said x1.1735   +5.7 %
-        Normal       55 -> 75   measured x1.4032   fit said x1.3351   +5.1 %
-        Eco          40 -> 55   measured x1.3866   fit said x1.3357   +3.8 %
-        Super Eco    20 -> 35   measured x1.5763   fit said x1.6078   -2.0 %
-
-    Wrong by -2 to +6 %, and in BOTH directions, so it was not a bias anyone could have
-    corrected for without holding the machine at each level. Three of the four read LOW,
-    which is the dangerous direction: every table solved through the fit put the light
-    engine cooler than it actually runs.
-
-    An earlier docstring here listed x1.180, x1.250, x1.220 and x1.378 as the fit's own
-    output, which is not what the formula produces. That warning stands for this block
-    too -- print(drive_scale(...)) rather than trusting prose.
+    A measurement for the four levels in MEASURED_SCALE; for anything else it falls back
+    to the fitted line  rise ~= 1.60 + 0.342 x drive  (fitted across all four modes at
+    duty 40), which runs -2 to +6 % against the held measurements.
     """
     key = (mode, int(round(drive)))
     if key in MEASURED_SCALE:
@@ -145,7 +79,7 @@ def plant_args(args):
         --scale Presentation=1.18              a scale factor directly
         --rise-offset Normal=2.5               degrees added to a column before scaling
 
-    Modes not named are left alone, so a flag can raise one mode and no other.
+    Modes not named are left alone.
     """
     rest = []
     i = 0
@@ -221,10 +155,8 @@ def duty_at(cfg, profile, degc):
 def rise_at(mode, duty):
     """Rise above ambient at an arbitrary duty, linear between measured points.
 
-    Extrapolates below the lowest measured duty using the local slope there, which is
-    the steepest part of the plant -- flagged by the caller, because the quiet end of
-    every curve rests on exactly this extrapolation. OFFSET and SCALE are applied to
-    every point first, so a raised drive steepens the extrapolation along with the rest.
+    Below the lowest measured duty it extrapolates on the local slope and flags it.
+    OFFSET and SCALE are applied to every point first.
     """
     col = MODES.index(mode)
     pts = sorted((d, (v[col] + OFFSET[mode]) * SCALE[mode])

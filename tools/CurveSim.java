@@ -2,19 +2,9 @@ import com.daleygames.fanlab.CurveConfig;
 import com.daleygames.fanlab.FanCurve;
 
 /**
- * Run the REAL {@link FanCurve} against a simulated thermal plant, in the time domain.
- *
- * The fixed-point solver in {@code solve_curve.py} says where the fan comes to rest. It
- * cannot say whether you would hear it get there, because it models neither the slew
- * limiter nor the hysteresis nor the tier-change exception -- and those three are the
- * entire difference between "smooth" and "the thing it does now". This does, and it does
- * it by calling the shipping controller rather than a paraphrase of it, so a divergence
- * between the analysis and the APK is impossible by construction.
- *
- * The trajectory print uses one pole; the hunting check below it uses two, and sweeps the
- * slow one, because a single-pole plant cannot oscillate and a stability test it always
- * passes is not a test. Both use the measured plant table, not a linear fit to it -- see
- * the note on {@link #rise}, which is where an earlier version of this file went wrong.
+ * Run the REAL {@link FanCurve} against a simulated thermal plant, in the time domain --
+ * slew limiter, hysteresis and tier-change exception included, none of which the
+ * fixed-point solver in {@code solve_curve.py} models.
  *
  *   javac -cp <app/build/test> -d . CurveSim.java && java -cp <app/build/test>;. CurveSim
  *
@@ -22,28 +12,16 @@ import com.daleygames.fanlab.FanCurve;
  * <pre>
  *   --profile high|normal|low        which column the settled machine runs; default high
  *   --drive high=90,normal=70,low=50 LED drive per profile, scaling that profile's plant
- *                                    by the fitted ratio in {@link #driveScale} -- an
- *                                    INFERENCE from the fit, not a measurement
+ *                                    by the ratio in {@link #driveScale}
  *   --scale high=1.18                the scale factor directly
- *   --offset normal=2.5              degrees added to a column before scaling; Normal's
- *                                    table column reads about 2.5 C under the field log
- *   --sweep 15,35                    run only the hunting check, at every whole-degree
- *                                    ambient in the range, one line each
+ *   --offset normal=2.5              degrees added to a column before scaling
+ *   --sweep 15,35                    run only the hunting check, one line per whole-degree
+ *                                    ambient in the range
  * </pre>
  */
 public final class CurveSim {
 
-    /**
-     * Rise above ambient at a given duty, per mode: the MEASURED plant, interpolated.
-     *
-     * An earlier version of this file used a single straight line of slope 0.174 C per
-     * duty point, taken from the average across the whole range. That was wrong in the
-     * way that mattered: the plant is roughly ten times more responsive at duty 35 than
-     * at duty 80 (0.60 vs 0.06), so a linear model is 3x too gentle exactly where the
-     * quiet end of the curve operates -- which is precisely where a steep ramp would
-     * misbehave if it were going to. The stability results from the linear version were
-     * therefore not worth much. Use the table.
-     */
+    /** Rise above ambient in degrees C at a given duty, per profile: the MEASURED plant. */
     static final double[] DUTY = {30, 35, 40, 45, 50, 55, 60, 70, 83};
     static final double[] HIGH_RISE = {33.76, 29.92, 26.91, 24.9, 23.7, 22.3, 21.5, 20.2, 19.4};
     static final double[] NORM_RISE = {19.1, 18.6, 18.1, 17.1, 16.1, 15.3, 14.8, 14.1, 13.5};
@@ -51,47 +29,21 @@ public final class CurveSim {
 
     /**
      * The LED drive each column above was measured at, percent of the driver maximum,
-     * indexed by profile: LOW is Eco's column (Super Eco shares the profile but not the
-     * plant), NORMAL is Normal, HIGH is Presentation.
+     * indexed by profile: LOW is Eco's column, NORMAL is Normal, HIGH is Presentation.
      */
     static final double[] STOCK_DRIVE = {40, 55, 76};
 
-    /**
-     * Per-profile adjustments to the measured plant, so the same controller can be run
-     * against a machine that is not the one measured. Additive first, then
-     * multiplicative; both default to the table as it stands, and are set from the
-     * command line rather than edited here.
-     */
+    /** Per-profile plant adjustments, set from the command line: additive, then multiplicative. */
     static final double[] SCALE = {1.0, 1.0, 1.0};
     static final double[] OFFSET = {0.0, 0.0, 0.0};
 
     /**
      * How much hotter a profile runs, at every duty, with its LED drive raised.
      *
-     * For the three levels the LED drive override ships with this is a MEASUREMENT, taken
-     * 2026-09-08 with {@code tools/plantdrive.sh}: each mode held at its factory drive and
-     * again at its raised one, ten minutes apart, pinned fan 45, cool to hot, the mode and
-     * the drive read back and confirmed on every sample, closing bracket agreeing to
-     * 0.04 C over thirty minutes.
-     *
-     * <pre>
-     *   profile        drive        measured   the fit said   error
-     *   HIGH    Presentation 76->90  x1.2404      x1.1735      +5.7 %
-     *   NORMAL  Normal       55->75  x1.4032      x1.3351      +5.1 %
-     *   LOW     Eco          40->55  x1.3866      x1.3357      +3.8 %
-     * </pre>
-     *
-     * Super Eco 20 -> 35 measured x1.5763 against a fitted x1.6078, and has no column here
-     * -- it shares the LOW profile with Eco but not the plant, so ask
-     * {@code tools/equilibria.py} for it.
-     *
-     * Anything else falls back to the fitted line, {@code rise ~= 1.60 + 0.342 x drive}
-     * across all four modes at duty 40, which is where every one of these numbers used to
-     * come from. It was wrong by -2 to +6 % and wrong in BOTH directions, so it was not a
-     * bias that could have been corrected for without holding the machine at each level;
-     * and three of the four read LOW, which is the direction that puts the light engine
-     * hotter than the table promised. A result produced at a drive not in the table above
-     * is still a prediction to be confirmed by a hold.
+     * A MEASUREMENT for the three levels below, taken 2026-09-08 with
+     * {@code tools/plantdrive.sh} at a pinned fan 45. Anything else falls back to the
+     * fitted line {@code rise ~= 1.60 + 0.342 x drive} (all four modes at duty 40), which
+     * runs -2 to +6 % against the held measurements and is a prediction, not a result.
      */
     static double driveScale(int profile, double drive) {
         int level = (int) Math.round(drive);
@@ -107,26 +59,13 @@ public final class CurveSim {
         return (1.60 + 0.342 * drive) / (1.60 + 0.342 * STOCK_DRIVE[profile]);
     }
 
-    /**
-     * Rise above ambient of the SoC pll die, measured directly rather than transferred.
-     *
-     * The guard's numbers were first set by arguing that the die moves about as many
-     * degrees as the LED thermistor for a given duty change, taken across holds that were
-     * still drifting in runs with UHD processing off. A 48-minute sweep under UHD-on load
-     * -- Presentation, six holds, duty 40 held first and last so load drift would show as
-     * a failure to close, and it closed to within 0.5 C -- says the argument was right and
-     * the transferred magnitudes were not. Total swing over duty 30..83 is 14.6 C on the
-     * die against 14.0 C on the LED, where the transferred plant predicted rather less at
-     * the top of the range.
-     */
+    /** Rise above ambient in degrees C of the SoC pll die, measured directly at each duty. */
     static final double[] SOC_DUTY = {30, 40, 50, 62, 83};
     static final double[] SOC_RISE = {45.0, 40.2, 37.6, 33.8, 30.4};
 
     /**
-     * @param load extra die temperature from SoC work the LED thermistor cannot see:
-     *             0 for the static white field the LED plant was measured on, about 11 for
-     *             UHD processing on. The sweep above already carries the UHD-on load, so
-     *             this is measured relative to it.
+     * @param load extra die temperature from SoC work the LED thermistor cannot see, in
+     *             degrees C: 0 for the static white field, about 11 for UHD processing on.
      */
     static double socRise(double duty, double load) {
         double r;
@@ -156,8 +95,7 @@ public final class CurveSim {
         double[] r = profile == CurveConfig.PROFILE_HIGH ? HIGH_RISE
                 : profile == CurveConfig.PROFILE_NORMAL ? NORM_RISE : LOW_RISE;
         if (duty <= DUTY[0]) {
-            // below the measured floor: extend the lowest measured slope, which is the
-            // steepest one, rather than flattening off and flattering the design
+            // below the measured floor: extend the lowest measured slope, the steepest one
             double slope = (r[1] - r[0]) / (DUTY[1] - DUTY[0]);
             return r[0] + slope * (duty - DUTY[0]);
         }
@@ -253,9 +191,8 @@ public final class CurveSim {
         System.out.println("ambient : " + ambient + " C");
         System.out.println();
 
-        // Start in Eco, settled. Then switch to the settled profile (Presentation unless
-        // --profile says otherwise) at t=300 s -- the harshest transition the machine
-        // offers, and the one the stock controller does as a 15-point step.
+        // Start in Eco, settled, then switch to the settled profile at t=300 s -- the
+        // harshest transition the machine offers.
         int profile = CurveConfig.PROFILE_LOW;
         double temp = ambient + rise(profile, 30);
         FanCurve curve = new FanCurve();
@@ -273,7 +210,6 @@ public final class CurveSim {
             }
             int duty = curve.step(cfg, profile, temp, true, t * 1000L);
 
-            // plant: first-order lag toward the steady state for this duty
             double target = ambient + rise(profile, duty);
             temp += (target - temp) * (1.0 - Math.exp(-1.0 / tau));
 
@@ -295,18 +231,10 @@ public final class CurveSim {
                 + (jumpAt >= 0 ? " at t=" + jumpAt + "s" : ""));
         System.out.println("(1 point per tick is inaudible; the stock controller steps 15 at once)");
 
-        // ---- hunting check ----
-        // The static loop-gain criterion in solve_curve.py models the loop as an
-        // instantaneously iterated map. That is the right model for locating the fixed
-        // point and the WRONG one for stability, because it ignores the plant lag, the
-        // slew limiter and the 1 Hz sample. So measure the thing directly.
-        //
-        // Two poles, because one pole cannot oscillate and would make this test
-        // vacuous. Today's run showed the LED thermistor and three SoC dies all still
-        // climbing ~2 C in the back half of a 12-minute hold, so a slow chassis pole is
-        // real; it is modelled here as 30% of the steady rise arriving with tau 1500 s
-        // behind the 70% that arrives with the measured fast tau. Sensor noise is
-        // included at the ADC quantisation scale.
+        // Measure stability directly rather than from a static loop gain, which ignores
+        // the plant lag, the slew limiter and the 1 Hz sample. Two poles, because one pole
+        // cannot oscillate: 70% of the steady rise arrives with the fast tau and 30% with
+        // the slow one, plus sensor noise at the ADC quantisation scale.
         System.out.println();
         for (double tauSlow : SLOW_POLES) {
             long[] r = hunt(cfg, profile, ambient, tau, tauSlow);
@@ -360,9 +288,7 @@ public final class CurveSim {
 
     /**
      * The hunting check at every whole-degree ambient from {@code lo} to {@code hi}, all
-     * four slow poles each, one line per ambient. This is the run the preset write-ups
-     * quote as "N of M runs steady", so it is worth having as one command rather than a
-     * shell loop that each author reconstructs differently.
+     * four slow poles each, one line per ambient.
      */
     static void sweepCheck(CurveConfig cfg, int profile, double lo, double hi) {
         System.out.println("profile : " + CurveConfig.PROFILE_NAMES[profile]);
@@ -393,23 +319,10 @@ public final class CurveSim {
     }
 
     /**
-     * The same two-pole check, run with the SoC guard as the binding constraint.
-     *
-     * Adding a second sensor to a loop tuned never to move is the obvious way to
-     * reintroduce the oscillation the whole project exists to remove, so it gets its own
-     * stability test rather than an argument.
-     *
-     * The die runs on its own measured plant ({@link #socRise}) with its own lag, not on
-     * the LED trace plus a constant. An earlier version did the latter, which quietly
-     * assumes the two sensors move together instantly; they have similar gain but not
-     * identical dynamics, and a stability test that cannot see a phase difference between
-     * the two loops is not testing the thing that would actually oscillate.
-     *
-     * The swept parameter is extra SoC load the LED thermistor cannot see -- 0 is the
-     * sweep's own conditions, and positive values are work the video pipeline does on top.
-     * It walks the guard from inert, through part-engaged, to saturated; part-engaged is
-     * the interesting one, because that is where the guard rather than the curve sets the
-     * duty and can therefore chase its own tail.
+     * The same two-pole check with the SoC guard as the binding constraint. The die runs
+     * on its own measured plant ({@link #socRise}) with its own lag, so a phase difference
+     * between the two loops is visible. The swept parameter is extra SoC load the LED
+     * thermistor cannot see, walking the guard from inert through part-engaged to saturated.
      */
     static void guardCheck(CurveConfig cfg, int profile, double ambient, double tau) {
         System.out.println();
@@ -438,11 +351,7 @@ public final class CurveSim {
         System.out.println("  (75 C is the pll trip where CPU/GPU throttling starts)");
     }
 
-    /**
-     * Settle the loop and report {pll, duty, dutyLo, dutyHi, changes, guardBoost}.
-     * Run twice per row -- guard armed and disarmed -- so the saving is measured against
-     * the same plant rather than asserted.
-     */
+    /** Settle the loop and report {pll, duty, dutyLo, dutyHi, changes, guardBoost}. */
     static double[] settle(CurveConfig cfg, int profile, double ambient, double tau,
             double offset, boolean guarded) {
         java.util.Random rng = new java.util.Random(1);
@@ -452,8 +361,7 @@ public final class CurveSim {
         int lo = 200, hi = 0, prev = -1, d = 0;
         long changes = 0;
         double pll = 0;
-        // The die's own fitted time constant, ~210 s, against the LED's ~230. Close, but
-        // modelled separately so the two loops are not forced into lockstep.
+        // The die's own fitted time constant, seconds, against the LED's ~230.
         final double socTau = 210.0;
         for (long t = 0; t <= 12000; t++) {
             double measured = ambient + fast + slow + rng.nextGaussian() * 0.03;

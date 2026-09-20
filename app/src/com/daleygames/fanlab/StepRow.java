@@ -7,18 +7,7 @@ import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/**
- * One full-width, D-pad-driven control.
- *
- * The device has no touchscreen and possibly no keyboard, so every setting is a row that
- * owns the horizontal axis: LEFT and RIGHT change the value, UP and DOWN move between
- * rows, OK activates. Because the row is the only focusable thing on its line, consuming
- * LEFT/RIGHT costs no navigation.
- *
- * Values are held as integers. A row showing a fractional quantity sets {@code scale} to
- * 10 and stores tenths, which keeps the whole widget integer-only and avoids float
- * rounding in the display.
- */
+/** One full-width, D-pad-driven control: LEFT and RIGHT change the value, UP and DOWN move between rows, OK activates. */
 public class StepRow extends LinearLayout {
 
     public interface Listener {
@@ -39,9 +28,7 @@ public class StepRow extends LinearLayout {
     private Listener listener;
     private int baseColour = Ui.PANEL;
 
-    /** Free-form label used by callers to identify the row in a shared listener. */
     public String tagName = "";
-    /** Free-form index used by callers editing an array. */
     public int tagIndex = -1;
 
     public StepRow(Context c, String label) {
@@ -71,7 +58,6 @@ public class StepRow extends LinearLayout {
         });
     }
 
-    /** Change the resting background, e.g. to mark a destructive action. */
     public StepRow tint(int colour) {
         baseColour = colour;
         if (!hasFocus()) {
@@ -141,7 +127,6 @@ public class StepRow extends LinearLayout {
         return set((int) Math.round(v * scale));
     }
 
-    /** Replace the displayed text outright (for buttons and enum rows). */
     public StepRow display(String s) {
         valueView.setText(s);
         return this;
@@ -222,8 +207,7 @@ public class StepRow extends LinearLayout {
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        // Consume the matching UP so View's own confirm-key handling cannot fire a second
-        // activation on top of the one onKeyDown already performed.
+        // Consume the matching UP so View's own confirm-key handling cannot fire a second activation.
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:

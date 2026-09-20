@@ -19,13 +19,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
-/**
- * The main screen: the live telemetry, the fan slider, and the switches.
- *
- * The readouts are the point of the whole app. On a machine with no adb and no shell,
- * this is the only way to see what the LED temperature is actually doing, which is the
- * measurement the entire fan investigation has been guessing at.
- */
+/** The main screen: the live telemetry, the fan slider, and the switches. */
 public class MainActivity extends Activity implements StepRow.Listener {
 
     private static final int POLL_MS = 250;
@@ -68,7 +62,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
             try {
                 refresh();
             } catch (Throwable t) {
-                // the UI must never take the app down
                 statusView.setText("UI error: " + t);
             }
             ui.postDelayed(this, POLL_MS);
@@ -80,10 +73,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         super.onCreate(saved);
         systemVariant = Process.myUid() == Process.SYSTEM_UID;
         setContentView(buildUi());
-        // Deliberately no permission request here. The CSV goes to app-private external
-        // directories, which need no permission at all, and a system permission dialog
-        // that a user with only an IR remote could not dismiss would make the app
-        // unusable. The extra copy in shared storage is opt-in, on its own row.
         FanService.poke(this, FanService.ACTION_START);
     }
 
@@ -91,9 +80,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
     protected void onResume() {
         super.onResume();
         syncControlsFromPrefs();
-        // Land the focus on the mode row, not on the slider. The slider takes manual
-        // control the moment it is nudged, and the first thing a remote does on an
-        // unfamiliar screen is nudge something.
         if (modeRow != null) {
             modeRow.requestFocus();
         }
@@ -106,8 +92,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         ui.removeCallbacks(poll);
         super.onPause();
     }
-
-    // ------------------------------------------------------------------ layout
 
     private View buildUi() {
         Context c = this;
@@ -131,7 +115,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 13f, systemVariant ? Ui.GOOD : Ui.DIM);
         root.addView(bannerView, Ui.wrap());
 
-        // ---- telemetry tiles ----
         root.addView(Ui.heading(c, "Live — sampled every second"), Ui.wrap());
         tempTile = new Ui.Tile(c, "LED °C (computed)");
         adcTile = new Ui.Tile(c, "ADC raw");
@@ -153,7 +136,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         pathsView = Ui.body(c, "");
         root.addView(pathsView, Ui.wrap());
 
-        // ---- the slider ----
         root.addView(Ui.heading(c, "Fan duty — left / right on the remote"), Ui.wrap());
         LinearLayout sliderBox = Ui.column(c);
         sliderBox.setBackground(Ui.panel(c, Ui.PANEL));
@@ -173,8 +155,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 sliderValue.setText(duty + " %");
                 if (fromUser) {
                     Prefs.setManualDuty(MainActivity.this, duty);
-                    // Moving the slider is the request. Take manual control so the value
-                    // actually reaches the hardware; the mode row shows what happened.
                     if (Prefs.mode(MainActivity.this) != Mode.MANUAL) {
                         Prefs.setMode(MainActivity.this, Mode.MANUAL);
                         syncControlsFromPrefs();
@@ -201,7 +181,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         sbl.topMargin = Ui.dp(c, 6);
         root.addView(sliderBox, sbl);
 
-        // ---- controls ----
         root.addView(Ui.heading(c, "Control"), Ui.wrap());
         modeRow = addRow(root, new StepRow(c, "Mode").button().tag("mode", 0));
         presetRow = addRow(root, new StepRow(c, "Curve preset — CURVE mode").button()
@@ -293,10 +272,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         release.tint(0xFF5A1F1F).valueColour(Ui.DANGER).display("▶");
         addRow(root, release);
 
-        // Here rather than only on the AUTO screen. It was on the sweep's confirmation
-        // page, where it became a line in the sweep report and never reached fanlab.csv --
-        // so a month of ordinary use carried no ambient at all and the first field log had
-        // to have it supplied by word of mouth.
         root.addView(Ui.heading(c, "Room temperature"), Ui.wrap());
         roomRow = addRow(root, new StepRow(c, "Room temperature").range(0, 40)
                 .steps(1, 5).tag("room", 0));
@@ -381,8 +356,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         return row;
     }
 
-    // ------------------------------------------------------------------ state
-
     private void syncControlsFromPrefs() {
         int mode = Prefs.mode(this);
         if (modeRow != null) {
@@ -398,20 +371,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     : "Mode — CURVE: following the temperature curve");
         }
         if (presetRow != null) {
-            // The colour tracks the noise, not the state: green for the quietest rung, amber
-            // for the ones whose operating point reaches the owner's "just acceptable" 50
-            // in a warm room -- Cool is at 45.8 % at 26 C and Cold at 49.1 % -- and dim for a
-            // curve that is none of them and therefore has nothing to say about how loud it
-            // is. Driven off the rung rather than the index, so Bright Quiet reads as
-            // quietest exactly as Quiet does; the two families are the same four rungs and
-            // the colour is about the rung.
-            //
-            // The name carries the family: the row reads "Bright Quiet", not "Quiet", so the
-            // one place a user looks to see which curve is loaded also says which drive level
-            // it was drawn for.
-            //
-            // Dimmed outside CURVE, because a value the loop is not currently using should
-            // not look like one it is.
             int preset = Prefs.preset(this);
             int rung = CurveConfig.rungOf(preset);
             presetRow.display(CurveConfig.presetName(preset));
@@ -423,16 +382,10 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
         if (ceilingRow != null) {
             LinearConfig lin = Prefs.linear(this);
-            // The ceiling the controller will actually hold, promotion included. Showing
-            // the stored 52 while the loop held 54 would make the one row on this screen
-            // whose whole job is to state a temperature the one that does not.
             boolean raised = LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(this));
             ceilingRow.set((int) Math.round(lin.ceilingC));
             ceilingRow.display(Sample.fmt1(lin.ceilingC) + " °C"
                     + (raised ? " (LED drive)" : ""));
-            // Dim unless LINEAR is the thing running, for the same reason the preset row
-            // dims outside CURVE: a value the loop is not currently using should not look
-            // like one it is.
             ceilingRow.valueColour(mode == Mode.LINEAR ? Ui.ACCENT : Ui.DIM);
         }
         syncLedDriveRow();
@@ -476,24 +429,12 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    /**
-     * The LED drive row. Driven from the 1 s poll as well as from the preference sync,
-     * because what it reports is not the setting: the service holds the
-     * override off in half a dozen states the setting knows nothing about, and the trip
-     * latch drops it without anyone pressing anything.
-     *
-     * Dimmed outside CURVE and LINEAR for the same reason the preset and ceiling rows are
-     * dimmed outside their own modes -- and here it is more than a convention, because
-     * outside those two modes the override genuinely is not applied.
-     */
     private void syncLedDriveRow() {
         if (ledDriveRow == null) {
             return;
         }
         boolean on = Prefs.ledBoostOn(this);
         boolean controls = Mode.controls(Prefs.mode(this));
-        // The service's live word for it while there is a service; the setting otherwise,
-        // which is all a cold app can honestly say.
         String state = FanService.instance == null
                 ? (on ? "on (service not running)" : "off")
                 : FanService.ledDriveStatus;
@@ -552,9 +493,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
             sb.append("   ● fan_ctrl write failures: ").append(FanService.writeFailures);
         }
         sb.append("   writes: ").append(FanService.writesDone);
-        // The SoC zones are not on a tile because they do not drive the fan; they are here
-        // because they are the one thing the LED thermistor cannot tell you, and without
-        // them a warm-looking machine and a busy one look identical.
         if (!Double.isNaN(s.socC[0])) {
             sb.append("\nSoC  pll ").append(Sample.fmt1(s.socC[0])).append(" C");
             if (!Double.isNaN(s.socC[1])) {
@@ -573,9 +511,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         } else if (FanService.throttledSec > 0) {
             sb.append("   throttled ").append(FanService.throttledSec).append("s so far");
         }
-        // The override's own line, because the row alone cannot say why it is not applied
-        // and "the LED drive says Bright but the picture is not" is a question the screen
-        // has to answer without a shell.
         if (Prefs.ledBoostOn(this)) {
             sb.append("\nLED drive  ").append(FanService.ledDriveStatus);
         }
@@ -588,8 +523,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     .append(lin.downStepMs / 1000).append(" s down within ")
                     .append(Sample.fmt1(lin.nearC)).append(" C, ")
                     .append(lin.downFastMs / 1000).append(" s below that");
-            // Named rather than implied. A duty pinned at 83 with nothing to explain it
-            // looks like a fault; saying the ceiling is out of reach says it is not.
             if (FanService.linearSaturated) {
                 sb.append("   ● OUT OF AUTHORITY — the ceiling cannot be reached "
                         + "at this room temperature");
@@ -643,40 +576,17 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    // ------------------------------------------------------------------ actions
-
     @Override
     public void onStepRow(StepRow row) {
         try {
             if ("mode".equals(row.tagName)) {
                 int mode = Prefs.mode(this);
-                // OFF -> CURVE -> LINEAR -> MANUAL -> CURVE -> ... The driving modes cycle
-                // among themselves, because going from one driver to another has no
-                // business routing through a handback: OFF writes the fail-safe 83 and
-                // re-arms the stock controller, which then has to be undone. Reaching OFF
-                // is a deliberate act with its own control (RESTORE STOCK), not something
-                // to stumble into while auditioning a duty.
-                //
-                // CURVE and LINEAR are adjacent on purpose. Comparing them by ear is what
-                // LINEAR is for, and the two are one button press apart with no fail-safe
-                // burst in between, so the comparison is of the controllers rather than of
-                // how each of them recovers from 83.
                 int next = mode == Mode.CURVE ? Mode.LINEAR
                         : mode == Mode.LINEAR ? Mode.MANUAL : Mode.CURVE;
                 Prefs.setMode(this, next);
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("preset".equals(row.tagName)) {
-                // Quiet -> Balanced -> Cool -> Cold -> Quiet, and with the LED drive on the
-                // same four rungs in the Bright Curve family instead. The loop stays inside the
-                // family the drive allows, so the pairing the gate exists to prevent cannot
-                // be reached by pressing this at all -- there is no press count that gets
-                // from Quiet to Bright Cold. Moving the LED drive row is what moves families,
-                // and it carries the rung across.
-                //
-                // Custom is a state to arrive in, not one to cycle to: it has no curve of its
-                // own, so a curve none of the names describe is not found in the family below
-                // and the next press lands on its quietest rung.
                 int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
                 int preset = Prefs.preset(this);
                 int at = -1;
@@ -689,19 +599,12 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("ceiling".equals(row.tagName)) {
-                // Poked, unlike the room temperature: this one is an input to the
-                // controller, so the loop should pick it up as a settings change and resync
-                // rather than discovering it a tick later mid-walk.
                 LinearConfig lin = Prefs.linear(this);
                 lin.ceilingC = row.get();
                 Prefs.setLinear(this, lin);
                 FanService.poke(this, FanService.ACTION_REFRESH);
                 syncControlsFromPrefs();
             } else if ("leddrive".equals(row.tagName)) {
-                // Stock -> Bright -> Stock. Poked, like the ceiling and unlike the room
-                // temperature, because it is an input to the controller: the loop has to
-                // see it as a settings change, which is also the edge that lets the
-                // override start at all.
                 if (Prefs.ledBoostOn(this)) {
                     Prefs.resetLedDrive(this);
                 } else {
@@ -720,8 +623,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 Prefs.setAutostart(this, !Prefs.autostart(this));
                 syncControlsFromPrefs();
             } else if ("room".equals(row.tagName)) {
-                // No poke: the loop picks this up on its next tick, and re-syncing the
-                // controller because the room was typed in would be a resync for nothing.
                 int v = row.get();
                 Prefs.setRoomC(this, v);
                 row.display(v == 0 ? "not stated" : v + " °C");
@@ -752,16 +653,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-
-    /**
-     * Copy the backlog now, whether or not this boot already did.
-     *
-     * The automatic export fires once per volume per boot, which is right for a stick
-     * left in the socket and wrong for someone standing in front of the projector holding
-     * one. This forces it. The result cannot be reported here -- the copy runs on its own
-     * thread precisely so that it is not waited on -- so the row and the line under the
-     * CSV paths report it as it happens.
-     */
     private void doExport() {
         FanService s = FanService.instance;
         if (s == null) {
@@ -779,8 +670,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private void doRelease() {
         FanService s = FanService.instance;
         if (s != null) {
-            // A running session owns the fan; releasing has to stop it too, or the loop
-            // would put its own duty back a second later.
+            // A running session owns the fan; releasing has to stop it too.
             if (FanService.sweepEngine != null) {
                 s.abortSweep("release control");
             }
@@ -789,8 +679,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
             }
             s.releaseControl();
         } else {
-            // No service to ask, so do it here: setting the mode first means a later
-            // start cannot immediately drive the fan back down.
+            // No service to ask: set the mode first, so a later start cannot drive the fan back down.
             Prefs.setMode(this, Mode.OFF);
             FanIo.writeFailSafe();
             FanService.poke(this, FanService.ACTION_RELEASE);
@@ -831,11 +720,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     }
 
     private void doRestoreStock() {
-        // Stop driving FIRST. The service now owns this property and re-asserts it every
-        // 30 ticks while it is in CURVE, so setting it alone was undone within half a
-        // minute -- after this dialog had already said it worked. DEPLOY.md tells the
-        // owner to press this before uninstalling, which made it the worst place in the
-        // app to have a control that silently does nothing.
+        // Stop driving FIRST: the service re-asserts this property every 30 ticks in CURVE, so setting it alone is undone within half a minute.
         Prefs.setMode(this, Mode.OFF);
         FanService.poke(this, FanService.ACTION_RELEASE);
         boolean ok = SysProps.set(SysProps.PROP_FANCTRL_BY_TEMP, "1");
@@ -894,8 +779,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        // Nothing to do: the app-private directories work either way, and the extra copy
-        // in /storage/emulated/0/FanLab is picked up on the service's next rescan.
         super.onRequestPermissionsResult(code, perms, results);
         syncControlsFromPrefs();
     }

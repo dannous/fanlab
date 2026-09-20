@@ -1,11 +1,4 @@
-"""Live view of an adblab run: segment by step, estimate the steady state of each hold.
-
-Deliberately simple. This is the instrument you watch a run through, not the one you
-draw conclusions with -- it fits a single exponential, which is known to under-read the
-asymptote on this machine because a slow chassis pole sits underneath the fast one (see
-RUNS.md, and adblab/refit_run1.md for the size of that bias). It prints the fitted tau
-next to the hold duration so you can see for yourself whether a given number is a
-measurement or an extrapolation.
+"""Segment an adblab run by step and fit the steady state of each hold.
 
     python fit_run2.py [run2.csv] [--ambient 24]
 """
@@ -40,11 +33,8 @@ def load(path):
 
 
 def fit_exp(ts, ys):
-    """T(t) = Tinf - (Tinf - T0) exp(-t/tau). Grid over tau, least squares on the rest.
-
-    Returns (Tinf, tau, rmse) or None. For each candidate tau the model is linear in
-    (Tinf, A) with basis [1, exp(-t/tau)], so the inner solve is exact and only tau
-    needs searching -- which keeps this dependency-free and robust on short segments.
+    """T(t) = Tinf - (Tinf - T0) exp(-t/tau). Grid over tau, exact least squares on the
+    rest. Returns (Tinf, tau, rmse), or None if the segment is too short.
     """
     n = len(ts)
     if n < 30:
@@ -119,8 +109,7 @@ def main():
                   % (mode, duty, held, t_end, "-", "-", "-", "-"))
             continue
         tinf, tau, rmse = fit
-        # A hold shorter than ~2 tau has not shown the asymptote; the number is then an
-        # extrapolation off the early curve and should be treated as such.
+        # A hold shorter than ~2 tau has not shown the asymptote.
         verdict = "measured" if held >= 2 * tau else "EXTRAPOLATED (held < 2 tau)"
         if seg is steps[-1]:
             verdict += " [in progress]"

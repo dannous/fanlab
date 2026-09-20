@@ -31,14 +31,9 @@ import java.util.Set;
 /**
  * The 1 Hz sampler and the fan controller.
  *
- * Runs in the foreground with a notification (mandatory on API 28) and returns
- * START_STICKY, so the platform brings it back if it is killed. It takes no wakelock, and
- * takes none anywhere: if the projector suspends, the loop stops with it, which is correct
- * - while early suspended the kernel forces every fan_ctrl write to 10 anyway, and it
- * re-imposes 55% on resume regardless of what userspace had asked for. The loop therefore
- * re-reads the node every second and rewrites when reality has drifted from intent, rather
- * than assuming a write stuck. What that costs is one measurement, and it is a cost worth
- * paying: see "the cooldown, and why it is not logged" further down.
+ * Foreground service, START_STICKY, and no wakelock anywhere: if the projector suspends the
+ * loop stops with it, so every tick re-reads {@code fan_ctrl} and rewrites when reality has
+ * drifted from intent rather than assuming a write stuck.
  *
  * Safety invariants enforced here:
  * <ul>
@@ -46,18 +41,13 @@ import java.util.Set;
  *       {@link FanIo#FAIL_SAFE_DUTY};</li>
  *   <li>three consecutive implausible temperature readings in CURVE mode write
  *       {@link FanIo#FAIL_SAFE_DUTY} and latch until a good reading returns;</li>
- *   <li>even with re-assertion switched off, a read-back <i>lower</i> than the intended
- *       duty is always corrected - the app will leave the fan higher than it meant to,
- *       never lower;</li>
- *   <li>stopping the service while it was driving the fan writes
- *       {@link FanIo#FAIL_SAFE_DUTY} on the way out, so a crash or a kill can never
- *       leave a low duty behind;</li>
- *   <li>the LED drive override is applied <i>only</i> while this app is the temperature
- *       controller, and the stock table goes back on every path out of that state. See
- *       {@link LedDrive} for why the two are inseparable;</li>
- *   <li>nothing here writes the display controller. The three DLPC features the app once
- *       offered were measured and none of them helps -- see {@link PicoReg} -- so what is
- *       left is a read, once a minute, feeding {@link DiagActivity}.</li>
+ *   <li>even with re-assertion switched off, a read-back <i>lower</i> than the intended duty is
+ *       always corrected - the app will leave the fan higher than it meant to, never lower;</li>
+ *   <li>stopping the service while it was driving writes {@link FanIo#FAIL_SAFE_DUTY} on the way
+ *       out, so a crash or a kill can never leave a low duty behind;</li>
+ *   <li>the LED drive override is applied only while this app is the temperature controller, and
+ *       the stock table goes back on every path out of that state;</li>
+ *   <li>nothing here writes the display controller; the DLPC is read only.</li>
  * </ul>
  */
 public class FanService extends Service {
@@ -74,77 +64,25 @@ public class FanService extends Service {
 
     private static final long TICK_MS = 1000L;
 
-    /**
-     * How often the brightness mode alone is re-read, while the LED drive override is on.
-     *
-     * The kernel applies the stock LED table synchronously inside its own {@code rgblevel}
-     * write, so a mode change puts stock brightness on the screen before this app can know
-     * it happened. Measured on the projector: at 156 ms after the write the panel was still
-     * at stock 75, and the override did not land until 597 ms. That is a visible flick to
-     * the old brightness and back, and the owner saw it before any log did.
-     *
-     * Nothing can remove that window -- the kernel wins the race by construction -- but its
-     * width is ours. Re-reading at 50 ms instead of once a tick cuts it to about three
-     * frames, which is where it stops being a flick and starts being a step.
-     *
-     * It cannot be closed entirely from user space, and the docs say so rather than
-     * implying the override is seamless.
-     *
-     * Cheap on purpose: this path reads {@code rgblevel} and nothing else, whose show
-     * handler returns a stored int. It must never read {@code rgbcurrent}, which costs four
-     * SPI transactions per call.
-     */
+    /** How often the brightness mode alone is re-read while the override is on, ms. 50 ms cuts the kernel's stock-brightness flick to about three frames. This path reads {@code rgblevel} only - never {@code rgbcurrent}, which costs four SPI transactions. */
     private static final long LED_FAST_MS = 50L;
 
-    /**
-     * How long after a brightness-mode change the override keeps re-asserting itself.
-     *
-     * Long enough to outlast the kernel's own four SPI writes, and bounded so a projector
-     * that never confirms cannot leave this hammering the bus. It stops the moment a
-     * read-back agrees.
-     *
-     * Measured rather than guessed: with a 600 ms window the projector still showed stock
-     * on the common channels five seconds after a mode change, because the kernel's
-     * sequence was not finished when the window closed and the ordinary rewrite limit then
-     * held the repair off. Three seconds covers the sequence with room to spare, and the
-     * loop exits as soon as the hardware agrees, so the full window is only ever spent
-     * when something is genuinely wrong.
-     */
+    /** How long after a brightness-mode change the override keeps re-asserting itself, ms. Long enough to outlast the kernel's own four SPI writes; it stops the moment a read-back agrees. */
     private static final long LED_SETTLE_MS = 3000L;
 
-    // There is deliberately no fixed hold-off after a mode change. An earlier version
-    // waited 200 ms for the kernel to finish its four SPI writes, which was a guess at a
-    // number the hardware will state outright: while the kernel is mid-sequence the
-    // channels disagree with each other, and when it has finished they agree. Waiting for
-    // agreement is both safer than a guess and faster than the 200 ms it replaced -- the
-    // kernel was measured finishing inside 117 ms, and the owner uses the near-instant
-    // jump between brightness modes to compare them by eye, so the delay is a feature
-    // being taken away rather than an implementation detail.
     private static final int RESCAN_EVERY_TICKS = 30;
     private static final int NOTIF_EVERY_TICKS = 5;
     /** Consecutive bad temperature reads tolerated in CURVE mode before failing high. */
     private static final int FAILSAFE_AFTER_BAD_READS = 3;
 
-    /**
-     * How long the last-seen-engine-on stamp may be from the value in {@link Prefs}.
-     *
-     * The stamp is only ever read after the engine has been off, so a minute of staleness
-     * is a minute of error on a quantity measured in hours. Writing it every second would
-     * put a preference commit on the control loop's path for no accuracy at all.
-     */
+    /** How stale the last-seen-engine-on stamp may be, ms. Writing it every second would put a preference commit on the control loop's path. */
     private static final long STAMP_EVERY_MS = 60000L;
 
-    /**
-     * How often the display controller is read, at most. One pass is five picoreg round
-     * trips -- an I2C write and a {@code logcat} scrape each -- on a thread of its own, so a
-     * minute is the budget. Nothing waits on it, because nothing acts on the answer; it
-     * feeds diagnostics and the CSV note column.
-     */
+    /** How often the display controller is read, at most, ms. One pass is five picoreg round trips on a thread of its own, and nothing acts on the answer. */
     private static final long DLPC_READ_EVERY_MS = 60000L;
     /** The bound on one read's round trip. On its own thread, so this stalls nothing. */
     private static final long DLPC_READ_TIMEOUT_MS = 4000L;
 
-    // ---- state the UI reads; single process, so plain volatiles are enough ----
     public static volatile FanService instance;
     public static volatile Sample lastSample;
     public static volatile long csvLines;
@@ -155,104 +93,47 @@ public class FanService extends Service {
     public static volatile boolean failSafeLatched;
     public static volatile String statusLine = "not started";
 
-    // ---- AUTO and VERIFY. Non-null means that session is running right now. ----
-    // Deliberately NOT persisted in Prefs: a sweep must never resume by itself after a
-    // process kill or a reboot, with the white field gone and nobody watching.
+    // Deliberately NOT persisted in Prefs: a sweep must never resume by itself after a process
+    // kill or a reboot, with the white field gone and nobody watching.
     public static volatile SweepEngine sweepEngine;
     public static volatile HoldSession holdSession;
-    /** One line describing the session, for the activities. */
     public static volatile String sweepLine = "";
-    /** Where the sweep files have been written so far. */
     public static volatile String[] sweepFiles = new String[0];
-    /** The most recent DLPC temperature attempt, so the UI can say so loudly. */
     public static volatile PicoReg.Reading lastDlpc;
 
-    // ---- the display controller, read only ----
-    /**
-     * What the DLPC last said about the three features the app used to offer, or null until
-     * a read has landed. {@link DiagActivity} is the only reader.
-     *
-     * <b>Nothing in this service writes any of them.</b> All three were measured on the
-     * hardware and none of them helps: CAIC computes but its output is stranded, LABB works
-     * and washes the picture out, and every Look but 0 buys its brightness with a green
-     * cast. {@link PicoReg} carries the numbers. These fields exist so the facts can be
-     * re-checked on a future firmware without putting a control back on the main screen.
-     *
-     * System variant only, because only it can read the kernel log the answers land in. On
-     * the plain build they stay null and the diagnostics say why.
-     */
     public static volatile PicoReg.CaicReading caicReadback;
     public static volatile PicoReg.CaicImage caicImageReadback;
     public static volatile PicoReg.Labb labbReadback;
     public static volatile PicoReg.Look lookReadback;
 
-    /**
-     * A read is in flight on the picoreg node, so no second one is started.
-     *
-     * A read is a write of the {@code r} command followed by a look at what came back, and
-     * two of those interleaving on one node means each can find the other's command sitting
-     * in it. The echo guard and the byte-count check refuse that rather than decoding it, so
-     * the failure mode is a lost reading rather than a wrong one -- but a lost reading is
-     * still lost. The pass therefore runs its round trips in sequence on one thread, behind
-     * this flag.
-     */
+    /** A read is in flight on the picoreg node, so no second one is started: two interleaving reads can each find the other's command sitting in the node. */
     private volatile boolean dlpcReading;
-    /** Monotonic time of the last sampling pass; 0 means never. */
     private long dlpcReadMonoMs;
-    /** The previous pass's summary, so the log carries the change and not the minute. */
     private volatile String lastDisplayReadLine = "";
-    /** Which build this is. Read once; it decides whether a read-back can ever succeed. */
     private boolean systemVariant;
 
-    // ---- the LED drive override ----
-    /**
-     * The override's own state machine: what it believes is on the hardware, its ceiling
-     * latch and its rate limits. Not static -- it is the service's, and the two paths that
-     * reach it from another thread ({@link #releaseControl} and the session starts) go
-     * through {@link #restoreLedDriveNow}, which is synchronized inside {@link LedDrive}.
-     */
+    /** The override's own state machine. Not static - the two paths that reach it from another thread go through {@link #restoreLedDriveNow}, which is synchronized inside {@link LedDrive}. */
     private final LedDrive ledDrive = new LedDrive();
 
-    /**
-     * The override may only <b>start</b> here: at a service start, a settings change, or the
-     * tick the mode becomes one this app controls.
-     *
-     * <b>Never spontaneously mid-run</b>, and that is a measurement rather than a
-     * preference. The owner's ear caught a 14-point cumulative fan sweep, and switching the
-     * boost on under LINEAR part way through a session makes it walk about 12 duty points at
-     * one per 5 s -- the same event, arriving by a different route. Gating the <i>start</i>
-     * rather than the whole thing is what lets the override survive a standby or a
-     * light-engine cycle without either re-applying out of nowhere or silently staying off.
-     */
+    /** The override may only start at a service start, a settings change, or the tick the mode becomes one this app controls - never spontaneously mid-run, which the owner's ear caught as a cumulative fan sweep. */
     private boolean ledDriveArmed;
 
-    /** Was this app the temperature controller last tick? Edge-triggers the arm above. */
     private boolean lastLedControlling;
 
-    /** Set by the tick: is the fast brightness-mode watch worth running right now? */
     private volatile boolean ledFastArmed;
 
-    /** The brightness mode the fast watch last acted on, or -1 before it has run. */
     private volatile int ledFastLevel = -1;
 
-    /** Last plausible light-engine temperature, so the fast path can honour the trip. */
     private volatile double ledFastC = Double.NaN;
 
-    /** While non-zero, the deadline until which a mode change is still being chased. */
     private volatile long ledFastSettleUntil;
 
-    /** Was LINEAR's ceiling promoted for the boost last tick? Edge-triggers the log note. */
     private boolean linearCeilingWasRaised;
 
-    /**
-     * One phrase describing the override, for the screen and the broadcast reply:
-     * {@code off}, {@code stock}, {@code applied 90/84}, or a reason it is being held off.
-     */
     public static volatile String ledDriveStatus = "off";
 
     private HandlerThread thread;
     private Handler handler;
-    /** Housekeeping, so nothing the control loop does has to wait for a preference. */
     private HandlerThread houseThread;
     private Handler house;
     private CsvLogger csv;
@@ -262,91 +143,51 @@ public class FanService extends Service {
     private NotificationManager notifications;
 
     private int lastWritten = -1;
-    /** Whether the previous tick was driving, so a transition to OFF can be caught. */
     private boolean wasDriving;
 
-    /** Was the SoC guard the binding constraint last tick? Edge-triggers the log note. */
     private boolean guardWasBiting;
 
-    /** Was LINEAR out of authority last tick? Edge-triggers the log note. */
     private boolean linearWasSaturated;
 
-    /** Duty points the SoC guard is currently adding, for the screen. 0 when inert. */
     public static volatile int guardBoost;
 
-    /**
-     * LINEAR out of authority: pegged at its ceiling duty and still too hot, or at its
-     * floor and still too cold. For the screen; the log gets it as a note on the edge.
-     */
     public static volatile boolean linearSaturated;
 
-    /** Is the thermal governor throttling right now? For the screen. */
     public static volatile boolean throttling;
 
-    /**
-     * Seconds spent throttled since the service started.
-     *
-     * The fan cannot prevent throttling outright: it has about 9.8 C of authority over the
-     * die from the operating point and the guard deliberately spends only two thirds of
-     * that, because the rest costs more noise than it is worth. So the question a log has
-     * to be able to answer is not whether throttling could happen but whether it did, and
-     * for how long. Nothing else in the system records that.
-     */
+    /** Seconds spent throttled since the service started. The fan cannot prevent throttling outright, so the log has to be able to say whether it happened and for how long. */
     public static volatile long throttledSec;
 
-    /** Was it throttling last tick? Edge-triggers the log note. */
     private boolean wasThrottling;
 
-    /** Which run this is. Fixed for the life of the service; on every row. */
     private int session;
 
-    /**
-     * Light-engine state the previous tick saw: 1 on, 0 off, -1 not established yet.
-     *
-     * Tri-state, deliberately unlike the {@code engineOn} the curve is given. There, an
-     * unreadable {@code led_status} counts as "on", because assuming the light engine is
-     * running is the conservative choice when the question is how hard to cool. Here an
-     * unreadable node must not invent a power-on edge and put a fabricated ambient reading
-     * in the log, so it holds the previous state instead.
-     */
+    /** Light-engine state the previous tick saw: 1 on, 0 off, -1 not established yet. Tri-state so an unreadable node holds the previous state instead of inventing a power-on edge. */
     private int lastEngineState = -1;
 
-    /** Mirror of {@link Prefs#engineOnWallMs} and its two companions; see offDurationMs. */
     private long engineOnWallMs;
     private long engineOnMonoMs;
     private long engineOnBootMs;
-    /** Monotonic time the stamp was last persisted, rate-limiting the write. */
     private long stampedMonoMs;
 
-    /** Monotonic time a read-back last disagreed with what we wrote; 0 means never. */
     private long lastForeignMonoMs;
 
-    /** The duty commanded on the previous tick, and when it last moved. */
     private int lastDesired = -1;
     private long dutyChangedMonoMs;
 
-    /**
-     * The stock ladder's kill switch as {@link #syncStockLadder} last read it, or null if
-     * it has never been readable. That method owns the property and is the only thing that
-     * reads it, so caching the value there is what keeps the exclusive-control flag off
-     * the control loop's property path entirely.
-     */
+    /** The stock ladder's kill switch as {@link #syncStockLadder} last read it, or null if never readable. That method is the only reader, which keeps the property off the control loop's path. */
     private volatile String ladderProp;
     /** Latched once the service is being torn down; stops the tick re-taking the node. */
     private volatile boolean stopped;
     private int badReads;
     private int ticks;
     private boolean lastInteractive = true;
-    /** Whether the previous tick had a VERIFY steady phase driving. See ledDriveArmed. */
     private boolean lastClosedLoop;
     private volatile boolean resumePending;
     private volatile boolean prefsDirty;
     private volatile boolean running;
     private String pendingNote = "";
 
-    // ---- sweep plumbing ----
-    // volatile because the activities call startSweep/startVerify on the UI thread while
-    // the control loop reads these on its own thread.
     private volatile CsvLogger trace;
     private volatile SweepReport.Meta meta;
     private volatile String traceName = "";
@@ -366,12 +207,6 @@ public class FanService extends Service {
                     resumePending = true;
                     note("resume:" + a);
                 } else if (Intent.ACTION_SCREEN_OFF.equals(a)) {
-                    // Filed, not acted on. The broadcast arrives while the platform still
-                    // holds a wakelock of its own, so it catches the edge the 1 Hz poll can
-                    // miss when the CPU suspends before the next tick; the note is picked
-                    // up by whichever tick runs next, which may not be until resume. That
-                    // costs nothing while the loop is stopped, which is the whole reason
-                    // this stayed when the cooldown lock went.
                     note("suspend");
                 }
             } catch (Throwable t) {
@@ -380,14 +215,7 @@ public class FanService extends Service {
         }
     };
 
-    /**
-     * A volume was mounted. Detection was previously the 30 s timer and nothing else, so
-     * a stick could sit in the socket for half a minute before anything wrote to it.
-     *
-     * The timer stays: this only makes detection prompt, and both paths converge on
-     * {@link #rescanSinks}, which is idempotent. Posted to the loop thread so the sink
-     * list has one writer.
-     */
+    /** A volume was mounted. Posted to the loop thread, which is the one writer of the sink list; the 30 s timer covers the same ground and {@link #rescanSinks} is idempotent. */
     private final BroadcastReceiver mediaReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -405,14 +233,10 @@ public class FanService extends Service {
         }
     };
 
-    // ------------------------------------------------------------------ lifecycle
-
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
-        // A fresh instance has read nothing yet, and it never writes the display
-        // controller, so there is nothing here to hand back -- only stale readings to drop.
         caicReadback = null;
         caicImageReadback = null;
         labbReadback = null;
@@ -437,9 +261,6 @@ public class FanService extends Service {
             Log.e(TAG, "onCreate foreground", t);
         }
         try {
-            // Read on the main thread, once, before the loop exists. From here the loop
-            // owns these three and pushes changes back through the housekeeping thread,
-            // so the 1 Hz path never touches a preference for them at all.
             engineOnWallMs = Prefs.engineOnWallMs(this);
             engineOnMonoMs = Prefs.engineOnMonoMs(this);
             engineOnBootMs = Prefs.engineOnBootMs(this);
@@ -448,13 +269,6 @@ public class FanService extends Service {
             Log.w(TAG, "onCreate session", t);
         }
         try {
-            // One fixed name, deliberately. A timestamp per service start looks tidier,
-            // but CsvLogger prunes by file stem, so every start opened a fresh stem that
-            // the previous run's cap could not reach -- six capped files per boot, kept
-            // for ever. Appending to one name makes the cap mean what it says. Run
-            // boundaries stay visible in the data: the first row after a start carries a
-            // "resync@...:service_start" note and the session column steps, and the epoch
-            // column shows the gap.
             csv = new CsvLogger("fanlab.csv");
             rescanSinks();
         } catch (Throwable t) {
@@ -472,19 +286,12 @@ public class FanService extends Service {
         try {
             IntentFilter m = new IntentFilter();
             m.addAction(Intent.ACTION_MEDIA_MOUNTED);
-            // MEDIA_MOUNTED carries the mount point as a file: URI, and a filter without
-            // the scheme matches nothing at all.
             m.addDataScheme("file");
             registerReceiver(mediaReceiver, m);
         } catch (Throwable t) {
             Log.w(TAG, "registerReceiver media", t);
         }
         try {
-            // A thread of its own for the one thing that must never happen on the control
-            // loop: writing a preference. SharedPreferences.apply() looks free, but it
-            // takes a lock a disk commit on another thread can already be holding, and the
-            // loop's standing rule is that nothing on it can delay a cooling decision.
-            // Background priority, and one write a minute at most.
             houseThread = new HandlerThread("fanlab-house",
                     android.os.Process.THREAD_PRIORITY_BACKGROUND);
             houseThread.start();
@@ -497,8 +304,6 @@ public class FanService extends Service {
             thread.start();
             handler = new Handler(thread.getLooper());
             running = true;
-            // note() rather than the tick's own builder: the loop has not run yet, so this
-            // lands on the first row, which is where a run boundary belongs.
             note(resync(FanIo.readDuty(), "service_start"));
             handler.post(tickRunnable);
             handler.postDelayed(ledFastRunnable, LED_FAST_MS);
@@ -533,8 +338,6 @@ public class FanService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        // The launcher removed our task. The loop keeps going (START_STICKY), so there is
-        // nothing to hand back here; do not disturb the fan.
         super.onTaskRemoved(rootIntent);
     }
 
@@ -549,31 +352,25 @@ public class FanService extends Service {
                 handler.removeCallbacksAndMessages(null);
             }
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
-        // The LED drive first, and before the fan, for the reason releaseControl() gives:
-        // the restore rewrites rgblevel, the stock ladder answers that by writing its own
-        // tier floor, and with the loop already stopped the fail-safe write below has to be
-        // the last thing that touches the node. Unconditional, unlike the fan handback --
-        // forceRestore does nothing at all unless an override is believed to be applied.
+        // The LED drive first, and before the fan: the restore rewrites rgblevel, the stock ladder
+        // answers that by writing its own tier floor, and with the loop already stopped the fail-safe
+        // write below has to be the last thing that touches the node.
         try {
             restoreLedDriveNow("service_stop");
         } catch (Throwable t) {
             Log.e(TAG, "onDestroy leddrive", t);
         }
-        // Hand the hardware back in a state that cannot cook it. If we were driving the
-        // fan and we are going away, the last thing we wrote may be low and nothing else
-        // is guaranteed to write for minutes.
+        // Hand the hardware back in a state that cannot cook it. If we were driving the fan and we
+        // are going away, the last thing we wrote may be low and nothing else is guaranteed to write.
         try {
-            // NOT re-derived from Prefs: ACTION_STOP calls releaseControl() first, which
-            // sets mode to OFF, so asking the preferences here would answer "was not
-            // driving" and skip the handback on precisely the path that needs it.
+            // NOT re-derived from Prefs: ACTION_STOP calls releaseControl() first, which sets mode to OFF,
+            // so the preferences would answer "was not driving" and skip the handback that path needs.
             boolean wasDriving = this.wasDriving
                     || sweepEngine != null || holdSession != null;
             if (wasDriving) {
-                // Give the fan back to the stock controller on the way out. Without this
-                // a normal stop leaves the ladder disabled with nobody driving, which
-                // persists across reboot.
+                // Give the fan back to the stock controller on the way out. Without this a normal stop leaves
+                // the ladder disabled with nobody driving, which persists across reboot.
                 syncStockLadder();
                 FanIo.writeFailSafe();
                 statusLine = "service stopped: handed back to stock, wrote fail-safe "
@@ -584,8 +381,7 @@ public class FanService extends Service {
         } catch (Throwable t) {
             Log.e(TAG, "onDestroy failsafe", t);
         }
-        // Close out a session that was still running, so the files on the stick describe
-        // what happened rather than stopping mid-sentence.
+        // Close out a session that was still running, so the files on the stick describe what happened.
         try {
             if (sweepEngine != null) {
                 sweepEngine.abort("service stopped", SystemClock.elapsedRealtime(),
@@ -604,40 +400,34 @@ public class FanService extends Service {
                 trace.close();
             }
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
         try {
             unregisterReceiver(powerReceiver);
         } catch (Throwable ignored) {
-            // not registered
         }
         try {
             unregisterReceiver(mediaReceiver);
         } catch (Throwable ignored) {
-            // not registered
         }
         try {
             if (csv != null) {
                 csv.close();
             }
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
         try {
             if (thread != null) {
                 thread.quit();
             }
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
         try {
             if (houseThread != null) {
-                // quitSafely: a preference write already queued is worth finishing, and it
-                // is the last-seen-engine-on stamp that the next power-on measures from.
+                // quitSafely: a preference write already queued is worth finishing, and it is the
+                // last-seen-engine-on stamp that the next power-on measures from.
                 houseThread.quitSafely();
             }
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
         if (instance == this) {
             instance = null;
@@ -645,13 +435,7 @@ public class FanService extends Service {
         super.onDestroy();
     }
 
-    // ------------------------------------------------------------------ commands
-
-    /**
-     * Called by the UI after it changes a preference. Only raises a flag: the actual
-     * re-sync happens on the loop thread, so nothing touches sysfs from the UI thread
-     * while a D-pad key is being held down on the slider.
-     */
+    /** Called by the UI after it changes a preference. Only raises a flag: the re-sync happens on the loop thread, so nothing touches sysfs from the UI thread. */
     public void onPrefsChanged() {
         prefsDirty = true;
     }
@@ -659,23 +443,21 @@ public class FanService extends Service {
     /**
      * Stop driving the fan and hand it back at the fail-safe duty.
      *
-     * 83 is loud. It is also the stock controller's own maximum, and it is the only value
-     * that is unconditionally safe to leave behind: the stock ladder will not necessarily
-     * write anything for minutes (it only writes when the rounded temperature changes),
-     * so releasing at a low duty could leave the machine under-cooled with nothing
-     * watching.
+     * 83 is loud, but it is the stock controller's own maximum and the only value that is
+     * unconditionally safe to leave behind: the stock ladder only writes when the rounded
+     * temperature changes, so releasing at a low duty could leave the machine under-cooled with
+     * nothing watching.
      */
     public void releaseControl() {
         try {
             Prefs.setMode(this, Mode.OFF);
             // Re-arm the stock ladder BEFORE dropping the fan, so there is no instant in
-            // which nothing at all is responsible for cooling. Mode is already OFF above,
-            // so a tick racing us reaches the same conclusion.
+            // which nothing at all is responsible for cooling.
             syncStockLadder();
-            // And put the stock LED table back before the fan write, not after. Restoring
-            // it rewrites rgblevel, which fires the stock ladder's mode-change branch and
-            // slams that tier's floor into fan_ctrl; with the mode already OFF no tick will
-            // take that back, so the fail-safe below has to be the last thing on the node.
+            // And put the stock LED table back before the fan write, not after. Restoring it rewrites
+            // rgblevel, which fires the stock ladder's mode-change branch and slams that tier's floor into
+            // fan_ctrl; with the mode already OFF no tick will take that back, so the fail-safe below has
+            // to be the last thing on the node.
             restoreLedDriveNow("release");
             boolean ok = FanIo.writeFailSafe();
             lastWritten = ok ? FanIo.FAIL_SAFE_DUTY : -1;
@@ -691,74 +473,28 @@ public class FanService extends Service {
     }
 
     /**
-     * Keep the stock controller's kill switch coupled to whether this service is really
-     * driving the fan.
+     * Keep the stock controller's kill switch coupled to whether this service is really driving
+     * the fan.
      *
-     * <h3>Why this has to be automatic</h3>
-     * {@code persist.sys.fanctrl.by.temperatue=0} stops the stock ladder writing. It
-     * lives in {@code /data}, so it survives a reboot, a force-stop and an uninstall.
-     * Setting it by hand and trusting this app to still be running is the one
-     * configuration that can leave the projector with <i>no</i> fan controller at all.
-     * TARGET.md names that as a thing never to do, and doing it by hand is exactly how
-     * it happens anyway. So the switch is owned by the service's own state rather than
-     * by whoever last typed a command:
-     * <ul>
-     *   <li>driving (MANUAL, CURVE, or a session) -&gt; the ladder is off, and
-     *       {@link Prefs#autostart} is forced on so a reboot brings the driver back;</li>
-     *   <li>not driving -&gt; the ladder is handed back, within one tick.</li>
-     * </ul>
+     * {@code persist.sys.fanctrl.by.temperatue=0} stops the stock ladder writing, and it lives in
+     * {@code /data}: it survives a reboot, a force-stop and an uninstall. So the switch is owned
+     * by the service's own state - driving (MANUAL, CURVE or a session) stands the ladder down and
+     * forces {@link Prefs#autostart} on; not driving hands it back within one tick.
      *
-     * <h3>What it cannot cover — and this list was wrong once already</h3>
-     * <ul>
-     *   <li><b>A low-memory kill or a crash</b> is covered: START_STICKY plus a
-     *       foreground notification means the platform restarts the service.</li>
-     *   <li><b>A reboot</b> is covered by autostart, forced on above.</li>
-     *   <li><b>Force-stop, and "Disable" in Settings, are NOT covered.</b> They cancel
-     *       the START_STICKY restart <i>and</i> put the package in the stopped state,
-     *       which suppresses {@code BOOT_COMPLETED} as well — so neither the restart nor
-     *       the reboot path fires. An earlier version of this comment claimed otherwise.</li>
-     *   <li><b>{@code pm clear} is NOT covered</b>, and is worse: it also erases
-     *       {@code autostart}, so nothing left on the device knows the ladder should come
-     *       back.</li>
-     *   <li><b>Uninstall is NOT covered.</b> It runs no code and never returns.</li>
-     * </ul>
-     * In every uncovered case the projector is not in danger — the 75 °C shutdown and the
-     * kernel fan-stall watchdog are both outside userspace, and the fan holds the kernel's
-     * own default rather than stopping — but nothing is responding to temperature. Hand
-     * the fan back first, with the app's RESTORE control or {@code adblab/deploy.sh
-     * revert}; or afterwards, with
+     * A crash or a low-memory kill is covered by START_STICKY, a reboot by autostart. Force-stop,
+     * Disable, {@code pm clear} and uninstall are NOT: the projector is not in danger, since the
+     * 75 C shutdown and the kernel fan-stall watchdog are both outside userspace, but nothing is
+     * responding to temperature until the fan is handed back - with the app's RESTORE control, or
      * {@code adb shell setprop persist.sys.fanctrl.by.temperatue 1}.
      *
-     * <h3>Plain build</h3>
-     * The plain build returns immediately without touching the property: it could not
-     * write a {@code system_prop} anyway, and both variants can be installed at once, so
-     * a second manager of one global switch would only ever fight the real one. It does
-     * warn, once, if it is asked to drive while the stock ladder is still armed -- that
-     * combination cannot work and the symptom (a duty that will not stay put) looks
-     * exactly like the bug this project exists to fix.
+     * The plain build returns immediately without touching the property: only the platform-signed
+     * build may own this switch, and both variants can be installed at once.
      */
     private synchronized void syncStockLadder() {
         try {
-            // Decide INSIDE the lock. Taking `driving` as a parameter let a tick that was
-            // preempted between evaluating it and acting on it re-disable the ladder after
-            // releaseControl() had already re-armed it -- narrow, but it ends with the
-            // stock controller off and this service on its way out.
             boolean driving = !stopped && drivesUnattended(Prefs.mode(this));
-            // Read once, at the top, and keep it: this method is the only thing that reads
-            // the property and it already runs every RESCAN_EVERY_TICKS seconds, so the
-            // exclusive-control flag can take the cached value and cost the control loop
-            // nothing. Up to thirty seconds stale, which is well inside that flag's own
-            // sixty-second window. Read even in the plain build's not-driving case, where
-            // nothing used to read it, so the flag can say "no" rather than "cannot tell".
             String have = SysProps.get(SysProps.PROP_FANCTRL_BY_TEMP);
             ladderProp = have;
-            // Only the platform-signed build may own this switch. Both variants can be
-            // installed at once (that is deliberate -- the plain one is the zero-
-            // commitment measuring instrument), and if both tried to manage a single
-            // global property they would fight: the idle one re-arming the ladder that
-            // the driving one just disabled. Today the plain build's write simply fails,
-            // so the fight is invisible; relying on a permission denial to enforce a
-            // design invariant is not a plan. Make it explicit instead.
             if (android.os.Process.myUid() != android.os.Process.SYSTEM_UID) {
                 if (driving && have != null && !"0".equals(have.trim())) {
                     statusLine = "the stock ladder is still armed and this build "
@@ -785,9 +521,8 @@ public class FanService extends Service {
             }
             note("stock_ladder->" + (driving ? "off" : "on") + (ok ? "" : " FAILED"));
             if (!ok && driving) {
-                // The stock ladder is still writing and will fight us. Not dangerous --
-                // two controllers both cooling -- but the duty will not hold, and the
-                // owner should be told why rather than left to hear it.
+                // The stock ladder is still writing and will fight us. Not dangerous - two controllers both
+                // cooling - but the duty will not hold, and the owner should be told why.
                 statusLine = "cannot disable the stock ladder (plain build?) - it will "
                         + "overwrite the curve every 15 s";
             }
@@ -799,23 +534,11 @@ public class FanService extends Service {
     /**
      * Whether the stock ladder should be stood down for us.
      *
-     * **MANUAL is deliberately excluded.** Disabling the ladder for MANUAL would remove
-     * the only thing supervising a duty the user typed by hand, and MANUAL has no
-     * temperature logic at all -- not even the three-bad-reads fail-safe that CURVE has.
-     * With the ladder armed, MANUAL is exactly as safe as it was before any of this:
-     * a silly value is corrected within one 15 s poll, and the audition still works
-     * because {@link Prefs#reassert} rewrites the node every second and wins in between.
-     * That is what re-assertion was built for.
-     *
-     * **LINEAR is included, on exactly the same footing as CURVE.** It responds to
-     * temperature and it fails safe on a bad read, so it earns the ladder standing down and
-     * it needs it: the stock ladder writing every 15 s would fight a controller walking a
-     * point every 5 s, and two controllers at once is the audible cycling this project
-     * exists to remove. {@link Mode#controls} is the one place that judgement is written
-     * down, so this asks it rather than listing the modes again.
-     *
-     * A sweep or a hold session does need the node to itself, and both are transient,
-     * in-memory, and impossible to resume across a restart.
+     * MANUAL is deliberately excluded: it has no temperature logic at all, not even the
+     * three-bad-reads fail-safe that CURVE has, so the ladder stays armed to supervise a duty the
+     * user typed by hand. LINEAR is included on exactly the same footing as CURVE, and
+     * {@link Mode#controls} is the one place that judgement is written down. A sweep or a hold
+     * session needs the node to itself, and both are transient and cannot resume across a restart.
      */
     private boolean drivesUnattended(int mode) {
         return Mode.controls(mode) || sweepEngine != null || holdSession != null;
@@ -827,40 +550,14 @@ public class FanService extends Service {
         }
     }
 
-    /**
-     * Adopt the duty the hardware is actually at, and say which path did it.
-     *
-     * Four paths resync, and they mean four different things to whoever reads the log: a
-     * service start is a run boundary, a settings change is deliberate, a resume is the
-     * driver having silently reimposed 55 %, and a fail-safe recovery is the machine
-     * having been in trouble. Only the resume path used to leave a note, so thirty-six
-     * hours of field log contains no {@code resync@} at all -- while every session in it
-     * visibly opens with the app taking the fan back off the stock ladder, 55 slewing down
-     * to 46. The one the notes claimed to cover, the service start, was the silent one.
-     *
-     * Returns the note rather than filing it, because three of the four callers are inside
-     * a tick and are building that row's note themselves; filing it would put a run
-     * boundary on the row after the boundary.
-     */
+    /** Adopt the duty the hardware is actually at, and return the note saying which path did it - the callers are mid-tick and build that row's note themselves. */
     private String resync(int duty, String path) {
-        // Both controllers, always, whichever is driving. Only one of them is being asked
-        // for a duty at any moment, but the other has to be holding the truth when the
-        // owner flips between them to compare -- which is the entire reason LINEAR exists
-        // alongside CURVE. Resyncing only the live one would make the first tick after
-        // every switch a step from the idle controller's stale duty.
         curve.resync(duty);
         linear.resync(duty);
         return "resync@" + duty + ":" + path;
     }
 
-    /**
-     * Run something off the control loop. Used for preference writes, which the loop's
-     * 1 Hz path may not do.
-     *
-     * Falls back to a one-shot daemon thread if the housekeeping looper never started, the
-     * same shape {@link #exportBacklogAsync} uses: worth a thread rather than running it
-     * here, because "here" is the thread that writes fan_ctrl.
-     */
+    /** Run something off the control loop. Used for preference writes, which the loop's 1 Hz path may not do. */
     private void runOffLoop(Runnable r) {
         try {
             Handler h = house;
@@ -884,18 +581,7 @@ public class FanService extends Service {
         }
     }
 
-    // ------------------------------------------------------------------ the loop
-
-    /**
-     * Watch the brightness mode between ticks and put the override back the moment it
-     * changes. See {@link #LED_FAST_MS} for why this exists at all.
-     *
-     * It re-posts unconditionally so it survives the override being switched off and on,
-     * and does nothing but a single small read while disarmed. {@link LedDrive} is
-     * synchronized, so racing the 1 Hz tick is safe by construction rather than by timing;
-     * the read-back is passed as null because a mode change is an edge, and an edge applies
-     * without needing to compare anything.
-     */
+    /** Watch the brightness mode between ticks and put the override back the moment it changes; see {@link #LED_FAST_MS}. {@link LedDrive} is synchronized, so racing the 1 Hz tick is safe by construction. */
     private final Runnable ledFastRunnable = new Runnable() {
         @Override
         public void run() {
@@ -908,15 +594,10 @@ public class FanService extends Service {
                         ledFastSettleUntil = now + LED_SETTLE_MS;
                     }
                     if (level > 0 && now < ledFastSettleUntil) {
-                        // Inside the window the read-back is worth its four SPI reads: it
-                        // is the only thing that says whether the kernel has finished.
                         LedDrive.Config cfg = Prefs.ledDrive(FanService.this);
                         String rbText = Sysfs.read(Sysfs.RGBCURRENT);
                         int[] rb = LedDrive.parseReadback(rbText);
                         if (rb != null && rb[1] == rb[2]) {
-                            // Coherent: whatever is on the hardware, all of it is on the
-                            // hardware. Either it is already ours, or the kernel has
-                            // finished and this is the first safe moment to write.
                             if (ledDrive.confirmed(cfg, level, rbText)) {
                                 ledFastSettleUntil = 0L;
                             } else {
@@ -927,14 +608,13 @@ public class FanService extends Service {
                                 }
                             }
                         }
-                        // Incoherent or unreadable: the kernel is still pushing channels
-                        // out, or the SPI read dropped. Writing now is what produced a
-                        // colour cast on the projector. Wait for the next 50 ms look.
+                        // Incoherent or unreadable: the kernel is still pushing channels out, or the SPI read
+                        // dropped. Writing now is what produced a colour cast. Wait for the next 50 ms look.
                     }
                 }
             } catch (Throwable t) {
-                // The fan is not involved here and the tick will do this again within a
-                // second. Never let a brightness cosmetic take the loop down.
+                // The fan is not involved here and the tick will do this again within a second. Never let a
+                // brightness cosmetic take the loop down.
                 Log.w(TAG, "ledfast", t);
             }
             handler.postDelayed(this, LED_FAST_MS);
@@ -948,8 +628,8 @@ public class FanService extends Service {
             try {
                 tick();
             } catch (Throwable t) {
-                // Nothing in tick() is supposed to throw. If it does, the projector must
-                // still be cooled: write high, say so, and keep looping.
+                // Nothing in tick() is supposed to throw. If it does, the projector must still be cooled:
+                // write high, say so, and keep looping.
                 Log.e(TAG, "tick", t);
                 try {
                     if (Mode.writes(Prefs.mode(FanService.this))) {
@@ -957,7 +637,6 @@ public class FanService extends Service {
                         failSafeLatched = true;
                     }
                 } catch (Throwable ignored) {
-                    // nothing left to try
                 }
                 statusLine = "internal error, fail-safe applied: " + t;
             }
@@ -985,9 +664,8 @@ public class FanService extends Service {
         s.fanCtrl = FanIo.readDuty();
         for (int i = 0; i < Sysfs.SOC_THERMAL.length && i < s.socC.length; i++) {
             int milli = Sysfs.readInt(Sysfs.SOC_THERMAL[i], Integer.MIN_VALUE);
-            // Plausibility gate, same spirit as the thermistor's: a die below -40 C or
-            // above 150 C is a bad read, not a temperature, and must not reach the log
-            // looking like data.
+            // Plausibility gate: a die below -40 C or above 150 C is a bad read, not a temperature, and
+            // must not reach the log looking like data.
             s.socC[i] = (milli == Integer.MIN_VALUE || milli < -40000 || milli > 150000)
                     ? Double.NaN : milli / 1000.0;
         }
@@ -1007,7 +685,6 @@ public class FanService extends Service {
                 interactive = power.isInteractive();
             }
         } catch (Throwable ignored) {
-            // assume awake; the worst case is a wasted write
         }
 
         boolean resumeEdge = resumePending || (interactive && !lastInteractive);
@@ -1018,9 +695,6 @@ public class FanService extends Service {
         StringBuilder note = new StringBuilder(takeNote());
 
         s.session = session;
-        // Read like mode and the curve are: after the first load a preference read is a
-        // lookup in an in-memory map, which is why the loop has always been allowed to do
-        // it. Writes are the thing that is not allowed here.
         s.roomC = Prefs.roomC(this);
 
         boolean settingsChanged = prefsDirty;
@@ -1031,36 +705,22 @@ public class FanService extends Service {
             append(note, "settings changed " + resync(s.fanCtrl, "settings"));
         }
 
-        // Own the stock ladder's kill switch from here, rather than leaving it to
-        // whoever last set it by hand. Re-checked periodically as well as on a settings
-        // change, because the property is global: another tool, or an earlier session's
-        // leftovers, can put it back underneath us. On the first tick too, so the first
-        // row can say whether the ladder is stood down instead of leaving it blank.
+        // Own the stock ladder's kill switch from here rather than leaving it to whoever last set it
+        // by hand. The property is global, so another tool can put it back underneath us.
         if (settingsChanged || ticks == 1 || ticks % RESCAN_EVERY_TICKS == 0) {
             syncStockLadder();
         }
 
         if (resumeEdge) {
-            // The driver re-applies 55% on resume and after any stall, discarding what we
-            // wrote. Adopt reality, then ramp from there instead of stepping.
+            // The driver re-applies 55% on resume and after any stall, discarding what we wrote. Adopt
+            // reality, then ramp from there instead of stepping.
             lastWritten = -1;
             append(note, resync(s.fanCtrl, "resume"));
         }
 
-        // ---------------- the light engine, and ambient ----------------
         int engineState = s.ledStatus < 0 ? lastEngineState : (s.ledStatus == 0 ? 0 : 1);
         boolean engineOnEdge = engineState == 1 && lastEngineState != 1;
         if (engineOnEdge) {
-            // A power-on. Record the reading and the evidence needed to grade it, rather
-            // than gating on a threshold: the thermistor is still 4.7 C above its resting
-            // value five hours in, so an hour-long gate would pass a reading several
-            // degrees too warm with nothing in the log to show it. degC and soc_pll_c on
-            // this row are the readings; off_s says whether to believe them.
-            //
-            // Fired on the first sample of a service start as well as on a real off-on
-            // edge, because a service that has only just started cannot know the engine
-            // was not switched on a moment before it. That shows up honestly as a
-            // three-second off-duration, which is a row to discard, not a threshold.
             long off = offDurationMs(now, mono);
             s.offMs = off;
             append(note, "poweron off=" + (off < 0 ? "?" : (off / 1000L) + "s")
@@ -1068,9 +728,6 @@ public class FanService extends Service {
                     + " degC=" + Sample.fmt1(s.degC)
                     + " pll=" + Sample.fmt1(s.socC[0]));
         } else if (engineState == 0 && lastEngineState != 0) {
-            // The edge only. Nothing follows it: the loop suspends with the machine, so the
-            // fall towards the room is not sampled -- see "the cooldown, and why it is not
-            // logged" below.
             append(note, "engine_off");
         }
         lastEngineState = engineState;
@@ -1084,35 +741,22 @@ public class FanService extends Service {
             }
         }
 
-        // ---------------- the display controller ----------------
-        // Read only, and a minute apart at most. Nothing here writes it.
         sampleDisplay(interactive, mono);
 
-        // ---------------- the LED drive override, first half ----------------
-        // Loaded here because two different parts of the tick need the answer and neither
-        // should ask twice: LINEAR's ceiling has to know about the boost before it steps,
-        // just below, and the override itself is applied after the fan write, further down,
-        // where an extra sysfs read and a couple of writes cannot get in front of a cooling
-        // decision. The same question Prefs.ledBoostOn answers, asked from a config this
-        // tick has to load anyway.
         LedDrive.Config ledCfg = Prefs.ledDrive(this);
         boolean ledFeatureOn = Prefs.ledDriveOn(this) && !ledCfg.isStock();
 
-        // A read-back that is not what we last wrote is another writer on the node: the
-        // stock ladder, or the kernel reimposing 55 % after a stall. It is a free
-        // measurement -- fan_ctrl is read back before every write anyway -- and it is one
-        // of the three things the exclusive-control flag rests on, so it is now watched in
-        // every mode rather than only inside a session. Not while suspended: the kernel
-        // forces every write to 10 there, so every read-back would look foreign.
+        // A read-back that is not what we last wrote is another writer on the node: the stock ladder,
+        // or the kernel reimposing 55 % after a stall. Not while suspended, where the kernel forces
+        // every write to 10 and so every read-back would look foreign.
         boolean foreign = interactive && lastWritten > 0 && s.fanCtrl >= 0
                 && s.fanCtrl != lastWritten;
         if (foreign) {
             lastForeignMonoMs = mono;
         }
 
-        // ---------------- decide ----------------
-        // A running AUTO or VERIFY session overrides the ordinary mode. It is held in a
-        // field, never in the preferences, so it can never survive a restart.
+        // A running AUTO or VERIFY session overrides the ordinary mode. It is held in a field, never
+        // in the preferences, so it can never survive a restart.
         SweepEngine sw = sweepEngine;
         HoldSession hs = holdSession;
         int desired = -1;
@@ -1128,9 +772,6 @@ public class FanService extends Service {
         if (sessionRunning) {
             badReads = 0;
             failSafeLatched = false;
-            // The detection is above, in every mode. A session additionally records it in
-            // its own report, because for a measurement run a second writer does not just
-            // contaminate a window, it invalidates the step.
             if (foreign) {
                 if (sw != null) {
                     sw.noteForeignWrite(s.fanCtrl, lastWritten);
@@ -1141,9 +782,9 @@ public class FanService extends Service {
                 appendEvent(traceEvent, "foreign_write:" + s.fanCtrl);
             }
             if (!interactive) {
-                // The white field is the test apparatus. If the screen has gone, the run
-                // is no longer measuring what it claims to, and the kernel is forcing
-                // every write to 10 anyway. Stop, at the fail-safe duty.
+                // The white field is the test apparatus. If the screen has gone, the run is no longer
+                // measuring what it claims to, and the kernel is forcing every write to 10 anyway. Stop, at
+                // the fail-safe duty.
                 append(note, "screen off during a session - stopping");
                 appendEvent(traceEvent, "abort:screen_off");
                 if (sw != null) {
@@ -1203,15 +844,6 @@ public class FanService extends Service {
                 // socC[0] is thermal_zone0 (pll) -- the only SoC zone with cooling devices
                 // bound to it, so the only one whose temperature has a consequence.
                 desired = curve.step(cfg, s.profile, s.degC, s.socC[0], engineOn, mono);
-                // No per-tick "engine-off" note. It made every engine-off tick look
-                // interesting, which bypasses the decimation and spends a row a second on
-                // the fact that nothing is happening. The edge is noted above and the
-                // led_status column carries the state on every row, which is the
-                // machine-readable form of the same fact.
-                //
-                // Log the guard only on the edge where it starts or stops being the
-                // binding constraint. Logging it every tick while it holds would bypass
-                // the heartbeat decimation and fill the file.
                 guardBoost = curve.guardBoost();
                 boolean biting = guardBoost > 0;
                 if (biting != guardWasBiting) {
@@ -1222,10 +854,9 @@ public class FanService extends Service {
                 }
             }
         } else if (mode == Mode.LINEAR) {
-            // The same fail-safe path as CURVE, deliberately not a parallel one: three bad
-            // reads write 83 and latch, and the latch clears through the shared resync so
-            // the walk restarts from the duty actually on the node rather than from
-            // wherever it had got to before the sensor failed.
+            // The same fail-safe path as CURVE, deliberately not a parallel one: three bad reads write 83
+            // and latch, and the latch clears through the shared resync so the walk restarts from the duty
+            // actually on the node.
             if (!Thermistor.plausible(s.degC)) {
                 badReads++;
                 append(note, "badtemp x" + badReads);
@@ -1242,13 +873,10 @@ public class FanService extends Service {
                 failSafeLatched = false;
                 boolean engineOn = s.ledStatus != 0;
                 LinearConfig lin = Prefs.linear(this);
-                // LINEAR needs no new mode for the LED drive override -- it holds a
-                // temperature, so it absorbs the extra heat by itself and pays for it in
-                // fan. What it needs is a different number: at drive 90 the stock 52.0
-                // costs duty 50 in a 24 C room where today it rests at 38, and gives up at
-                // 29.1 C ambient instead of 32.6. The default moves to 54.0 while the
-                // override is on -- inferred from the x1.18 scaling, never written to the
-                // preferences, and never applied to a ceiling the owner set by hand.
+                // LINEAR needs no new mode for the LED drive override - it holds a temperature, so it pays for
+                // the extra heat in fan. What it needs is a different ceiling: the default moves to 54.0 while
+                // the override is on, never written to the preferences and never applied to a ceiling the owner
+                // set by hand.
                 boolean raised = LinearConfig.promoteForBoost(lin, ledFeatureOn);
                 if (raised != linearCeilingWasRaised) {
                     append(note, raised
@@ -1268,9 +896,6 @@ public class FanService extends Service {
                             : "socguard released");
                     guardWasBiting = biting;
                 }
-                // On the edge only. The controller has no hold state, so while the ceiling
-                // is unreachable this is true on every one of 720 ticks an hour, and a note
-                // per tick bypasses the decimation and fills the file with the same fact.
                 boolean sat = linear.saturated();
                 if (sat != linearWasSaturated) {
                     append(note, sat
@@ -1286,24 +911,13 @@ public class FanService extends Service {
             badReads = 0;
             failSafeLatched = false;
         }
-        // Saturation is a statement about a walk that is currently happening. With LINEAR
-        // not driving -- another mode, a session, or its own fail-safe latched -- there is
-        // no walk, so the flag goes out rather than leaving the screen asserting the last
-        // thing that was true. Clearing the edge too means recovering into a still-
-        // unreachable ceiling notes it again, which is the honest thing: it is news each
-        // time the controller starts and cannot get there.
         if (mode != Mode.LINEAR || sessionRunning || failSafeLatched) {
             linearSaturated = false;
             linearWasSaturated = false;
         }
-        // Handing back by any route -- the adb path sets mode=OFF and never calls
-        // releaseControl() -- must still leave the fan somewhere safe. Without this the
-        // duty simply stops being updated and the fan stays wherever the curve last put
-        // it (30, or idleDuty 10), with the stock ladder only writing when the rounded
-        // temperature next changes, which at equilibrium is exactly when it does not.
-        // Sampled in every mode, including OFF and MANUAL. A record that only exists
-        // while the curve is driving cannot answer the one comparison worth making --
-        // whether this curve throttles the machine more often than the stock ladder did.
+        // Handing back by any route -- the adb path sets mode=OFF and never calls releaseControl() --
+        // must still leave the fan somewhere safe, since the stock ladder only writes when the rounded
+        // temperature next changes.
         throttling = s.throttling();
         if (throttling) {
             throttledSec++;
@@ -1324,15 +938,10 @@ public class FanService extends Service {
 
         s.desired = desired;
 
-        // ---------------- write ----------------
         if (desired > 0) {
             if (!interactive) {
-                // Early-suspended: the kernel forces every write to 10, so writing here
-                // achieves nothing except log noise. Reality is re-adopted on resume.
-                //
-                // On the edge only, for the same reason the engine-off note is: whenever
-                // the screen goes out without the loop stopping with it, this branch is
-                // reached every second, and a note every second is a row every second.
+                // Early-suspended: the kernel forces every write to 10, so writing here achieves nothing
+                // except log noise. Reality is re-adopted on resume.
                 if (suspendEdge) {
                     append(note, "suspended, not writing");
                 }
@@ -1363,49 +972,29 @@ public class FanService extends Service {
             }
         }
 
-        // ---------------- the LED drive override, second half ----------------
-        // Deliberately after the write, exactly like the DLPC read below: one sysfs read
-        // and up to two writes, none of which may sit in front of a cooling decision.
-        //
-        // The coupling rule is the entire safety case and it is a conjunction. Raising LED
-        // output while this app is not the fan controller runs Presentation-class heat
-        // under whatever fan ladder rgblevel happens to select, which is the hazard the
-        // notes forbid outright -- so every term below is required, and any doubt about
-        // one of them resolves to not-allowed.
-        //
-        // The one term where that reads oddly is led_status, which is tested for "not 0"
-        // and so treats an unreadable node as "on", exactly as the curve does. It is the
-        // conservative answer here as well, for a different reason: the hazard is the fan
-        // coupling, and every term that establishes the coupling is checked above. Writing
-        // LED currents to an engine that turns out to be off is inert -- there is nothing
-        // lit to drive -- so guessing wrong in this direction costs one sysfs write.
+        // Deliberately after the write, exactly like the DLPC read below: one sysfs read and up to two
+        // writes, none of which may sit in front of a cooling decision.
+        // The coupling rule is the entire safety case and it is a conjunction. Raising LED output while
+        // this app is not the fan controller runs Presentation-class heat under whatever fan ladder
+        // rgblevel happens to select, so every term below is required and any doubt resolves to
+        // not-allowed. led_status is the one term that treats an unreadable node as "on", because the
+        // hazard is the fan coupling and writing LED currents to an engine that is off is inert.
         boolean ledControls = Mode.controls(mode);
-        // A session normally forfeits the override, because it pins the fan and the
-        // override's whole safety case is that light output is only raised while this app
-        // is the thing cooling the machine. A VERIFY steady phase is the exception, and it
-        // is an exception that SATISFIES the rule rather than bending it: in that phase the
-        // real curve is closing the real loop on the real thermistor, which is precisely
-        // the coupling being required. Dropping the drive there would also make the phase
-        // pointless for the family it matters most to -- verifying a Bright preset at the
-        // factory drive measures the wrong machine.
+        // A session normally forfeits the override. A VERIFY steady phase is the exception, and it
+        // satisfies the rule rather than bending it: there the real curve is closing the real loop on
+        // the real thermistor, which is precisely the coupling being required.
         boolean sessionOpenLoop = sw != null || (hs != null && !hs.closedLoop());
         boolean ledInCharge = ledFeatureOn && !stopped && ledControls
                 && !sessionOpenLoop && !failSafeLatched;
-        // Arming. The override may only start on one of three events -- see ledDriveArmed
-        // for the measurement behind that -- and lastLedControlling starts false, so the
-        // service's own first tick in CURVE or LINEAR is an entry edge and needs no case
-        // of its own.
-        //
-        // Losing the display or the light engine is a pause, not a disarm: both come back
-        // through a discontinuity the loop already resyncs across, so re-applying there is
-        // the service-start case rather than a change nobody asked for. Everything else --
-        // the mode leaving, a session taking the node, the fail-safe latching, the feature
-        // being switched off -- clears the arm, so coming back takes a deliberate act.
+        // Arming. lastLedControlling starts false, so the service's own first tick in CURVE or LINEAR
+        // is an entry edge and needs no case of its own.
+        // Losing the display or the light engine is a pause, not a disarm. Everything else -- the mode
+        // leaving, a session taking the node, the fail-safe latching, the feature being switched off --
+        // clears the arm, so coming back takes a deliberate act.
         boolean ledModeEntered = ledControls && !lastLedControlling;
         lastLedControlling = ledControls;
-        // Handing the fan to the curve mid-session is an entry edge of its own. Without it
-        // the override could never come back: the mode has not changed, so ledModeEntered
-        // is false, and startVerify dropped the drive on the way in.
+        // Handing the fan to the curve mid-session is an entry edge of its own: without it the override
+        // could never come back, since the mode has not changed and startVerify dropped the drive.
         boolean closedLoopNow = hs != null && hs.closedLoop();
         boolean steadyEntered = closedLoopNow && !lastClosedLoop;
         lastClosedLoop = closedLoopNow;
@@ -1416,8 +1005,6 @@ public class FanService extends Service {
         }
         boolean ledAllowed = ledInCharge && ledDriveArmed && interactive && s.ledStatus != 0;
         try {
-            // One extra read a tick, and only while the feature is asking for something:
-            // with the override off there is nothing to compare a read-back against.
             String rgbCurrent = ledFeatureOn ? Sysfs.read(Sysfs.RGBCURRENT) : null;
             LedDrive.Plan plan = ledDrive.decide(ledFeatureOn ? ledCfg : null, s.rgblevel,
                     ledAllowed, Thermistor.plausible(s.degC) ? s.degC : Double.NaN,
@@ -1428,35 +1015,22 @@ public class FanService extends Service {
                 append(note, plan.note);
             }
             ledDriveStatus = ledDriveLine(ledFeatureOn, ledInCharge, interactive, s.ledStatus);
-            // Hand the fast watch its inputs. Arming it only while the override is
-            // genuinely in force keeps it a no-op the rest of the time, and re-reading
-            // rgblevel here means a mode change the tick saw first is not acted on twice.
+            // Hand the fast watch its inputs. Re-reading rgblevel here means a mode change the tick saw
+            // first is not acted on twice.
             ledFastLevel = s.rgblevel;
             ledFastC = Thermistor.plausible(s.degC) ? s.degC : Double.NaN;
             ledFastArmed = ledAllowed && ledFeatureOn && !ledCfg.isStock();
         } catch (Throwable t) {
-            // Sysfs does not throw and LedDrive catches its own arithmetic, so this is the
-            // outermost belt: the fan has already been written this tick and nothing about
-            // the LEDs is worth losing a tick over.
+            // The outermost belt: the fan has already been written this tick and nothing about the LEDs is
+            // worth losing a tick over.
             Log.w(TAG, "leddrive", t);
         }
 
-        // ---------------- exclusive control ----------------
-        // The three conditions and why they are these three are in Provenance. The kill
-        // switch comes from the cache syncStockLadder fills, so this costs the loop no
+        // The kill switch comes from the cache syncStockLadder fills, so this costs the loop no
         // property read at all.
         s.exclusive = Provenance.exclusive(mode, sessionRunning, ladderProp, mono,
                 lastForeignMonoMs);
 
-        // ---------------- convergence ----------------
-        // Converged or still warming up was being read off the trace by eye. The
-        // controller knows: it is catching up while the duty it inherited is not yet the
-        // duty the curve wants, and the time since the duty last moved says whether what
-        // it arrived at has held. Creep is the project's first open question, and this
-        // makes it a filter rather than a reconstruction.
-        //
-        // Blank in every mode but CURVE: with the curve not driving there is nothing to
-        // converge on, and a 0 there would read as "converged".
         if (mode == Mode.CURVE && !sessionRunning) {
             s.catchingUp = curve.isCatchingUp() ? 1 : 0;
         }
@@ -1468,7 +1042,6 @@ public class FanService extends Service {
             s.dutyHoldMs = mono - dutyChangedMonoMs;
         }
 
-        // ---------------- the once-per-step readings ----------------
         // Deliberately after the write: the fan is already at the new duty, so the up to
         // 1.2 s this can cost cannot delay a cooling decision.
         if (stepEnded && sw != null) {
@@ -1495,11 +1068,6 @@ public class FanService extends Service {
         s.note = note.toString();
         lastSample = s;
 
-        // ---------------- storage ----------------
-        // Outside the logging guard on purpose. Which volumes are mounted is not a
-        // logging question, and while the rescan lived inside it a stick inserted with
-        // logging off went unnoticed -- and took the backlog export with it, which is the
-        // one thing that only happens on the insertion edge.
         try {
             if (ticks % RESCAN_EVERY_TICKS == 1) {
                 rescanSinks();
@@ -1508,14 +1076,8 @@ public class FanService extends Service {
             Log.w(TAG, "rescan", t);
         }
 
-        // ---------------- log ----------------
         try {
             if (csv != null && Prefs.logging(this)) {
-                // Log every event, but only every Nth quiet second. A row a second of
-                // "nothing changed" is 0.34 MB/hour that buries the lines that matter.
-                // Anything that actually happened -- a write, a note, a session step, a
-                // latched fail-safe -- is always recorded, so decimating the heartbeat
-                // costs no information, only volume.
                 boolean interesting = s.wrote > 0
                         || failSafeLatched
                         || sessionRunning
@@ -1539,7 +1101,6 @@ public class FanService extends Service {
             Log.w(TAG, "trace", t);
         }
 
-        // ---------------- session end ----------------
         if (sessionFinished) {
             try {
                 if (sw != null) {
@@ -1579,13 +1140,7 @@ public class FanService extends Service {
         sb.append(s);
     }
 
-    // ------------------------------------------------------------------ ambient
-
-    /**
-     * How long the light engine had been off before it came on, milliseconds, or -1 when
-     * there is nothing to go on. {@link Provenance#offDurationMs} carries the reasoning
-     * and the two cases; this is the three-field mirror it reads from.
-     */
+    /** How long the light engine had been off before it came on, ms, or -1 when there is nothing to go on. {@link Provenance#offDurationMs} carries the two cases. */
     private long offDurationMs(long nowWallMs, long nowMonoMs) {
         return Provenance.offDurationMs(nowWallMs, nowMonoMs, engineOnWallMs,
                 engineOnMonoMs, engineOnBootMs, bootWallMs());
@@ -1596,30 +1151,7 @@ public class FanService extends Service {
         return Provenance.offSource(engineOnWallMs, engineOnBootMs, bootWallMs());
     }
 
-    // ---- the display controller, read only ----
-
-    /**
-     * Ask the DLPC what its three image features are doing, and record the answer.
-     *
-     * <h3>Why this reads and never writes</h3>
-     * All three were offered as controls and all three were withdrawn, because all three
-     * were measured on the hardware and none of them helps. CAIC is identical to CAIC off
-     * on a pinned-fan A/B -- 52.33 C either way -- because TI routes every LED-current
-     * command to a DLPA200x PMIC and this board has none. LABB does work, and its work is
-     * to raise the black floor: "really washed out seeming". Every Look but 0 takes duty
-     * cycle off red and gives it to green, and red has no headroom to give it back.
-     * {@link PicoReg} carries the numbers and the arithmetic.
-     *
-     * So what is left is the evidence, not the switch. {@link DiagActivity} prints these
-     * four readings beside the finding each of them supports, which is what makes the
-     * negative re-checkable on a firmware that might change one of the answers.
-     *
-     * <h3>Why it is off the 1 Hz path</h3>
-     * A read is an I2C write followed by a {@code logcat} scrape, and the loop it would run
-     * on is the one holding the fan. {@link #DLPC_READ_EVERY_MS} is a minute, the pass runs
-     * on a daemon thread of its own, and {@link #dlpcReading} keeps two passes from
-     * interleaving on one node. Never with the display off: the DLPC is not reliably up.
-     */
+    /** Ask the DLPC what its three image features are doing, and record the answer. Read only, and off the 1 Hz path: one round trip is an I2C write plus a {@code logcat} scrape, and the loop it would run on is the one holding the fan. Never with the display off. */
     private void sampleDisplay(boolean interactive, long mono) {
         if (stopped || !interactive || !systemVariant || dlpcReading) {
             return;
@@ -1631,16 +1163,7 @@ public class FanService extends Service {
         readDisplayAsync();
     }
 
-    /**
-     * The four readings, in sequence, on a thread that is neither the control loop nor the
-     * housekeeping looper -- a hung {@code logcat} must be able to take nothing down with
-     * it. One thread rather than four, because they share one node: two round trips
-     * overlapping means each can find the other's command sitting in it. Five round trips,
-     * not four -- the Look needs its split from {@code 0x26} and its number from {@code 0x23}.
-     *
-     * A note is filed only when the line changes, so a stable machine costs one CSV row
-     * rather than one a minute.
-     */
+    /** The four readings, in sequence, on a thread that is neither the control loop nor the housekeeping looper: they share one node, and a hung {@code logcat} must take nothing down with it. A note is filed only when the line changes. */
     private void readDisplayAsync() {
         dlpcReading = true;
         try {
@@ -1668,8 +1191,6 @@ public class FanService extends Service {
                                 + " look:" + (look.known ? look.summary() : "?");
                         if (!line.equals(lastDisplayReadLine)) {
                             lastDisplayReadLine = line;
-                            // CsvLogger.q quotes the note column, so the reasons' commas
-                            // and quotes are safe to pass through as they are.
                             note(line);
                         }
                     } catch (Throwable t) {
@@ -1687,16 +1208,7 @@ public class FanService extends Service {
         }
     }
 
-    // ---- the LED drive override ----
-
-    /**
-     * One phrase describing the override, for {@link #ledDriveStatus}.
-     *
-     * The distinction worth drawing is between "stock because nothing is asking" and "stock
-     * because something is holding it off", because the second is a state the owner has to
-     * be able to see the reason for: the row says Bright, the picture is not, and without
-     * this the screen would just look wrong.
-     */
+    /** One phrase describing the override, for {@link #ledDriveStatus}. "Stock because nothing is asking" and "stock because something is holding it off" are different states, and the owner has to be able to see the reason for the second. */
     private String ledDriveLine(boolean featureOn, boolean inCharge, boolean interactive,
                                 int ledStatus) {
         if (!featureOn) {
@@ -1716,9 +1228,8 @@ public class FanService extends Service {
             return "stock: the display is asleep";
         }
         if (!ledDriveArmed) {
-            // The only state that needs the owner to do something. It is reached by the
-            // fail-safe having latched at some point, which is deliberately not
-            // self-clearing -- see ledDriveArmed.
+            // The only state that needs the owner to do something: the fail-safe latched at some point,
+            // which is deliberately not self-clearing.
             return "stock: held until the mode or the settings change";
         }
         return "stock";
@@ -1727,16 +1238,9 @@ public class FanService extends Service {
     /**
      * Put the stock LED table back, now, off the tick.
      *
-     * The handback for the three paths that are not a tick: RELEASE, a session taking the
-     * node, and service stop. Everything a tick can see -- the mode leaving CURVE or
-     * LINEAR, the fail-safe latching, the feature being switched off -- is handled by
-     * {@link LedDrive#decide} instead, on the tick it happens, because that is the method
-     * that knows what is on the hardware and it restores within one second either way.
-     *
-     * {@link LedDrive#forceRestore} ignores the rewrite rate limit, since a handback is a
-     * one-off and a duplicate {@code rgblevel} write is harmless, and it does nothing at
-     * all unless an override is believed to be applied -- so calling this on a machine this
-     * app never boosted writes nothing.
+     * The handback for the three paths that are not a tick: RELEASE, a session taking the node,
+     * and service stop. Everything a tick can see is handled by {@link LedDrive#decide} instead,
+     * on the tick it happens. Writes nothing at all on a machine this app never boosted.
      */
     private void restoreLedDriveNow(String why) {
         try {
@@ -1765,27 +1269,6 @@ public class FanService extends Service {
         });
     }
 
-    // ---- the cooldown, and why it is not logged ----
-    //
-    // The loop suspends with the machine, so when the light engine goes off the LED
-    // decaying towards the room goes unsampled. That is why led_status reads 1 in all 3389
-    // rows of the first field log, and why the idle-duty-10 path still has no field
-    // evidence behind it. Both are permanent limitations, not work outstanding.
-    //
-    // Holding the CPU up to watch the fall was built and taken back out. Two reasons, and
-    // either alone is enough.
-    //
-    // It would not measure what it claims to. An idle SoC sits 13-15 C above the room and
-    // warms the chassis the thermistor is mounted in, so a lock held long enough to see
-    // the fall would be heating the thing being measured. The measurement corrupts itself,
-    // and it does so plausibly: the curve would come out smooth and wrong.
-    //
-    // And the owner does not want the CPU held awake.
-    //
-    // The power-on capture above answers the ambient question instead, and needs no
-    // wakelock: one direct reading per power-on, graded by off_s. The cooldown curve was
-    // only ever corroboration for it.
-
     private static void appendEvent(StringBuilder sb, String s) {
         if (s == null || s.length() == 0) {
             return;
@@ -1796,16 +1279,7 @@ public class FanService extends Service {
         sb.append(s);
     }
 
-    // ------------------------------------------------------------------ AUTO
-
-    /**
-     * Start the unattended thermal characterisation.
-     *
-     * @return false if it was refused, with {@link #statusLine} saying why. The two
-     *         refusals are "already running something" and "the projector is already too
-     *         warm to start" - a run beginning at 54 C would trip the 58 C ceiling within
-     *         a step or two and waste ninety minutes.
-     */
+    /** Start the unattended thermal characterisation. Returns false if it was refused - already running, or the projector already too warm to start - with {@link #statusLine} saying why. */
     public synchronized boolean startSweep(String ambientNote) {
         try {
             if (sweepEngine != null || holdSession != null) {
@@ -1823,10 +1297,8 @@ public class FanService extends Service {
                         + Sample.fmt1(SweepPlan.MAX_START_C) + " C";
                 return false;
             }
-            // Before the session takes the node. A sweep owns rgblevel and drives the fan
-            // to a schedule, so it must not start on top of an LED drive the report would
-            // not mention -- and its own assertRgbLevel would reinstate the stock table a
-            // second later anyway, silently, which is worse than doing it here on purpose.
+            // Before the session takes the node: a sweep owns rgblevel and drives the fan to a schedule, so
+            // it must not start on top of an LED drive the report would not mention.
             restoreLedDriveNow("session");
             openSessionFiles(false);
             meta = buildMeta("auto", ambientNote);
@@ -1849,10 +1321,7 @@ public class FanService extends Service {
         }
     }
 
-    /**
-     * Stop the sweep now. The fail-safe duty is written <b>first and synchronously</b>, so
-     * ABORT is instant no matter what the loop thread is doing.
-     */
+    /** Stop the sweep now. The fail-safe duty is written first and synchronously, so ABORT is instant no matter what the loop thread is doing. */
     public void abortSweep(final String reason) {
         try {
             FanIo.writeFailSafe();
@@ -1882,10 +1351,7 @@ public class FanService extends Service {
         runOnLoop(r);
     }
 
-    /**
-     * Timestamp a human observation - "the fan just became audible". The one thing only a
-     * person in the room can measure, and half the objective.
-     */
+    /** Timestamp a human observation - the one thing only a person in the room can measure. */
     public void markSweep(final String kind, final long wallMs) {
         runOnLoop(new Runnable() {
             @Override
@@ -1912,7 +1378,6 @@ public class FanService extends Service {
             FanIo.writeFailSafe();
             lastWritten = FanIo.FAIL_SAFE_DUTY;
         } catch (Throwable ignored) {
-            // nothing further to try
         }
         writeSweepReport(true);
         sweepEngine = null;
@@ -1935,8 +1400,6 @@ public class FanService extends Service {
         List<String> paths = CsvLogger.writeWhole(sinkSnapshot(), reportName, json);
         sweepFiles = paths.toArray(new String[0]);
     }
-
-    // ------------------------------------------------------------------ VERIFY
 
     /** Hold one duty in one mode until the user stops it. */
     public synchronized boolean startVerify(int duty, int rgblevel) {
@@ -1965,17 +1428,7 @@ public class FanService extends Service {
         }
     }
 
-    /**
-     * Hand the fan from the held duty to the stored curve, and count what it does.
-     *
-     * The second half of VERIFY. The first half asks a person whether a duty is acceptable;
-     * this asks the machine whether the curve that produces it will sit still, which is a
-     * question a pinned duty cannot answer because hunting only exists in a closed loop.
-     *
-     * The curve handed over is the one actually stored, not a copy or a candidate, so what
-     * is measured is what will run. The fan picks up from where it already is, so the
-     * handover itself is not a step.
-     */
+    /** Hand the fan from the held duty to the stored curve, and count what it does. The curve handed over is the one actually stored, so what is measured is what will run, and the fan picks up from where it already is. */
     public synchronized boolean beginSteadyPhase(int seconds) {
         try {
             HoldSession hs = holdSession;
@@ -2025,7 +1478,6 @@ public class FanService extends Service {
         });
     }
 
-    /** Record what the person in the room just reported about sharpness or noise. */
     public void verifyCheck(final String about, final String verdict, final long wallMs) {
         runOnLoop(new Runnable() {
             @Override
@@ -2043,7 +1495,6 @@ public class FanService extends Service {
         });
     }
 
-    /** Tell the log which pattern is on screen, so every check records what was looked at. */
     public void verifyPattern(final String pattern) {
         runOnLoop(new Runnable() {
             @Override
@@ -2065,7 +1516,6 @@ public class FanService extends Service {
             FanIo.writeFailSafe();
             lastWritten = FanIo.FAIL_SAFE_DUTY;
         } catch (Throwable ignored) {
-            // nothing further to try
         }
         writeVerifyReport(true);
         holdSession = null;
@@ -2077,7 +1527,6 @@ public class FanService extends Service {
         sweepLine = "finished: " + hs.endReason();
     }
 
-    /** Where the report actually landed, so it can be found without a shell. */
     private String filesLine() {
         try {
             String[] f = sweepFiles;
@@ -2115,20 +1564,9 @@ public class FanService extends Service {
         }
     }
 
-    // ------------------------------------------------------------------ session plumbing
-
     private long lastRgbWriteMs;
 
-    /**
-     * Hold the brightness mode the session asked for.
-     *
-     * Two things worth knowing, both of which show up in the log rather than as surprises:
-     * every {@code rgblevel} change fires the stock controller's own mode-change branch,
-     * which writes that tier's floor to {@code fan_ctrl} immediately - so the fan gets
-     * slammed to 38/42/69-ish within one 15 s poll and the 1 Hz re-assert takes it back.
-     * And {@code sc_projectorclient} keeps its own idea of the current brightness mode, so
-     * it will not know we moved this underneath it.
-     */
+    /** Hold the brightness mode the session asked for. Every {@code rgblevel} change fires the stock controller's mode-change branch, which writes that tier's floor to {@code fan_ctrl} within one 15 s poll; the 1 Hz re-assert takes it back. */
     private void assertRgbLevel(SweepEngine sw, HoldSession hs, int want, Sample s,
                                 StringBuilder note, StringBuilder ev) {
         if (!SweepPlan.validRgbLevel(want)) {
@@ -2179,7 +1617,6 @@ public class FanService extends Service {
                 trace = null;
             }
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
     }
 
@@ -2198,7 +1635,6 @@ public class FanService extends Service {
             m.uid = android.os.Process.myUid();
             m.systemVariant = m.uid == android.os.Process.SYSTEM_UID;
         } catch (Throwable ignored) {
-            // metadata only
         }
         try {
             m.appVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
@@ -2230,15 +1666,7 @@ public class FanService extends Service {
         }
     }
 
-    // ------------------------------------------------------------------ storage
-
-    /**
-     * Every removable volume root, e.g. {@code /storage/1234-5678}.
-     *
-     * Factored out of {@link #rescanSinks} because the backlog export needs the root
-     * itself: its destination deliberately sits outside every logging sink, and the
-     * volume path is also the key that stops the same stick being re-scanned every 30 s.
-     */
+    /** Every removable volume root, e.g. {@code /storage/1234-5678}. The backlog export needs the root itself, since its destination sits outside every logging sink. */
     private List<File> usbVolumeRoots() {
         List<File> roots = new ArrayList<File>();
         try {
@@ -2258,12 +1686,7 @@ public class FanService extends Service {
         return roots;
     }
 
-    /**
-     * Work out where the CSV should go. Every app-external directory the platform offers
-     * is used, which on this device means internal shared storage <i>and</i> a mounted USB
-     * volume - the app-private directory on a removable volume is writable without any
-     * permission at all, which is exactly what is needed on a machine with no adb.
-     */
+    /** Work out where the CSV should go: every app-external directory the platform offers, which on this device means internal shared storage and a mounted USB volume, and needs no permission at all. */
     private void rescanSinks() {
         List<File> dirs = new ArrayList<File>();
         try {
@@ -2278,16 +1701,11 @@ public class FanService extends Service {
         } catch (Throwable t) {
             Log.w(TAG, "getExternalFilesDirs", t);
         }
-        // Belt and braces: enumerate /storage ourselves in case a volume did not show up
-        // above. Writing into our own Android/data directory on a volume needs no
-        // permission; if the path is wrong the target is simply dropped.
         List<File> roots = usbVolumeRoots();
         for (int i = 0; i < roots.size(); i++) {
             dirs.add(new File(roots.get(i),
                     "Android/data/" + getPackageName() + "/files/fanlab"));
         }
-        // A copy somewhere a person can find without knowing about Android/data, but only
-        // if the permission was actually granted.
         try {
             if (checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE")
                     == PackageManager.PERMISSION_GRANTED) {
@@ -2297,13 +1715,11 @@ public class FanService extends Service {
                 }
             }
         } catch (Throwable ignored) {
-            // optional
         }
         // Guaranteed sink, so the row counter is never zero even if everything else fails.
         try {
             dirs.add(new File(getFilesDir(), "fanlab"));
         } catch (Throwable ignored) {
-            // nothing useful to do
         }
         try {
             synchronized (sinkDirs) {
@@ -2313,7 +1729,6 @@ public class FanService extends Service {
                 volumeRoots.addAll(roots);
             }
         } catch (Throwable ignored) {
-            // the list below is still usable
         }
         try {
             if (csv != null) {
@@ -2324,8 +1739,6 @@ public class FanService extends Service {
         } catch (Throwable t) {
             Log.w(TAG, "setDirs", t);
         }
-        // The sweep trace and report go to exactly the same places, which is what makes
-        // them collectable off a USB stick with no shell.
         try {
             if (trace != null) {
                 trace.setDirs(dirs);
@@ -2333,8 +1746,6 @@ public class FanService extends Service {
         } catch (Throwable t) {
             Log.w(TAG, "setDirs trace", t);
         }
-        // A stick that has just appeared is the only chance to collect the backlog, so
-        // take it here rather than waiting to be asked. Nothing is copied on this thread.
         try {
             exportBacklogAsync(false);
         } catch (Throwable t) {
@@ -2342,50 +1753,27 @@ public class FanService extends Service {
         }
     }
 
-    // ------------------------------------------------------------------ backlog export
-
-    /**
-     * Where an export puts its files on a volume.
-     *
-     * Never a {@link CsvLogger} sink. {@code CsvLogger.prune()} deletes everything
-     * matching {@code fanlab-*.csv} in a target's own directory, so an export written
-     * into a sink would be deleted as if it were a rolled file. This is also the path the
-     * manual recipe in the handover notes already uses.
-     */
+    /** Where an export puts its files on a volume. Never a {@link CsvLogger} sink: {@code prune()} deletes everything matching {@code fanlab-*.csv} in a target's own directory. */
     public static final String EXPORT_DIR = "FanLab-export";
 
     /** Names the boot an export last ran for, so a stick left in is not re-scanned. */
     private static final String EXPORT_MARK = ".fanlab-volume";
 
-    /** One line describing the last export, for the screen and for adb. */
     public static volatile String exportStatus = "no export yet";
-    /** Destinations created or appended to by the last export. */
     public static volatile int exportFiles;
-    /** Rows the last export copied. */
     public static volatile long exportRows;
-    /** The directories the last export wrote into. */
     public static volatile String[] exportDirs = new String[0];
-    /** True while a copy is in progress, so the UI can say so and not start a second. */
     public static volatile boolean exporting;
 
-    /** Volume paths already offered the backlog since this service started. */
     private final Set<String> exportedVolumes = new HashSet<String>();
     private final List<File> volumeRoots = new ArrayList<File>();
 
     /**
-     * Copy the log backlog to every mounted volume, on a thread of its own.
+     * Copy the log backlog to every mounted volume, on a thread of its own: the callers are the
+     * control loop and the UI thread, and a cooling decision cannot wait behind a file copy.
      *
-     * <h3>Why it cannot run here</h3>
-     * The callers are {@link #rescanSinks} on the {@code fanlab-loop} thread -- the same
-     * thread that reads the temperature and writes {@code fan_ctrl} every second -- and
-     * the UI thread. Copying up to 28 MB onto FAT32 over USB takes seconds. A cooling
-     * decision cannot wait behind a file copy, which is the same reason the DLPC read
-     * sits after the write in {@link #tick}. So the only work done on the caller's thread
-     * is picking the volumes and starting a thread; every file touched is touched there.
-     *
-     * @param force copy even to a volume already offered the backlog this boot, and say
-     *              something either way. That is what the manual trigger is for; the
-     *              automatic path stays quiet when there is nothing to do.
+     * @param force copy even to a volume already offered the backlog this boot, and say something
+     *              either way.
      */
     public void exportBacklogAsync(final boolean force) {
         List<File> picked = new ArrayList<File>();
@@ -2398,8 +1786,6 @@ public class FanService extends Service {
                     }
                 }
                 if (picked.isEmpty()) {
-                    // With force, picked is every root, so this is only reached when
-                    // nothing is mounted at all.
                     if (force) {
                         exportStatus = "no USB volume is mounted";
                     }
@@ -2417,7 +1803,6 @@ public class FanService extends Service {
             Log.w(TAG, "exportBacklogAsync", t);
             return;
         }
-        // From here the flag is set, so every exit has to clear it.
         final List<File> roots = picked;
         try {
             final List<File> sinks = sinkSnapshot();
@@ -2449,15 +1834,12 @@ public class FanService extends Service {
             android.os.Process.setThreadPriority(
                     android.os.Process.THREAD_PRIORITY_BACKGROUND);
         } catch (Throwable ignored) {
-            // a priority is an optimisation, not a requirement
         }
         int files = 0;
         long rows = 0;
         int failures = 0;
         List<String> where = new ArrayList<String>();
         try {
-            // Every mounted root, not just the ones being written to: a stick already
-            // done this boot is still no place to read the backlog from.
             List<File> sources = exportSources(sinks, rootSnapshot());
             if (sources.isEmpty()) {
                 exportStatus = "no logs to copy yet";
@@ -2505,16 +1887,7 @@ public class FanService extends Service {
         }
     }
 
-    /**
-     * The sink to read the backlog from -- one of them, not both.
-     *
-     * The two internal sinks are identical copies by design. Keying a destination on the
-     * first row's {@code epoch_ms} collapses them onto one file and the watermark makes
-     * the second a no-op, but there is no reason to read 28 MB twice to prove it.
-     * {@code /sdcard/FanLab} first because it is the copy a person can find, then the
-     * app-private one, which survives clearing the other. A sink on a removable volume is
-     * never a source: the stick's own live log is already on the stick.
-     */
+    /** The sink to read the backlog from - one of them, not both, since the two internal sinks are identical copies. {@code /sdcard/FanLab} first, because it is the copy a person can find; a sink on a removable volume is never a source. */
     private List<File> exportSources(List<File> sinks, List<File> roots) {
         List<File> candidates = new ArrayList<File>();
         try {
@@ -2523,7 +1896,6 @@ public class FanService extends Service {
                 candidates.add(new File(pub, "FanLab"));
             }
         } catch (Throwable ignored) {
-            // the sinks below cover it
         }
         for (int i = 0; i < sinks.size(); i++) {
             File d = sinks.get(i);
@@ -2549,7 +1921,6 @@ public class FanService extends Service {
                 }
             }
         } catch (Throwable ignored) {
-            // treat an unanswerable path as not removable
         }
         return false;
     }
@@ -2569,20 +1940,11 @@ public class FanService extends Service {
                 }
             }
         } catch (Throwable ignored) {
-            // an unlistable directory is simply not a source
         }
         return out;
     }
 
-    /**
-     * Has this volume already been offered the backlog on this boot?
-     *
-     * The marker holds the boot's wall-clock instant rather than a flag, because both
-     * halves matter: a stick left plugged in must not be re-scanned every 30 s, and a
-     * stick brought back tomorrow must be, or "additive" would mean "once, ever". Service
-     * restarts inside one boot land on the same stamp, which is what makes the in-memory
-     * key a convenience rather than the thing being relied on.
-     */
+    /** Has this volume already been offered the backlog on this boot? The marker holds the boot's wall-clock instant, so a stick left plugged in is not re-scanned every 30 s and one brought back tomorrow is. */
     private boolean markedThisBoot(File destDir) {
         java.io.BufferedReader r = null;
         try {
@@ -2593,8 +1955,6 @@ public class FanService extends Service {
             r = new java.io.BufferedReader(new java.io.InputStreamReader(
                     new java.io.FileInputStream(m), "UTF-8"));
             long was = Long.parseLong(r.readLine().trim());
-            // Provenance.sameBoot for the same reason the power-on capture uses it: the
-            // question and its tolerance for a post-boot clock correction are identical.
             return Provenance.sameBoot(was, bootWallMs());
         } catch (Throwable e) {
             return false;
@@ -2603,7 +1963,6 @@ public class FanService extends Service {
                 try {
                     r.close();
                 } catch (Throwable ignored) {
-                    // nothing useful to do
                 }
             }
         }
@@ -2631,8 +1990,6 @@ public class FanService extends Service {
         return System.currentTimeMillis() - SystemClock.elapsedRealtime();
     }
 
-    // ------------------------------------------------------------------ notification
-
     private void createChannel() {
         if (Build.VERSION.SDK_INT < 26 || notifications == null) {
             return;
@@ -2655,7 +2012,6 @@ public class FanService extends Service {
                 return id;
             }
         } catch (Throwable ignored) {
-            // fall through
         }
         return android.R.drawable.ic_menu_info_details;
     }
@@ -2678,7 +2034,6 @@ public class FanService extends Service {
             b.setContentIntent(PendingIntent.getActivity(this, 0, i,
                     PendingIntent.FLAG_UPDATE_CURRENT));
         } catch (Throwable ignored) {
-            // a notification without a tap target is still fine
         }
         return b.build();
     }
@@ -2700,16 +2055,12 @@ public class FanService extends Service {
         }
     }
 
-    // ------------------------------------------------------------------ helpers
-
     /** Start the service if it is not running, and tell it to re-read the preferences. */
     public static void poke(Context c, String action) {
         try {
             String a = action == null ? ACTION_REFRESH : action;
             FanService s = instance;
             if (s != null && ACTION_REFRESH.equals(a)) {
-                // Already running: no need to go through the activity manager, which the
-                // slider would otherwise hit on every D-pad repeat.
                 s.onPrefsChanged();
                 return;
             }

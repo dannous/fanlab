@@ -2,10 +2,6 @@
 """Copy a zip/APK and add files to it, preserving every existing entry verbatim.
 
 Usage: apkadd.py <src.apk> <dst.apk> <name-in-apk>=<local-path> [...]
-
-Used to drop classes.dex into the resource-only APK that aapt2 link produces. Compression
-type, timestamps and external attributes of the copied entries are preserved so that the
-result is byte-for-byte the same archive plus the new members; zipalign runs afterwards.
 """
 import os
 import sys

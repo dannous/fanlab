@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
 """Check every android.* API a classes.dex references against a minimum API level.
 
-Compiling against a newer android.jar than the device runs is normal practice, but it
-means the compiler will happily accept a class or method that does not exist on the
-target. On this project the target is Android 9 / API 28 with no way to test on hardware
-first, so the check has to be static.
-
-Method: parse the dex's type_ids / field_ids / method_ids tables (no disassembly needed -
-those tables list every symbol the code can possibly reference), then look each one up in
-the SDK's own data/api-versions.xml, which records the API level each class, method and
-field was added in and, where applicable, removed in.
-
 Usage: dexapi.py <classes.dex> <api-versions.xml> <min-api>
 
 Exit code 0 if everything referenced exists at <min-api>, 1 otherwise.
@@ -19,8 +9,8 @@ import struct
 import sys
 import xml.etree.ElementTree as ET
 
-# Packages that ship as part of the Android platform. java/* and javax/* on Android come
-# from libcore, which api-versions.xml also covers.
+# Packages that ship as part of the Android platform (java/* and javax/* come from
+# libcore, which api-versions.xml also covers).
 PLATFORM_PREFIXES = ("android/", "dalvik/", "java/", "javax/", "org/apache/http/",
                      "org/json/", "org/w3c/dom/", "org/xml/sax/", "org/xmlpull/")
 
@@ -120,7 +110,6 @@ def load_api(path):
             fields[f.get("name")] = (lvl(f.get("since"), csince),
                                      lvl(f.get("removed"), 0))
         out[name] = (csince, cremoved, methods, fields, cls)
-    # resolve inherited members lazily via the extends/implements chain
     return out, tree
 
 

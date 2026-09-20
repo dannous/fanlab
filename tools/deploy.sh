@@ -6,19 +6,9 @@
 #   ./deploy.sh apply  <curve> [pkg]   load the curve and take over
 #   ./deploy.sh revert [pkg]           give the fan back to the stock controller
 #
-# The order of operations is the whole point of this script, in both directions.
-#
-# Taking over:  load the curve -> start the app driving -> only then disable stock.
-#   The reverse order leaves a window with the stock ladder off and nothing driving the
-#   fan. That window is the one documented way to leave this projector unmanaged, and it
-#   survives a reboot, so it is worth a script to never get wrong.
-#
-# Handing back: re-enable stock -> then stop the app.
-#   Same reasoning mirrored. Stock re-imposes its own duty within one 15 s poll.
-#
-# Verification is not optional here: every step is read back, and `apply` watches the
-# node for long enough to prove the app is really driving it rather than merely claiming
-# to. A silent failure would look exactly like success.
+# Order is safety-critical in both directions. Taking over: load the curve -> start the app
+# driving -> only then disable the stock ladder. Handing back: re-enable stock -> then stop
+# the app. The reverse order leaves the fan unmanaged, and that state survives a reboot.
 
 set -u
 export MSYS_NO_PATHCONV=1
@@ -82,9 +72,8 @@ apply() {
     local curve="$1"; local pkg="${2:-$DEFAULT_PKG}"
     installed "$pkg" || die "$pkg is not installed"
 
-    # Refuse to start a second driver. Two controllers fighting over one node is worse
-    # than either alone, and the symptom (a duty that will not stay put) looks exactly
-    # like the bug we are here to fix.
+    # Refuse to start a second driver: two controllers fighting over one node is worse
+    # than either alone.
     local other
     for other in com.daleygames.fanlab com.daleygames.fanlab.system; do
         [ "$other" = "$pkg" ] && continue
@@ -108,10 +97,8 @@ apply() {
     [ "$(field "$out" mode)" = "CURVE" ] || die "mode did not stick: $out"
 
     echo "3/4 waiting for the service to disable the stock ladder itself"
-    # Deliberately NOT setprop'd from here. FanService owns this switch, and letting it
-    # prove it can is the whole point: if the coupling is broken, the revert path is
-    # broken too, and it is better to find that out now than after the fan has been left
-    # unmanaged. Forcing the value here would mask exactly that failure.
+    # Deliberately NOT setprop'd from here. FanService owns this switch, and proving it
+    # can disable the ladder is what proves it can re-arm it on revert.
     local k=""
     local i=0
     while [ "$i" -lt 40 ]; do
@@ -133,11 +120,8 @@ apply() {
 
     echo "4/4 verifying the app is really driving the node"
     # Write a value the app did not choose and watch it be corrected: that proves the loop
-    # is live, which a static reading cannot. The probe must be far BELOW target -- the app
-    # takes fail-safe 83 on startup then slews down 1 point per 8 s, so a value near 80 is
-    # indistinguishable from the ramp and proves nothing. A low value trips FanIo's
-    # unconditional "never leave the fan lower than intended" rule instead, which applies
-    # whatever the slew limiter is doing.
+    # is live. The probe must be far BELOW target -- the app takes fail-safe 83 on startup
+    # then slews down 1 point per 8 s, so a value near 80 is indistinguishable from the ramp.
     local before; before=$("$ADB" shell "cat /sys/class/fan_int/fan_ctrl" | tr -d '\r')
     local probe=20
     "$ADB" shell "echo $probe > /sys/class/fan_int/fan_ctrl" >/dev/null
@@ -158,11 +142,9 @@ apply() {
 revert() {
     local pkg="${1:-$DEFAULT_PKG}"
 
-    # Order matters, and it is the opposite of what it used to be. FanService now OWNS
-    # the kill switch: while it is in a driving mode it re-asserts 0 on a timer. Setting
-    # the property first and stopping the app second therefore races -- the service puts
-    # it straight back, and the revert silently does nothing. Stop the driving first, and
-    # the service hands the ladder back by itself.
+    # Order matters: FanService re-asserts the kill switch on a timer while in a driving
+    # mode, so setting the property first and stopping the app second would race and
+    # silently do nothing. Stop the driving first and the service hands the ladder back.
     echo "1/3 stopping the app driving, and clearing autostart"
     for p in com.daleygames.fanlab com.daleygames.fanlab.system; do
         installed "$p" && cfg "$p" "--ei mode $MODE_OFF --ez autostart false" >/dev/null
@@ -178,8 +160,8 @@ revert() {
         i=$((i + 1))
     done
     if [ "$k" != "1" ]; then
-        # It should have done it itself. Force it -- an unmanaged fan is the one state
-        # worth being blunt about -- but say so, because it means the coupling is broken.
+        # An unmanaged fan is worth being blunt about: force it, but say so -- it means
+        # the coupling is broken.
         echo "    the service did not re-arm it in ${i}s; forcing (its coupling may be broken)"
         "$ADB" shell "setprop $KILL 1" >/dev/null
         sleep 2

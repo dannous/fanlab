@@ -9,30 +9,7 @@ import android.graphics.Paint;
 import android.graphics.Shader;
 import android.view.View;
 
-/**
- * The test apparatus: a full-screen field, drawn by the app.
- *
- * <h3>White, for AUTO</h3>
- * 100 % white for the whole run. Two reasons. It is the worst thermal case, so any curve
- * derived from it is conservative. And it is reproducible - every owner who runs AUTO
- * produces comparable data, whereas a varying picture might not: the DLPC has a
- * content-adaptive dimming feature (CAIC) whose job is to lower LED current on dark
- * content. On this board it cannot -- measured, and see {@link PicoReg} -- but a fixed
- * white field costs nothing and does not rest on that.
- *
- * <h3>A fine pattern, for VERIFY</h3>
- * Philips' own stated reason for raising the Presentation fan speed was that "the metal
- * inside was shapeshifting by few mm and the image was getting unclear" - differential
- * thermal expansion in an ultra-short-throw optical path. That failure mode is visible,
- * and it is what the whole tuning criterion is actually phrased against. So VERIFY can
- * swap the white field for a <b>one-pixel checkerboard</b> or a <b>one-pixel vertical
- * grating</b>, both of which sit exactly at the display's Nyquist limit: they are crisp
- * when the optics are in focus and turn to flat grey the moment they are not.
- *
- * Both patterns are drawn by tiling a two-pixel bitmap with filtering and anti-aliasing
- * off, so one bitmap pixel is one display pixel with no interpolation anywhere. A scaled
- * or filtered pattern would be a test of the scaler, not of the projector.
- */
+/** The test apparatus: a full-screen white field, or a one-pixel checkerboard or grating drawn at the display's Nyquist limit. */
 public class FieldView extends View {
 
     public static final int PATTERN_WHITE = 0;
@@ -90,13 +67,9 @@ public class FieldView extends View {
             canvas.drawRect(0, 0, getWidth(), getHeight(), paint);
             paint.setShader(null);
         } catch (Throwable t) {
-            // The field is the apparatus; if the pattern cannot be drawn, fall back to
-            // white rather than leaving a black screen, which would change the thermal
-            // load without saying so.
             try {
                 canvas.drawColor(Color.WHITE);
             } catch (Throwable ignored) {
-                // nothing left to do
             }
         }
     }

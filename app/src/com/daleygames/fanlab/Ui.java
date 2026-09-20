@@ -10,15 +10,7 @@ import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/**
- * The whole look of the app, in one place.
- *
- * There is no AndroidX, no Material and no layout XML here on purpose: the device is an
- * Android 9 TV with no dependency resolution available at build time, so the app uses
- * plain framework views built in code. Everything is sized for a projector screen viewed
- * from a sofa, and everything interactive is focusable so the IR remote's D-pad can
- * reach it. Nothing relies on touch.
- */
+/** The whole look of the app: plain framework views, sized for a projector and reachable by D-pad. */
 public final class Ui {
 
     public static final int BG = 0xFF101014;
@@ -83,7 +75,6 @@ public final class Ui {
         return p;
     }
 
-    /** Rounded panel background, used for the big readout tiles. */
     public static GradientDrawable panel(Context c, int fill) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(fill);
@@ -91,10 +82,6 @@ public final class Ui {
         return g;
     }
 
-    /**
-     * A big number with a small caption underneath. This is the telemetry: it has to be
-     * readable from across a room, so the value is 34sp and the caption 12sp.
-     */
     public static final class Tile extends LinearLayout {
         private final TextView value;
         private final TextView caption;
@@ -128,7 +115,6 @@ public final class Ui {
         }
     }
 
-    /** Lay tiles out in a grid n-across. */
     public static void grid(Context c, LinearLayout parent, View[] tiles, int perRow) {
         LinearLayout current = null;
         for (int i = 0; i < tiles.length; i++) {

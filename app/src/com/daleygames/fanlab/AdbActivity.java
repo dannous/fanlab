@@ -12,24 +12,10 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/**
- * Quarantined: switch the USB gadget configuration so adbd runs.
- *
- * This is not a feature of the fan app. It is here because the same platform signature
- * that lets the app set persist.sys.* also lets it set sys.usb.config, and a shell on
- * this device is otherwise unobtainable. It is deliberately buried behind two screens
- * and a confirmation, and the revert is given exactly as much prominence as the enable.
- *
- * Why "ptp,adb" and not "adb": init.usb.configfs.rc starts adbd for ptp,adb, but
- * init.amlogic.usb.rc only flips the host/device mux (usb_sw) for mtp, adb, mtp,adb and
- * accessory,adb. With ptp,adb the socket therefore stays in host mode — the USB stick
- * keeps working — while adbd runs and can be reached over the network. The ptp gadget
- * function is never created on this build, so the gadget itself fails quietly.
- *
- * Nothing here is verified on hardware.
- */
+/** Quarantined: switch the USB gadget configuration so adbd runs. Nothing here is verified on hardware. */
 public class AdbActivity extends Activity implements StepRow.Listener {
 
+    // "ptp,adb" rather than "adb": it starts adbd while leaving the USB socket in host mode, so a stick keeps working.
     private static final String CONFIG_ADB = "ptp,adb";
     private static final String CONFIG_STOCK = "mtp";
 

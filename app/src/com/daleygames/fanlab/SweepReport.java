@@ -2,39 +2,13 @@ package com.daleygames.fanlab;
 
 import java.util.List;
 
-/**
- * The output. This, and not anything on screen, is the deliverable.
- *
- * Two files per run, written to app storage <i>and</i> mirrored to any mounted USB volume
- * so they can be collected with no shell and no adb:
- * <ul>
- *   <li>{@code trace_<epoch>.csv} - the full 1 Hz record: every column the telemetry
- *       service already logs, plus the commanded duty, the step index, the phase, the
- *       brightness mode, an event column for markers, and the DLPC's own temperature on
- *       the rows where one was taken. <b>The raw trace is the real deliverable</b>; if the
- *       on-device fit turns out to be poor, a better one can always be done offline.</li>
- *   <li>{@code sweep_<epoch>.json} - metadata and the per-step summary, including the
- *       fitted {@code T_inf}, {@code tau} and residual for each step.</li>
- * </ul>
- *
- * Everything is designed for offline analysis, not for reading on screen. The user presses
- * one button, leaves it running, and hands the files back.
- *
- * Pure Java.
- */
+/** The output files: a 1 Hz trace CSV and a JSON summary, written to app storage and mirrored to any mounted USB volume. */
 public final class SweepReport {
 
     /** Format version. Bump it if a column moves; the analysis reads this first. */
     public static final String FORMAT = "fanlab-sweep-1";
 
-    /**
-     * The trace columns. The first thirteen are exactly the ordinary telemetry columns, so
-     * a sweep trace can be read by anything that already reads a FanLab CSV.
-     *
-     * {@code dlpc_*} are populated only on the row where the reading was taken - once per
-     * step - and are blank elsewhere. They are deliberately not carried forward: a stale
-     * value repeated down a column is indistinguishable from a fresh one.
-     */
+    /** Trace columns: the ordinary telemetry columns first, then the sweep's own. The dlpc_* columns are filled only on the row a reading was taken. */
     public static final String TRACE_HEADER = CsvLogger.HEADER
             + ",commanded_duty,step_index,phase,mode_rgblevel,mode_name,event"
             + ",dlpc_temp_c,dlpc_raw,dlpc_status";
@@ -60,13 +34,7 @@ public final class SweepReport {
     private SweepReport() {
     }
 
-    // ------------------------------------------------------------------ trace
-
-    /**
-     * One 1 Hz trace row.
-     *
-     * @param dlpc a reading taken on this tick, or null on the (many) rows where none was.
-     */
+    /** One 1 Hz trace row; {@code dlpc} is null on the many rows where no reading was taken. */
     public static String traceRow(Sample s, int commandedDuty, int stepIndex, String phase,
                                   int rgblevel, String event, PicoReg.Reading dlpc) {
         StringBuilder sb = new StringBuilder(220);
@@ -86,8 +54,6 @@ public final class SweepReport {
         }
         return sb.toString();
     }
-
-    // ------------------------------------------------------------------ AUTO report
 
     public static String sweepJson(SweepEngine e, Meta m, long endWallMs, long durationSec) {
         Json j = new Json();
@@ -161,8 +127,6 @@ public final class SweepReport {
         return j.finish();
     }
 
-    // ------------------------------------------------------------------ VERIFY report
-
     public static String verifyJson(HoldSession h, Meta m, long endWallMs, long durationSec) {
         Json j = new Json();
         j.beginObject();
@@ -182,8 +146,6 @@ public final class SweepReport {
         j.put("duty_floor", SweepPlan.DUTY_FLOOR);
         j.put("stock_controller_disabled", false);
 
-        // The closed-loop half. Absent when the phase was never started, so a reader can
-        // tell "the fan sat still" from "nobody asked".
         HoldSession.Steady st = h == null ? null : h.steady();
         j.put("steady_run", st != null);
         if (st != null) {
@@ -240,8 +202,6 @@ public final class SweepReport {
         return j.finish();
     }
 
-    // ------------------------------------------------------------------ shared
-
     private static void header(Json j, Meta m, String kind) {
         Meta meta = m == null ? new Meta() : m;
         j.put("format", FORMAT);
@@ -265,10 +225,7 @@ public final class SweepReport {
         j.put("report_json", meta.reportFile);
     }
 
-    /**
-     * The DLPC temperature block. If it could not be read, this says so at the top level
-     * and in plain words, rather than the column quietly being absent.
-     */
+    /** The DLPC temperature block; says in words when it could not be read, rather than going quietly absent. */
     private static void dlpcSummary(Json j, SweepEngine e) {
         int attempts = 0;
         int successes = 0;
@@ -341,8 +298,6 @@ public final class SweepReport {
         }
         j.endArray();
     }
-
-    // ------------------------------------------------------------------ file names
 
     public static String traceName(long epoch, boolean verify) {
         return (verify ? "verify_trace_" : "trace_") + epoch + ".csv";

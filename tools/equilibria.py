@@ -1,27 +1,15 @@
 """Find ALL the equilibria of a curve against the plant, not just one.
 
-`solve_curve.py` iterates duty <- curve(plant(duty)) to a fixed point. That is fine for a
-gentle curve and quietly wrong for a steep one: iteration converges to whichever
-equilibrium it happens to fall into, reports it as "the" answer, and cannot see a second
-one or notice that there is none.
-
-That matters here because the failure this whole project exists to fix is a limit cycle.
-A curve steep enough to overshoot its own shelf can leave the system with two stable
-points and nowhere to rest between them, and the fan will hunt between them forever --
-the stock bug wearing different clothes.
-
-So: scan duty across the whole range, evaluate  g(d) = curve(ambient + rise(d)) - d,  and
-report every sign change. One crossing is what a well-behaved curve looks like. Zero or
-two-plus is a design error.
+Scans duty across the range, evaluates  g(d) = curve(ambient + rise(d)) - d,  and reports
+every sign change. One crossing is what a well-behaved curve looks like; zero or two-plus
+is a design error, and the fan hunts.
 
     python equilibria.py --curve "v1,..." [--ambient 24,27,30]
                          [--drive Presentation=90,Normal=70,Eco=50,SuperEco=30]
                          [--rise-offset Normal=2.5]
 
 The plant flags are solve_curve.plant_args: --drive scales a mode's column for a raised
-LED drive (an inference from the fitted rise-vs-drive line, not a measurement), and
---rise-offset adds to a column first, which is how Normal's known-low table column is
-brought up to the field log.
+LED drive, and --rise-offset adds to a column first.
 """
 import sys
 from solve_curve import (PLANT, MODES, PROFILE_OF, parse_curve, duty_at, rise_at, audible,
@@ -43,17 +31,14 @@ def crossings(cfg, mode, ambient, lo=25.0, hi=83.0, step=0.05):
         rise, _ = rise_at(mode, d)
         g = duty_at(cfg, profile, ambient + rise) - d
         if (prev_g <= 0.0 < g) or (prev_g >= 0.0 > g) or g == 0.0:
-            # linear interpolation onto the crossing
             span = g - prev_g
             root = prev_d if abs(span) < 1e-12 else prev_d + (0.0 - prev_g) * (d - prev_d) / span
             r, extrap = rise_at(mode, root)
-            # g decreasing through zero => a perturbation is pushed back => stable
             out.append({"duty": root, "temp": ambient + r,
                         "stable": span < 0.0, "extrapolated": extrap})
         prev_d, prev_g = d, g
         d += step
-    # A curve pinned at its floor for the whole range never crosses; the floor is then
-    # the operating point and the plant simply sits wherever it lands.
+    # A curve pinned at its floor for the whole range never crosses.
     if not out:
         r, extrap = rise_at(mode, cfg["min"])
         if r is not None and duty_at(cfg, profile, ambient + r) <= cfg["min"]:
@@ -63,22 +48,12 @@ def crossings(cfg, mode, ambient, lo=25.0, hi=83.0, step=0.05):
 
 
 def ramp_check(cfg):
-    """The constraint that actually bounds curve steepness -- ramp width vs hysteresis.
+    """Ramp width vs hysteresis -- the constraint that actually bounds curve steepness.
 
-    Curve steepness is not bounded by loop gain. A slew-limited controller on a lagged
-    plant does not oscillate merely because the gain exceeds one, and driving the real
-    controller against the measured plant produces no hunting below about 19 duty points
-    per C -- with transport delay to 180 s, sampling to 60 s, plant poles from 5 to 800 s,
-    or ADC quantisation added.
-
-    What does break is geometric, and nothing else checks it: the hysteresis band is
-    applied to the *input temperature*, so a rising segment narrower than the deadband has
-    no resting state that fits inside it. The held temperature can never settle within the
-    segment, and the output swings between its endpoints. The constraint is therefore
-
-        (width of any rising segment, in C)  >>  hysteresisC
-
-    A ratio below about 2 is dangerous; below 1 it is guaranteed to misbehave.
+    The hysteresis band is applied to the *input temperature*, so a rising segment
+    narrower than the deadband has no resting state that fits inside it and the output
+    swings between its endpoints. Ratio (segment width in C / hysteresisC) below about 2
+    is dangerous; below 1 it is guaranteed to misbehave.
     """
     out = []
     t, h = cfg["temps"], cfg["hyst"]
@@ -90,10 +65,8 @@ def ramp_check(cfg):
                 continue
             width = t[i] - t[i - 1]
             if width <= 0:
-                # CurveConfig.sanitise() forces the knees strictly ascending, so a real
-                # config cannot get here -- but a curve being SEARCHED has not been
-                # sanitised yet, and a zero-width segment is an infinitely steep ramp
-                # rather than a division to crash on. Report it as unusable.
+                # A curve being SEARCHED has not been sanitised yet, so a zero-width
+                # segment is an infinitely steep ramp rather than a division to crash on.
                 out.append({"profile": p, "lo": t[i - 1], "hi": t[i],
                             "slope": float("inf"), "ratio": 0.0})
                 continue

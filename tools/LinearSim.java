@@ -3,33 +3,12 @@ import com.daleygames.fanlab.FanLinear;
 import com.daleygames.fanlab.LinearConfig;
 
 /**
- * Search for the best form of LINEAR, against the measured two-pole plant.
+ * Search for the best form of LINEAR against the measured two-pole plant, then hand the
+ * winner to hardware for confirmation.
  *
- * <h3>Why this exists and what it is allowed to conclude</h3>
- * Hardware settles in ten to thirty minutes per variant, so ranking a dozen designs on the
- * machine is a day's work. This ranks them in seconds and hands the winner to hardware for
- * confirmation. That is only legitimate if the simulator is honest, and this project has
- * been burned once already: a controller simulator built on a time constant fitted from
- * hold data said 491 s where a bracketed step test measured 115 s, and a day of conclusions
- * went with it.
- *
- * So there are two guard rails:
- * <ol>
- *   <li><b>The baseline variant calls the real {@link FanLinear}</b>, not a paraphrase of
- *       it, and every other variant is checked to agree with it tick-for-tick where their
- *       logic is supposed to be identical. A paraphrase that has drifted from the shipping
- *       controller cannot rank anything.</li>
- *   <li><b>The plant is validated against a real trace before any ranking is believed.</b>
- *       On 2026-09-07 the seeded controller was watched on hardware climbing from duty 38
- *       to 53 in about 80 seconds and overshooting its equilibrium; the model has to
- *       reproduce that before its opinion about anything else is worth having.</li>
- * </ol>
- *
- * <h3>The plant</h3>
- * Two poles, per the bracketed step test of 2026-09-07: a fast one near 120 s carrying most
- * of the amplitude and a slow chassis pole near 500 s carrying the rest. Sensor noise is the
- * measured 0.078 C sample-to-sample standard deviation, which matters because one candidate
- * decides on a temperature trend and a trend detector has to beat its own noise.
+ * The baseline variant calls the real {@link FanLinear} rather than a paraphrase, and every
+ * other variant is checked against it tick-for-tick where their logic should be identical;
+ * the plant is validated against a recorded hardware trace before any ranking is believed.
  *
  *   javac -cp <app/build/test> -d <out> LinearSim.java
  *   java  -cp "<app/build/test>;<out>" LinearSim
@@ -73,8 +52,6 @@ public final class LinearSim {
         return (lo + hi) / 2;
     }
 
-    // ------------------------------------------------------------------ the variants
-
     interface Ctl {
         String name();
         void start(LinearConfig cfg, CurveConfig curve, int seedDuty, double celsius);
@@ -108,17 +85,13 @@ public final class LinearSim {
         return c;
     }
 
-    /**
-     * A reimplementation of the shipping walk, so variants can be built on it. Checked
-     * against {@link Real} tick-for-tick before anything is ranked.
-     */
+    /** A reimplementation of the shipping walk, checked against {@link Real} tick-for-tick. */
     static class Walk implements Ctl {
         int duty = -1;
         long lastStep;
         boolean seedPending;
         CurveConfig curve;
         final boolean seed;
-        // variant knobs
         long attackMs = 5000, decayNearMs = 60000, decayFarMs = 10000;
         double nearC = 1.0;
         boolean antiWindup = false;
@@ -140,13 +113,8 @@ public final class LinearSim {
 
         /**
          * Least-squares slope over the trend window, degrees per second; NaN until full.
-         *
-         * A two-point difference was tried first and is wrong: its noise is
-         * NOISE_SD*sqrt(2)/window, which for a 60 s window is 0.0018 C/s, and the gate
-         * below then fires on noise as often as on signal. Randomly skipping steps also
-         * suppresses windup, so that version flattered itself. A least-squares slope over
-         * N points spanning T seconds has noise NOISE_SD*sqrt(12/(N*T*T)) -- 0.00058 C/s
-         * here, three times smaller -- and is what the gate is now built on.
+         * Its noise is NOISE_SD*sqrt(12/(N*T*T)), which is what {@link #trendNoise} sizes
+         * the gate against.
          */
         double trend() {
             if (histN < trendWindow + 1) return Double.NaN;
@@ -187,9 +155,8 @@ public final class LinearSim {
                 boolean act = true;
                 if (antiWindup) {
                     double d = trend();
-                    // Do not add fan while the light engine is already coming down, and do
-                    // not remove it while it is still climbing. The threshold is set well
-                    // above the trend window's own noise floor.
+                    // Do not add fan while the light engine is already coming down, nor
+                    // remove it while it is still climbing, unless the trend beats its noise.
                     if (!Double.isNaN(d)) {
                         double fl = trendNoise();
                         if (rising && d < -fl) act = false;
@@ -246,8 +213,6 @@ public final class LinearSim {
         }
     }
 
-    // ------------------------------------------------------------------ the run
-
     static final class Result {
         int peak, settledLo, settledHi, maxTick;
         double settledMeanDuty, settledMeanTemp, reachSec, peakTemp, secsOver50;
@@ -299,7 +264,6 @@ public final class LinearSim {
         LinearConfig cfg = new LinearConfig();
         cfg.sanitise();
 
-        // ---- guard rail 1: the paraphrase must match the shipping controller -----------
         System.out.println("== guard rail 1: does the paraphrase match the real FanLinear?");
         int mismatch = 0;
         for (double amb : new double[]{22, 25, 27, 30}) {
@@ -326,7 +290,6 @@ public final class LinearSim {
         System.out.printf("   ticks where paraphrase and shipping controller disagree: %d%n%n",
                 mismatch);
 
-        // ---- guard rail 2: reproduce the hardware overshoot of 2026-09-07 -------------
         System.out.println("== guard rail 2: reproduce the observed hardware overshoot");
         System.out.println("   hardware, 17:33-17:35: seeded to 38, climbed to 53 in ~80 s,");
         System.out.println("   true equilibrium about 45.");
@@ -337,7 +300,6 @@ public final class LinearSim {
         System.out.printf("   true duty holding %.1f C at this ambient: %.1f%n%n",
                 cfg.ceilingC, dutyHolding(ambObs, cfg.ceilingC));
 
-        // ---- the sweep ---------------------------------------------------------------
         Walk aw = new Walk("C  seed + anti-windup (30 s trend)", true);
         aw.antiWindup = true;
         Walk awNo = new Walk("D  anti-windup, no seed", false);
@@ -369,7 +331,6 @@ public final class LinearSim {
             }
         }
 
-        // ---- parameter sweep: what attack rate and trend window are actually best? ----
         System.out.println();
         System.out.println("== parameter sweep, judged at 30 C where the windup shows");
         System.out.println("   'over50' is seconds spent above duty 50 -- audible time.");
@@ -402,7 +363,6 @@ public final class LinearSim {
             System.out.println("     " + ranked.get(i));
         }
 
-        // ---- robustness: the clamp is tuned to one condition, so sweep the room -----
         System.out.println();
         System.out.println("== robustness across the room, which is where a tuned clamp breaks");
         System.out.printf("   %-32s %6s %6s %6s %8s %9s %s%n",
@@ -435,7 +395,6 @@ public final class LinearSim {
             System.out.printf("   %-32s        (true answer at this room: %.1f %%)%n", "", ideal2);
         }
 
-        // ---- the settled swing is the decay interval's job, so sweep that -----------
         System.out.println();
         System.out.println("== settled swing vs decay interval, with anti-windup 60 s on");
         System.out.printf("   %-12s %6s %6s %8s %9s %8s%n",
@@ -453,7 +412,6 @@ public final class LinearSim {
             }
         }
 
-        // ---- the 2x2 that actually matters, every arm the shipping class --------------
         System.out.println();
         System.out.println("== seed x trend-gate, 12 noise seeds each, all arms the real FanLinear");
         System.out.printf("   %-26s %6s %8s %8s %10s %9s %8s%n",
@@ -479,7 +437,6 @@ public final class LinearSim {
             System.out.println();
         }
 
-        // ---- seeding only earns its keep when the start is far from the answer -------
         System.out.println();
         System.out.println("== does the seed help? swept over where the walk starts from");
         System.out.println("   (46 flatters no-seed at 27 C, since the answer there is 44.8)");
@@ -505,7 +462,6 @@ public final class LinearSim {
             System.out.println();
         }
 
-        // ---- and does a bigger clamp rescue feedforward + trim? ----
         System.out.println();
         System.out.println("== feedforward + trim, clamp swept (it could not reach at +-15)");
         for (int clamp : new int[]{15, 20, 25, 30}) {

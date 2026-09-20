@@ -28,13 +28,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Headless tests for everything in FanLab that does not need Android.
- *
- * There is no way to run an armeabi-v7a Android 9 image on this machine, so the strategy
- * is: keep every piece of logic that matters in pure Java, point the sysfs layer at a
- * stub directory tree, and drive the whole thing from a plain main(). What is left
- * untested is the Android glue (service lifecycle, notification, storage discovery, view
- * focus) and, obviously, the real hardware.
+ * Headless tests for everything in FanLab that does not need Android: the pure logic,
+ * with the sysfs layer pointed at a stub directory tree.
  *
  * Run: java -cp classes;. FanLabTest
  */
@@ -44,17 +39,11 @@ public final class FanLabTest {
     private static int failed;
     private static final List<String> failures = new ArrayList<String>();
 
-    /**
-     * The columns as they shipped before 2026-09-07. Written out in full rather than
-     * derived from the current header, so the schema-revision test is driven by the exact
-     * bytes sitting in the file on the device rather than by an assumption about them.
-     */
+    /** The CSV columns as they shipped before 2026-09-07, written out in full. */
     private static final String OLD_HEADER_20 =
             "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
                     + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c"
                     + ",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore";
-
-    // ----------------------------------------------------------------- harness
 
     private static void check(boolean ok, String what) {
         if (ok) {
@@ -87,8 +76,6 @@ public final class FanLabTest {
         return sb.toString();
     }
 
-    // ----------------------------------------------------------------- main
-
     public static void main(String[] args) throws Exception {
         System.out.println("FanLab headless tests");
 
@@ -111,7 +98,6 @@ public final class FanLabTest {
         testLinearConvergence();
         testLinearCeilingPromotion();
 
-        // ---- the LED drive override ----
         testLedDriveConfig();
         testLedDriveReadback();
         testLedDriveDecide();
@@ -122,7 +108,6 @@ public final class FanLabTest {
         testProvenanceColumns();
         testClosedLoopVsStock();
 
-        // ---- AUTO and VERIFY ----
         testExpFit();
         testSweepPlanConstants();
         testSweepHappyPath();
@@ -148,12 +133,9 @@ public final class FanLabTest {
         System.exit(failed == 0 ? 0 : 1);
     }
 
-    // ----------------------------------------------------------------- thermistor
-
     /**
      * An independent transcription of the framework's arithmetic, written straight from
-     * the disassembly rather than by calling the code under test. If Thermistor ever
-     * drifts from what BatteryService does, this catches it.
+     * the disassembly rather than by calling the code under test.
      */
     private static double frameworkCelsius(int adc) {
         double rt = adc * 100000.0 / (4095 - adc);
@@ -181,7 +163,6 @@ public final class FanLabTest {
                 "all " + spread.length + " sampled ADC codes are bit-identical to the "
                         + "framework (got " + bitExact + ")");
 
-        // and the whole domain, not just a sample
         int mismatch = 0;
         for (int adc = Thermistor.ADC_MIN; adc <= Thermistor.ADC_MAX; adc++) {
             if (Double.doubleToLongBits(Thermistor.celsius(adc))
@@ -191,7 +172,6 @@ public final class FanLabTest {
         }
         eq(mismatch, 0, "every ADC code in 1..4094 is bit-identical");
 
-        // out of domain must be NaN, not an exception and not a number
         check(Double.isNaN(Thermistor.celsius(0)), "adc 0 -> NaN");
         check(Double.isNaN(Thermistor.celsius(4095)), "adc 4095 -> NaN");
         check(Double.isNaN(Thermistor.celsius(-7)), "negative adc -> NaN");
@@ -199,7 +179,6 @@ public final class FanLabTest {
         check(!Thermistor.plausible(Thermistor.celsius(1)),
                 "adc 1 (" + Thermistor.celsius(1) + " C) is rejected as implausible");
 
-        // monotone: this is an NTC on a divider, so more code means less heat
         boolean monotone = true;
         double prev = Double.MAX_VALUE;
         for (int adc = Thermistor.ADC_MIN; adc <= Thermistor.ADC_MAX; adc++) {
@@ -215,8 +194,6 @@ public final class FanLabTest {
 
     private static void testThermistorParsing() {
         section("thermistor: node parsing");
-        // The framework takes the first n-1 characters. For real node content, which
-        // always ends in a newline, the tolerant parser must agree with it exactly.
         int disagree = 0;
         for (int adc = 0; adc <= 4095; adc++) {
             String raw = adc + "\n";
@@ -242,7 +219,6 @@ public final class FanLabTest {
     private static void testLadderBoundaries() {
         section("thermistor: the ladder boundaries land where the research says");
         // The framework compares (int)(T + 0.5), so its "45" boundary is a true 45.5 C.
-        // Find the ADC code either side of each transition and confirm the rounding.
         int[] want = {45, 48, 50, 52, 55};
         for (int w = 0; w < want.length; w++) {
             int target = want[w];
@@ -272,8 +248,6 @@ public final class FanLabTest {
         }
     }
 
-    // ----------------------------------------------------------------- fan io
-
     private static void testFanIoRange() {
         section("fan io: only 1..100 is writable, and fail-safe is high");
         check(!FanIo.valid(0), "0 rejected");
@@ -286,8 +260,6 @@ public final class FanLabTest {
         check(FanIo.FAIL_SAFE_DUTY > FanIo.KERNEL_DEFAULT_DUTY,
                 "fail-safe is above the kernel's own default, i.e. it is HIGH");
     }
-
-    // ----------------------------------------------------------------- sysfs stub
 
     private static File stubRoot() throws Exception {
         File root = new File(System.getProperty("java.io.tmpdir"),
@@ -333,12 +305,10 @@ public final class FanLabTest {
             check(FanIo.writeFailSafe(), "fail-safe write succeeds");
             eq(FanIo.readDuty(), 83, "fail-safe leaves 83 behind");
 
-            // no newline, matching the framework
             String raw = Sysfs.read(Sysfs.FAN_CTRL);
             check("83".equals(raw), "the value is written bare, no trailing newline (got "
                     + quote(raw) + ")");
 
-            // failure modes must be quiet
             check(Sysfs.read("/sys/class/does/not/exist") == null,
                     "a missing file reads null, no exception");
             check(Sysfs.read("/sys/class/fan_int") == null || true,
@@ -348,11 +318,9 @@ public final class FanLabTest {
             eq(Sysfs.readInt("/sys/class/does/not/exist", 42), 42,
                     "readInt falls back when the node is missing");
 
-            // a node containing junk
             put(root, "sys/class/ledtemp/voltage", "banana\n");
             eq(Sysfs.readInt(Sysfs.LEDTEMP_VOLTAGE, Thermistor.BAD_ADC),
                     Thermistor.BAD_ADC, "junk in the ADC node is reported, not guessed");
-            // an empty node
             put(root, "sys/class/ledtemp/voltage", "");
             eq(Sysfs.readInt(Sysfs.LEDTEMP_VOLTAGE, Thermistor.BAD_ADC),
                     Thermistor.BAD_ADC, "an empty ADC node is reported, not guessed");
@@ -361,8 +329,6 @@ public final class FanLabTest {
             rmrf(root);
         }
     }
-
-    // ----------------------------------------------------------------- curve
 
     private static void testCurveShape() {
         section("curve: the map from temperature to duty");
@@ -373,12 +339,10 @@ public final class FanLabTest {
                         CurveConfig.PROFILE_NAMES[p] + ": the curve passes through knee "
                                 + i + " (" + c.tempC[i] + " C)");
             }
-            // flat outside the ends
             eq(c.dutyAt(p, -50), c.duty[p][0],
                     CurveConfig.PROFILE_NAMES[p] + ": flat below the first knee");
             eq(c.dutyAt(p, 200), c.duty[p][CurveConfig.POINTS - 1],
                     CurveConfig.PROFILE_NAMES[p] + ": flat above the last knee");
-            // monotone non-decreasing, in tenths of a degree
             boolean mono = true;
             int prev = -1;
             for (int t = 200; t <= 700; t++) {
@@ -391,7 +355,6 @@ public final class FanLabTest {
             }
             check(mono, CurveConfig.PROFILE_NAMES[p]
                     + ": duty never falls as temperature rises");
-            // every output is writable
             boolean inRange = true;
             for (int t = -100; t <= 200; t++) {
                 if (!FanIo.valid(c.dutyAt(p, t))) {
@@ -402,17 +365,12 @@ public final class FanLabTest {
             check(inRange, CurveConfig.PROFILE_NAMES[p]
                     + ": every output over -100..200 C is a writable duty");
         }
-        // interpolation really is linear: the shipped 47->51 C segment runs 30->38, two
-        // duty points per degree, so 48 C is 32 and the midpoint 49 C is 34.
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 48), 32,
                 "Presentation one degree up the 47 (30) to 51 (38) rise is 32");
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 49), 34,
                 "and its midpoint is 34");
-        // and 51.5 C is on the shelf, so it is 38 exactly rather than interpolated -- which
-        // is also, not by coincidence, where the deployed projector settles.
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 51.5), 38,
                 "Presentation on the 50-55 C shelf is 38");
-        // clamps are honoured
         c.maxDuty = 40;
         c.sanitise();
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 60), 40, "the hard maximum clamps the curve");
@@ -421,8 +379,6 @@ public final class FanLabTest {
         c.sanitise();
         eq(c.dutyAt(CurveConfig.PROFILE_LOW, 30), 70, "the hard minimum lifts the curve");
 
-        // The presets are offered to a user who cannot inspect them, so every one of them
-        // is held to the rules the shipped curve was built on rather than only the default.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             String name = CurveConfig.PRESET_NAMES[i];
             CurveConfig p = CurveConfig.preset(i);
@@ -441,26 +397,6 @@ public final class FanLabTest {
                             + "between knee " + (k - 1) + " and " + k);
                 }
             }
-            // The columns used to be identical in every preset, which made "a brightness
-            // change is not a tier change in duty terms" true by construction and stopped
-            // FanCurve's immediate-jump exception ever firing. The Bright family breaks that
-            // on purpose -- it needs more fan in Presentation and less reason to touch the
-            // dim modes -- so the property is asserted here as what it actually has to be:
-            // the three columns agree at every temperature at or below 55 C, which is where
-            // the dim modes live and therefore where a brightness change is made from. Above
-            // 55 C only Presentation is different, and only in the Bright family.
-            //
-            // Taking the +10 off knee 2 would move this bound to 55 C, and that redraw was
-            // built and measured on 2026-09-08. It hunts on the hardware -- nine duty changes
-            // in twelve minutes against the shipped rows' zero -- so the bound stays at 51.
-            // The reasoning is against the Bright rungs in CurveConfig.PRESETS.
-            //
-            // What that leaves is stated rather than hidden: on Bright Quiet with the LED
-            // drive raised, solved against the MEASURED plant, the step on a Normal ->
-            // Presentation switch is 0 duty points out to a 25 C ambient, 1 at 26, 2 at
-            // 26.2 -- the warmest this unit has recorded -- then 4 at 28 and 7 at 30. Eco ->
-            // Presentation is stepless further still. In the standard family it is 0 always,
-            // because the columns are identical.
             String disagreesAt = null;
             for (double t = -100.0; t <= 51.0 && disagreesAt == null; t += 0.25) {
                 int low = p.dutyAt(CurveConfig.PROFILE_LOW, t);
@@ -477,26 +413,6 @@ public final class FanLabTest {
                     + "at every temperature up to 51 C, so a brightness change made from "
                     + "where the dim modes live is not a step"
                     + (disagreesAt == null ? "" : " -- " + disagreesAt));
-            // A shape check, not a stability proof. It catches a knee typed in wrong.
-            //
-            // It used to be described here as the stability criterion, and it is not:
-            // Cold's rise from the pinned floor was 4 C wide, passed this, and hunted by
-            // four duty points at 17 C ambient. Nor is the slope the criterion -- Cool's
-            // 47-51 C rise is 4.5 duty/C and steady, while a 2.67 duty/C rise tried during
-            // the shelf work hunted. Three static rules have been proposed for this curve
-            // and all three passed something that hunts. The check that decides is dynamic:
-            // testCurvePresetsDoNotHunt drives the real controller against the plant, and
-            // tools/CurveSim.java is the fuller version of it.
-            //
-            // This bound was relaxed to 3 C while placing the shelf, because Normal's
-            // settled reading (47.1 C) and Presentation's (50.8 C) leave only 3.7 C
-            // between them and a 3 C rise would have pinned 100 % of Presentation rather
-            // than 92 %. It was put straight back, because the relaxed version was built
-            // and measured rather than argued about: at 3 C the slope is 2.7 duty/C, the
-            // 0.8 C deadband then spans 2.1 duty points, no single duty can rest inside
-            // it, and tools/CurveSim.java found it hunting by 2 points at 18 and 21 C
-            // ambient where every 4 C version is steady at every pole. The 8 % of
-            // Presentation time is the cheaper thing to give up.
             for (int k = 1; k < CurveConfig.POINTS; k++) {
                 if (high[k] > high[k - 1]) {
                     check(p.tempC[k] - p.tempC[k - 1] >= 4, name + ": the rising segment "
@@ -506,27 +422,6 @@ public final class FanLabTest {
             }
         }
 
-        // What each preset IS, asserted against the published derivation rather than
-        // against a second copy of the numbers here: the derivation is what carries the
-        // stability argument, so the derivation is what wants pinning.
-        //
-        // That published derivation used to be int[] PRESET_OFFSETS, and it stopped being
-        // able to describe the set the day the first Bright curve arrived. The standard four
-        // are Quiet plus a constant at every knee above the floor, leaving the shelf's width
-        // and slope equal to Quiet's so the margin against the deadband cannot have moved
-        // there; each Bright one draws its Presentation row instead and takes its other two
-        // rows from its standard counterpart's shape. Both are a CurveConfig.PresetShape
-        // now, which is why this loop has no case in it -- the alternative was an offset
-        // array with a sentinel in it and an if in every reader.
-        //
-        // The floor is deliberately NOT offset in either shape. Below the floor edge the
-        // light engine is cool enough that extra fan buys almost nothing -- measured,
-        // Cold's +15 bought 3.4 C in Super Eco on a thermistor already at 35 C -- and
-        // Normal, Eco and Super Eco spend their whole lives there. So every preset idles at
-        // 30, and the offset applies only where the ceiling is actually in question.
-        //
-        // Driven off the published PRESET_SHAPES rather than a copy of them here, so a
-        // ninth curve added without a shape fails rather than going unchecked.
         CurveConfig.PresetShape[] shapes = CurveConfig.PRESET_SHAPES;
         eq(shapes.length, CurveConfig.PRESETS.length,
                 "there is a shape here for every preset on offer");
@@ -538,13 +433,6 @@ public final class FanLabTest {
             String name = CurveConfig.PRESET_NAMES[i];
             CurveConfig p = CurveConfig.preset(i);
             CurveConfig.PresetShape shape = shapes[i];
-            // The floor edge is the one knee a preset may move, and only downward: with the
-            // floor pinned at 30, a preset whose shelf sits 15 points above Quiet's has to
-            // climb 23 points where Quiet climbs 8, and over the same 4 C that is 5.75
-            // duty/C -- steep enough to hunt, and Cold did, by four points at 17 C.
-            // Starting its rise earlier is the only fix that keeps both the pinned floor
-            // and the shelf. It must never move UP: that would narrow the rise and steepen
-            // it further.
             eq(p.tempC[0], shape.floorEdgeC, name + ": floor edge is the "
                     + shape.floorEdgeC + " C its shape declares");
             check(p.tempC[0] <= knees[0], name + ": floor edge " + p.tempC[0]
@@ -564,12 +452,6 @@ public final class FanLabTest {
                             + want[k] + " its shape derives from Quiet's " + quiet[k]);
                 }
             }
-            // Quietest rung first, WITHIN a family. The two families are the same four
-            // rungs, so the ordering is a property of each family and not of the list: the
-            // comparison is against the previous rung in the same family, which for
-            // Bright Balanced is Bright Quiet and not Cold. Across the families it would
-            // mean nothing -- Bright Quiet is louder than Cold above 51 C and quieter below
-            // it, because they are curves for two different machines.
             if (CurveConfig.rungOf(i) > 0) {
                 int prevPreset = i - 1;
                 int[] prev = CurveConfig.preset(prevPreset).duty[CurveConfig.PROFILE_HIGH];
@@ -582,12 +464,6 @@ public final class FanLabTest {
                 check(mine[1] > prev[1], name + ": and strictly louder than "
                         + CurveConfig.PRESET_NAMES[prevPreset] + " at the top of the rise");
             }
-            // Stated as its own assertion rather than left implicit in the loop above,
-            // because it is the owner's requirement in his own words: "i want the floor to
-            // be 30 for every curve mode and every projector mode". The second half is the
-            // per-profile sweep above, and together they mean every preset idles at 30 in
-            // every brightness mode -- Bright included, which is the whole reason its dim
-            // columns were left as Quiet's.
             for (int prof = 0; prof < CurveConfig.PROFILES; prof++) {
                 eq(p.duty[prof][0], 30, name + " " + CurveConfig.PROFILE_NAMES[prof]
                         + ": idles at 30, the floor every preset shares");
@@ -596,12 +472,6 @@ public final class FanLabTest {
             }
         }
 
-        // Rule 6: the ceiling has to arrive above anything the plant can produce. Clipping
-        // moves that temperature down for the two biggest offsets in each family -- Quiet
-        // and Balanced reach 83 at the last knee and Cool and Cold at the one before it,
-        // and the Bright rungs land the same way -- so it is worth saying where each one
-        // lands rather than trusting that "83 somewhere" is enough. 52.85 C is the hottest
-        // degC ever recorded on this unit.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             CurveConfig p = CurveConfig.preset(i);
             int[] high = p.duty[CurveConfig.PROFILE_HIGH];
@@ -618,26 +488,6 @@ public final class FanLabTest {
         testBrightPresetFamily();
     }
 
-    /**
-     * The two preset families, pinned: the four Bright rows knee by knee, their relationship
-     * to their standard counterparts, and the gate that decides which family is on offer.
-     *
-     * The loops above hold every preset to the rules and to its published shape, which is
-     * the right level for a family. The Bright four get their numbers written down as well,
-     * because they are the four whose Presentation row was drawn rather than derived: there
-     * is no offset to re-derive them from, so a change should be a deliberate edit here and
-     * not a diff nobody reads.
-     *
-     * Each row is its counterpart's Presentation row plus 0, 0, 10, 12, 8, 0 at the six
-     * knees, clipped at 83. That uniformity is asserted rather than described, because a
-     * comment saying the family is uniform and a table where one rung is not would be worse
-     * than no comment.
-     *
-     * Where they settle is INFERRED for every mode but Presentation -- the drive-90
-     * Presentation plant scaling is measured at x1.208, the other three are still the fitted
-     * line -- so no equilibrium is asserted here. See CurveConfig.PRESETS and docs/curve.md.
-     * What is asserted is the shape and the gate, which are facts about the file.
-     */
     private static void testBrightPresetFamily() {
         section("curve: two preset families, and the drive decides which one is on offer");
 
@@ -646,17 +496,12 @@ public final class FanLabTest {
         eq(CurveConfig.PRESETS.length, CurveConfig.PRESET_NAMES.length,
                 "and a curve for every name");
 
-        // Every one of the eight survives the trip out to a curve and back to an index. The
-        // label on the screen is computed this way on every sync, so a preset that did not
-        // round trip would show as Custom while running perfectly well.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             eq(CurveConfig.presetOf(CurveConfig.preset(i).encode()), i,
                     CurveConfig.PRESET_NAMES[i] + ": preset(" + i + ") is recognised back "
                             + "as preset " + i);
         }
 
-        // The families, by name and by index. Positional and RUNGS apart, which is what
-        // counterpartOf relies on.
         String[] standard = {"Quiet", "Balanced", "Cool", "Cold"};
         String[] bright = {"Bright Quiet", "Bright Balanced", "Bright Cool", "Bright Cold"};
         int[] std = CurveConfig.standardPresets();
@@ -679,15 +524,12 @@ public final class FanLabTest {
         eq(CurveConfig.rungOf(CurveConfig.PRESET_CUSTOM), -1, "and has no rung either");
         eq(CurveConfig.rungOf(99), -1, "nor does an index from nowhere");
 
-        // The four Bright Presentation rows, exactly as tabled. Written out here rather than
-        // read off PRESET_SHAPES, because this is the copy a human checks the table against.
         int[][] wantHigh = {
                 {30, 38, 50, 62, 76, 83},   // Bright Quiet
                 {30, 43, 55, 67, 81, 83},   // Bright Balanced
                 {30, 48, 60, 72, 83, 83},   // Bright Cool
                 {30, 53, 65, 77, 83, 83},   // Bright Cold
         };
-        // The one edit that makes a Bright rung out of a standard one, at each knee.
         int[] delta = {0, 0, 10, 12, 8, 0};
 
         for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
@@ -698,17 +540,6 @@ public final class FanLabTest {
             for (int k = 0; k < CurveConfig.POINTS; k++) {
                 eq(b.duty[CurveConfig.PROFILE_HIGH][k], wantHigh[rung][k],
                         name + " Presentation: knee " + k + " is " + wantHigh[rung][k]);
-                // Knees 1..5 are the counterpart's, always: that is what makes a Bright
-                // preset one column different from its standard rung and no more.
-                //
-                // Knee 0, the floor edge, is the counterpart's for three of the four. The
-                // exception is Bright Cool, and it is an exception with a measurement
-                // behind it: below 51 C a Bright preset IS its counterpart, so Bright Cool
-                // inherits Cool's 4.5 duty/C rise over 47-51 C. Harmless on the plant Cool
-                // runs on, because nothing rests there; on the raised plant of drive 90 the
-                // operating point lands on it and CurveSim hunts by three at 14 C, over the
-                // bound of two. Starting its rise at 45 clears the whole 14-34 C sweep.
-                // Cool itself is untouched.
                 if (k > 0 || !"Bright Cool".equals(name)) {
                     eq(b.tempC[k], s.tempC[k], name + ": knee " + k + " is at "
                             + standard[rung] + "'s " + s.tempC[k] + " C");
@@ -718,16 +549,12 @@ public final class FanLabTest {
                             + "steep enough to hunt by three at 14 C");
                     eq(s.tempC[0], 47, "while Cool itself keeps its 47 C");
                 }
-                // The dim rows ARE the counterpart's. This is the property that makes a
-                // Bright preset one column different from its standard rung and no more, and
-                // it is why the raised drive does not also make the quiet modes louder.
                 eq(b.duty[CurveConfig.PROFILE_NORMAL][k], s.duty[CurveConfig.PROFILE_NORMAL][k],
                         name + " Normal: knee " + k + " is " + standard[rung] + "'s "
                                 + s.duty[CurveConfig.PROFILE_NORMAL][k] + ", untouched");
                 eq(b.duty[CurveConfig.PROFILE_LOW][k], s.duty[CurveConfig.PROFILE_LOW][k],
                         name + " Eco / Super Eco: knee " + k + " is " + standard[rung] + "'s "
                                 + s.duty[CurveConfig.PROFILE_LOW][k] + ", untouched");
-                // And the whole family is the same edit, clipped at the shared 83 ceiling.
                 int want = Math.min(83, s.duty[CurveConfig.PROFILE_HIGH][k] + delta[k]);
                 eq(b.duty[CurveConfig.PROFILE_HIGH][k], want, name + " Presentation: knee "
                         + k + " is " + standard[rung] + "'s "
@@ -735,8 +562,6 @@ public final class FanLabTest {
                         + " clipped at 83, the same edit as every other rung");
             }
 
-            // Everything that is not a duty row is the counterpart's, which is what lets the
-            // stability argument above the floor be inherited rather than remade.
             eq(b.hysteresisC, s.hysteresisC, 1e-9, name + ": " + standard[rung] + "'s deadband");
             eq(b.slewUpPerSec, s.slewUpPerSec, 1e-9, name + ": its rising slew");
             eq(b.slewDownPerSec, s.slewDownPerSec, 1e-9, name + ": its falling slew");
@@ -750,9 +575,6 @@ public final class FanLabTest {
             eq(b.socGuardMaxDuty, s.socGuardMaxDuty, name + ": its guard ceiling");
             eq(b.socGuardHystC, s.socGuardHystC, 1e-9, name + ": its guard deadband");
 
-            // Monotone in temperature and reaching the stock maximum by 70 C, checked on the
-            // controller's own output rather than on the table, because dutyAt applies the
-            // clamps and the rounding and it is dutyAt the fan sees.
             int prev = -1;
             boolean monotone = true;
             for (double t = -100.0; t <= 200.0; t += 0.1) {
@@ -774,11 +596,6 @@ public final class FanLabTest {
                             + " at 51 C, where " + standard[rung] + "'s shelf starts");
         }
 
-        // ---- counterpartOf: the same rung in the family the drive selects ----
-        //
-        // An involution across the two families, which is the property the gate needs: a
-        // user who switches the override on and off again must get back the preset they
-        // started with and not a neighbouring rung.
         for (int i = 0; i < CurveConfig.PRESET_NAMES.length; i++) {
             String name = CurveConfig.PRESET_NAMES[i];
             int rung = CurveConfig.rungOf(i);
@@ -794,18 +611,11 @@ public final class FanLabTest {
             check(!CurveConfig.isBrightPreset(CurveConfig.counterpartOf(i, false)),
                     name + "'s drive-off counterpart is a standard one");
         }
-        // Custom has no counterpart and must not be given one -- see curveForDrive.
         eq(CurveConfig.counterpartOf(CurveConfig.PRESET_CUSTOM, true),
                 CurveConfig.PRESET_CUSTOM, "a hand-edited curve has no Bright counterpart");
         eq(CurveConfig.counterpartOf(CurveConfig.PRESET_CUSTOM, false),
                 CurveConfig.PRESET_CUSTOM, "nor a standard one");
 
-        // ---- the gate itself ----
-        //
-        // Prefs.setLedDriveOn is Android and cannot run here, so what is driven is the pure
-        // decision it delegates to. The wiring above it -- all three LED drive writers call
-        // it, and they ask Prefs.ledBoostOn rather than the raw flag -- is the part this
-        // suite cannot reach.
         for (int rung = 0; rung < CurveConfig.RUNGS; rung++) {
             String off = CurveConfig.PRESETS[std[rung]];
             String on = CurveConfig.PRESETS[brt[rung]];
@@ -818,8 +628,6 @@ public final class FanLabTest {
             check(CurveConfig.curveForDrive(on, true).equals(on),
                     bright[rung] + " with the drive already on is left alone");
         }
-        // Stated on its own for rung 0, because it is the transition the owner described and
-        // the one a fresh install makes.
         check(CurveConfig.curveForDrive(CurveConfig.PRESETS[0], true)
                         .equals(CurveConfig.PRESETS[4]),
                 "so Quiet becomes Bright Quiet when the LED drive comes on");
@@ -827,9 +635,6 @@ public final class FanLabTest {
                         .equals(CurveConfig.PRESETS[0]),
                 "and Bright Quiet becomes Quiet again when it goes off");
 
-        // A hand-edited curve survives both, untouched. Silently replacing thirty numbers
-        // somebody typed is worse than the pairing the gate exists to prevent, and there is
-        // no counterpart to replace them with anyway.
         String custom = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
         eq(CurveConfig.presetOf(custom), CurveConfig.PRESET_CUSTOM,
                 "the hand-edited curve really is Custom");
@@ -840,10 +645,6 @@ public final class FanLabTest {
         check(CurveConfig.curveForDrive(null, true) == null,
                 "and so is no curve at all, rather than becoming one");
 
-        // ---- the broadcast refusal ----
-        //
-        // The words matter as much as the behaviour: this string is the whole of what a
-        // caller gets back, and it has to name the preset they probably wanted.
         check(("Quiet is a Curve preset and the LED drive is on; use Bright Quiet or turn "
                         + "the drive off").equals(CurveConfig.wrongFamilyRefusal(0, true)),
                 "the refusal names the counterpart and both ways out  (got "
@@ -862,16 +663,10 @@ public final class FanLabTest {
             check(CurveConfig.wrongFamilyRefusal(brt[rung], false) != null,
                     bright[rung] + " with the drive off is refused");
         }
-        // Not a preset at all is somebody else's error message -- the receiver has already
-        // rejected it by name before this is asked.
         check(CurveConfig.wrongFamilyRefusal(CurveConfig.PRESET_CUSTOM, true) == null,
                 "a curve that is no preset is not refused on family grounds");
         check(CurveConfig.wrongFamilyRefusal(99, false) == null, "nor is an index from nowhere");
 
-        // ---- the names a broadcast accepts ----
-        //
-        // A two-word preset typed into a shell arrives in three spellings and none of them
-        // is a mistake worth an error message.
         eq(CurveConfig.presetNamed("Bright Quiet"), 4, "\"Bright Quiet\" is preset 4");
         eq(CurveConfig.presetNamed("bright quiet"), 4, "and so is \"bright quiet\"");
         eq(CurveConfig.presetNamed("brightquiet"), 4, "and \"brightquiet\"");
@@ -891,7 +686,6 @@ public final class FanLabTest {
                             + "under, so the two cannot drift");
         }
 
-        // The words the broadcast reply offers, which are the ones it will accept next.
         check("quiet, balanced, cool or cold".equals(CurveConfig.familyWords(false)),
                 "with the drive off the reply offers the standard four  (got "
                         + quote(CurveConfig.familyWords(false)) + ")");
@@ -905,9 +699,6 @@ public final class FanLabTest {
         section("curve: quieter than stock below the ceiling, and firm above it");
         CurveConfig c = new CurveConfig();
 
-        // Running quieter than stock IS the feature, so the invariant is that the curve
-        // commands LESS than stock at every rung temperature -- bounded by a measured
-        // ceiling rather than by stock's own choices.
         int[] rungs = {48, 50, 52, 55};
         for (int p = 0; p < CurveConfig.PROFILES; p++) {
             int floor = c.duty[p][0];
@@ -919,28 +710,14 @@ public final class FanLabTest {
             }
         }
 
-        // But it must not stay quiet forever: by the top of the ramp it has to be as
-        // aggressive as stock's maximum, or the backstop is decorative.
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 70), 83,
                 "at 70 C the curve reaches the same 83 stock uses for its top rung");
 
-        // The floor is flat to its edge. Normal's settled thermistor median is 46.5 C and
-        // Eco's is 38.5 C -- both measured in the field, not taken from the plant table,
-        // whose Normal column reads about 2.5 C low. Both sit inside this floor.
+        // The floor is flat to its edge: Normal settles at 46.5 C in the field and Eco at 38.5.
         for (int t = 0; t <= 47; t++) {
             eq(c.dutyAt(CurveConfig.PROFILE_HIGH, t), c.minDuty,
                     "flat at the floor at " + t + " C");
         }
-        // And the shelf -- the operating point in Presentation -- spans a single duty
-        // point right across the band the machine occupies. This is the property the whole
-        // curve exists for, so it is asserted rather than left to the equilibrium solver.
-        //
-        // It tilts rather than being flat deliberately: the owner asked for slightly more
-        // fan when the light engine is hotter, and 38->40 across four degrees buys 0.8 C at
-        // the top of the band. 40 is the top because that is where he stops calling it
-        // silent -- "happy with the fan up until 40". What must not regress is the SPAN: a
-        // shelf that moved more than two points would be a ramp again, and the whole curve
-        // exists to get the operating point off a ramp.
         for (int h = 1020; h <= 1100; h++) {
             double t = h / 20.0;
             int d = c.dutyAt(CurveConfig.PROFILE_HIGH, t);
@@ -951,8 +728,6 @@ public final class FanLabTest {
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 52), 39, "reading 39 from 52 C");
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 53), 39, "still 39 at 53 C");
         eq(c.dutyAt(CurveConfig.PROFILE_HIGH, 54), 40, "and 40 from 54 C");
-        // Half a duty point per degree. Asserted as arithmetic on the knees so that moving
-        // one without the other cannot quietly turn the shelf back into a ramp.
         int lo = c.duty[CurveConfig.PROFILE_HIGH][1];
         int hi = c.duty[CurveConfig.PROFILE_HIGH][2];
         int span = c.tempC[2] - c.tempC[1];
@@ -960,14 +735,11 @@ public final class FanLabTest {
         check((hi - lo) * 10 / span <= 5,
                 "so its slope is at most 0.5 duty/C, an eighth of the 2.14 it replaced");
 
-        // Identical columns are what removes the mode-change jump (FanCurve bypasses the
-        // slew limiter on an upward tier change, so unequal floors step audibly).
         for (int t = 20; t <= 90; t++) {
             eq(c.dutyAt(CurveConfig.PROFILE_LOW, t), c.dutyAt(CurveConfig.PROFILE_HIGH, t),
                     "all profiles agree at " + t + " C, so a mode change is not a step");
         }
 
-        // Monotone: hotter must never mean less fan.
         int prev = -1;
         boolean monotone = true;
         for (int t = 0; t <= 100; t++) {
@@ -979,12 +751,6 @@ public final class FanLabTest {
             prev = d;
         }
         check(monotone, "the curve never commands less fan for a higher temperature");
-        // The stock dead zone exists and the curve does not have it. Stock returns -1 at
-        // 53 and 54 C, meaning it writes nothing and the fan keeps whatever the last rung
-        // left it at; the curve always has a definite answer. Note the curve's answer here
-        // is deliberately the SAME at 52, 53 and 54 -- that is the shelf, not a dead zone.
-        // The two are opposites: a dead zone is the controller declining to say, and the
-        // shelf is it saying the same thing on purpose.
         eq(FanCurve.stockLadder(CurveConfig.PROFILE_HIGH, 53, 63), -1,
                 "the stock ladder writes nothing at 53 C");
         eq(FanCurve.stockLadder(CurveConfig.PROFILE_HIGH, 54, 63), -1,
@@ -1002,19 +768,8 @@ public final class FanLabTest {
         CurveConfig c = new CurveConfig();
         FanCurve f = new FanCurve();
 
-        // Start where the CURVE wants to be at this temperature, not at an arbitrary 63.
-        //
-        // This mattered and was missed once. The test used to resync(63) because under the
-        // old default 45.5 C was duty 63, so the controller began at its own equilibrium
-        // and any transition really was a response to the dither. Under the shipped curve
-        // 45.5 C is on the flat shelf at duty 30, so resync(63) makes the loop count the
-        // 33-step ramp DOWN from 63 to 30 -- a settling transient wearing the costume of a
-        // dither failure. It briefly persuaded me to widen the hysteresis band, which
-        // would have cost a duty point on every machine to fix nothing.
         f.resync(c.dutyAt(CurveConfig.PROFILE_HIGH, 45.5));
 
-        // Sit on the stock ladder's first boundary and dither by +/- 0.4 C, which is what
-        // the real machine does. The curve must not move at all.
         long t = 0;
         int first = -1;
         int changes = 0;
@@ -1033,7 +788,6 @@ public final class FanLabTest {
         }
         eq(changes, 0, "600 s of +/-0.4 C dither produces no duty change at all");
 
-        // for contrast, the stock ladder on the same input
         int stockChanges = 0;
         int stockPrev = -1;
         for (int i = 0; i < 600; i++) {
@@ -1051,7 +805,6 @@ public final class FanLabTest {
         System.out.println("    stock ladder : " + stockChanges + " duty transitions");
         System.out.println("    fanlab curve : " + changes + " duty transitions");
 
-        // rising must be immediate, not deadbanded
         f = new FanCurve();
         f.resync(62);
         t = 0;
@@ -1061,7 +814,6 @@ public final class FanLabTest {
         f.step(c, CurveConfig.PROFILE_HIGH, 45.2, true, t);
         check(f.heldCelsius() > heldBefore, "a rising temperature moves the held value at once");
 
-        // falling must wait for the deadband
         t += 1000;
         f.step(c, CurveConfig.PROFILE_HIGH, 44.5, true, t);
         eq((int) Math.round(f.heldCelsius() * 10), 452,
@@ -1081,12 +833,12 @@ public final class FanLabTest {
         f.resync(55);
 
         long t = 0;
-        f.step(c, CurveConfig.PROFILE_HIGH, 40.0, true, t);       // settle at the bottom
+        f.step(c, CurveConfig.PROFILE_HIGH, 40.0, true, t);
         int prev = 55;
         int worstUp = 0;
         for (int i = 0; i < 40; i++) {
             t += 1000;
-            int d = f.step(c, CurveConfig.PROFILE_HIGH, 60.0, true, t);   // slam to the top
+            int d = f.step(c, CurveConfig.PROFILE_HIGH, 60.0, true, t);
             worstUp = Math.max(worstUp, d - prev);
             prev = d;
         }
@@ -1105,15 +857,12 @@ public final class FanLabTest {
                 + "one second (worst " + worstDown + ")");
         eq(prev, c.dutyAt(CurveConfig.PROFILE_HIGH, 30), "and it does get all the way down");
 
-        // an unknown starting duty must ramp DOWN from the fail-safe, never jump to a
-        // lower value the hardware may not actually be at
         FanCurve unknown = new FanCurve();
         unknown.resync(-1);
         int firstUnknown = unknown.step(c, CurveConfig.PROFILE_LOW, 30.0, true, 0);
         eq(firstUnknown, FanIo.FAIL_SAFE_DUTY,
                 "resync(-1) starts at the fail-safe duty and slews down from there");
 
-        // a long gap must not be integrated into a huge jump
         f = new FanCurve();
         f.resync(40);
         t = 0;
@@ -1127,11 +876,6 @@ public final class FanLabTest {
         section("catch-up: a duty someone else chose is converged on quickly");
         CurveConfig c = new CurveConfig();
 
-        // Handed the fail-safe 83 with the machine cool: the curve wants the floor. At the
-        // comfort slew of 0.12/s that is 53 points and seven minutes of audible fan, which
-        // is worse than the change it is trying to hide. The slew limiter exists to mask
-        // drift the listener did not cause -- not the consequences of an instruction they
-        // just gave.
         FanCurve f = new FanCurve();
         f.resync(FanIo.FAIL_SAFE_DUTY);
         long t = 0;
@@ -1145,8 +889,6 @@ public final class FanLabTest {
         eq(d, c.minDuty, "it does reach the floor from the fail-safe");
         check(steps <= 60, "and gets there in under a minute (" + steps + " s), not seven");
 
-        // Once converged it must be back on the comfort slew, or every later adjustment
-        // would be fast too and the whole point is lost.
         int before = d;
         int worst = 0;
         for (int i = 0; i < 30; i++) {
@@ -1158,8 +900,6 @@ public final class FanLabTest {
         check(worst <= 1, "after converging, changes are back to 1 point per tick (worst "
                 + worst + ")");
 
-        // Catching up must never be slower than the configured slew: a user who sets a
-        // brisk rate deliberately should not be throttled by this.
         CurveConfig fast = new CurveConfig();
         fast.slewDownPerSec = 9.0;
         fast.sanitise();
@@ -1182,26 +922,18 @@ public final class FanLabTest {
         long t = 0;
         f.step(c, CurveConfig.PROFILE_HIGH, 50.0, true, t);
         int d = 0;
-        // 900 ticks, not 400. The shipped slew-down is 0.12 points/s -- one point every
-        // 8.3 s -- so falling from 70 to idleDuty 10 takes about 500 s. The old default
-        // slewed at 1.0/s and got there in a minute. Nothing changed except how long
-        // "eventually" is, and the slowness is the point: a fan winding down over minutes
-        // is inaudible, and it keeps cooling a machine that has just been switched off.
+        // 900 ticks: the shipped slew-down is 0.12 points/s, so 70 -> idleDuty 10 takes ~500 s.
         for (int i = 0; i < 900; i++) {
             t += 1000;
             d = f.step(c, CurveConfig.PROFILE_HIGH, 50.0, false, t);
         }
         eq(d, c.idleDuty, "with the light engine off the curve settles at the idle duty");
 
-        // engine comes back on: the rise must be immediate, not a 60-second ramp
         t += 1000;
         int back = f.step(c, CurveConfig.PROFILE_HIGH, 50.0, true, t);
         eq(back, c.dutyAt(CurveConfig.PROFILE_HIGH, 50.0),
                 "the light engine coming back on jumps straight to the curve value");
 
-        // With the shipped curve a mode change must produce no step at all, because all
-        // three profiles are the same column. That is what removes the one audible event
-        // the design would otherwise have.
         f = new FanCurve();
         f.resync(c.dutyAt(CurveConfig.PROFILE_LOW, 46.0));
         t = 0;
@@ -1210,9 +942,6 @@ public final class FanLabTest {
         int after = f.step(c, CurveConfig.PROFILE_HIGH, 46.0, true, t);
         eq(after, before, "Eco -> Presentation causes NO step with the shipped curve");
 
-        // ...but the immediate-jump mechanism itself must still work, or a user who edits
-        // the profiles apart loses the safety behaviour silently. Test it against a
-        // config that does differ.
         CurveConfig split = new CurveConfig();
         for (int i = 0; i < CurveConfig.POINTS; i++) {
             split.duty[CurveConfig.PROFILE_LOW][i] = 30;
@@ -1244,7 +973,6 @@ public final class FanLabTest {
         eq(f.step(null, CurveConfig.PROFILE_HIGH, 50.0, true, 0),
                 FanIo.FAIL_SAFE_DUTY, "a missing config -> 83");
 
-        // an unknown rgblevel must select the hottest profile, not fall over
         eq(CurveConfig.profileForLevel(-1), CurveConfig.PROFILE_HIGH,
                 "an unreadable rgblevel selects Presentation, the hottest column");
         eq(CurveConfig.profileForLevel(9), CurveConfig.PROFILE_HIGH,
@@ -1256,7 +984,6 @@ public final class FanLabTest {
         eq(CurveConfig.profileForLevel(3), CurveConfig.PROFILE_HIGH,
                 "rgblevel 3 -> Presentation");
 
-        // a hostile config must not be able to command something unwritable
         CurveConfig bad = new CurveConfig();
         for (int p = 0; p < CurveConfig.PROFILES; p++) {
             for (int i = 0; i < CurveConfig.POINTS; i++) {
@@ -1323,7 +1050,6 @@ public final class FanLabTest {
         check(FanIo.valid(CurveConfig.decode(corrupt).dutyAt(CurveConfig.PROFILE_HIGH, 50)),
                 "a corrupt config still yields a writable duty");
 
-        // the guard block is appended after the v1 fields and must survive a round trip
         a.socGuardStartC = 66;
         a.socGuardGainPerC = 3.0;
         a.socGuardMaxDuty = 71;
@@ -1335,7 +1061,6 @@ public final class FanLabTest {
         eq(g.socGuardMaxDuty, 71, "an edited guard ceiling survives");
         check(!g.socGuardEnabled, "the guard's disabled state survives");
 
-        // a curve saved before the guard existed is short, not corrupt
         CurveConfig fresh = new CurveConfig();
         String[] parts = fresh.encode().split(",");
         StringBuilder legacy = new StringBuilder(parts[0]);
@@ -1349,10 +1074,6 @@ public final class FanLabTest {
         eq(old1.duty[CurveConfig.PROFILE_HIGH][3], fresh.duty[CurveConfig.PROFILE_HIGH][3],
                 "and its own duties are not disturbed");
 
-        // ---- the presets ----
-        // A preset that does not survive the trip through decode/sanitise/encode would
-        // have ConfigReceiver answer curve(REPAIRED) for a curve the app itself shipped,
-        // and the label would never match the stored line again.
         for (int i = 0; i < CurveConfig.PRESETS.length; i++) {
             String name = CurveConfig.PRESET_NAMES[i];
             String s = CurveConfig.PRESETS[i];
@@ -1364,13 +1085,9 @@ public final class FanLabTest {
             check(CurveConfig.presetName(i).equals(name), name + " names itself");
         }
 
-        // Quiet is the default curve, not a copy of it. The row and the reset button would
-        // otherwise disagree the first time a default moved.
         check(CurveConfig.PRESETS[0].equals(new CurveConfig().encode()),
                 "Quiet is byte-identical to what setDefaults() encodes to");
 
-        // Matching the whole line is what makes the label honest: there is no stored index
-        // that could go on claiming Balanced after the curve had moved.
         String tweaked = CurveConfig.PRESETS[1].replace(",0.8,", ",0.9,");
         check(!tweaked.equals(CurveConfig.PRESETS[1]), "the mutated line really differs");
         eq(CurveConfig.presetOf(tweaked), CurveConfig.PRESET_CUSTOM,
@@ -1384,21 +1101,16 @@ public final class FanLabTest {
                 "at either end");
     }
 
-    // ----------------------------------------------------------------- soc guard
-
     private static void testSocGuard() {
         section("soc guard: additive, continuous, and unable to lower the fan");
         CurveConfig c = new CurveConfig();
 
-        // inert everywhere the machine has ever actually been seen
         eq(c.socGuardBoost(64.5), 0, "the hottest SoC yet observed asks for nothing");
         eq(c.socGuardBoost(70.0), 0, "nor does the knee itself");
         eq(c.socGuardBoost(Double.NaN), 0, "an unreadable zone asks for nothing");
         eq(c.socGuardBoost(Double.POSITIVE_INFINITY), 0, "nor does a nonsense one");
         eq(c.socGuardBoost(-40.0), 0, "nor does a wildly cold one");
 
-        // continuous at the knee: no step for the machine to park on, which is the
-        // whole failure mode of the stock ladder
         eq(c.socGuardBoost(70.4), 1, "it starts from nothing and rises a point at a time");
         check(c.socGuardBoost(70.0) == 0 && c.socGuardBoost(70.6) <= 2,
                 "there is no jump at the knee");
@@ -1411,12 +1123,10 @@ public final class FanLabTest {
             prev = b;
         }
 
-        // disarming it silences it completely
         CurveConfig off = new CurveConfig();
         off.socGuardEnabled = false;
         eq(off.socGuardBoost(95.0), 0, "a disarmed guard asks for nothing at any temperature");
 
-        // --- the property that makes arming it safe ---
         FanCurve plain = new FanCurve();
         FanCurve guarded = new FanCurve();
         long t0 = 0;
@@ -1433,7 +1143,6 @@ public final class FanLabTest {
             }
         }
 
-        // the ceiling binds on the result, not on the contribution
         FanCurve cap = new FanCurve();
         int settled = 0;
         for (long t = 1; t <= 4000; t++) {
@@ -1443,8 +1152,6 @@ public final class FanLabTest {
         check(c.socGuardMaxDuty < c.maxDuty,
                 "which is below the hardware maximum, where the authority has run out");
 
-        // a curve already above the guard's ceiling is left alone -- the curve is the
-        // safety case and the guard is not entitled to argue it down
         FanCurve hotLed = new FanCurve();
         int hi = 0;
         for (long t = 1; t <= 4000; t++) {
@@ -1453,19 +1160,16 @@ public final class FanLabTest {
         check(hi > c.socGuardMaxDuty,
                 "a hot LED still commands more than the guard's ceiling (" + hi + ")");
 
-        // it must not fight the light-engine-off idle
         FanCurve idle = new FanCurve();
         eq(idle.step(c, CurveConfig.PROFILE_HIGH, 40.0, 95.0, false, 1000), c.idleDuty,
                 "a hot die does not spin the fan up with the engine off");
 
-        // a sensor that stops reporting releases the boost rather than latching it
         FanCurve drop = new FanCurve();
         drop.step(c, CurveConfig.PROFILE_HIGH, 45.0, 95.0, true, 1000);
         check(drop.guardBoost() > 0, "a hot die engages the guard");
         drop.step(c, CurveConfig.PROFILE_HIGH, 45.0, Double.NaN, true, 2000);
         eq(drop.guardBoost(), 0, "and an unreadable zone releases it rather than latching");
 
-        // the guard's input is damped in the same asymmetric way as the curve's
         FanCurve h = new FanCurve();
         h.step(c, CurveConfig.PROFILE_HIGH, 45.0, 80.0, true, 1000);
         int hot = h.guardBoost();
@@ -1477,8 +1181,6 @@ public final class FanLabTest {
         h.step(c, CurveConfig.PROFILE_HIGH, 45.0, 79.0, true, 4000);
         check(h.guardBoost() > 0, "and a rise is acted on at once");
 
-        // engaging is slew-limited: it is a temperature change like any other, and the
-        // whole point of the project is that the listener does not hear those
         FanCurve slew = new FanCurve();
         int before = 0;
         for (long t = 1; t <= 600; t++) {
@@ -1489,7 +1191,6 @@ public final class FanLabTest {
                 "the guard cannot step the fan; it slews like everything else (" + before
                         + " -> " + after + ")");
 
-        // repair
         CurveConfig bad = new CurveConfig();
         bad.socGuardStartC = -10;
         bad.socGuardGainPerC = -1;
@@ -1501,8 +1202,6 @@ public final class FanLabTest {
         check(bad.socGuardMaxDuty <= bad.maxDuty, "the guard ceiling cannot exceed the curve's");
         check(bad.socGuardHystC > 0, "a nonsense deadband is replaced");
     }
-
-    // ----------------------------------------------------------------- csv
 
     private static void testCsvLogger() throws Exception {
         section("csv: mirroring, flushing, and surviving a pulled stick");
@@ -1531,7 +1230,6 @@ public final class FanLabTest {
             check(ca.endsWith("4,5,6\n"), "content is flushed immediately, not buffered");
             eq(countLines(ca), 3, "header plus two rows");
 
-            // reopening must append, not truncate, and must not repeat the header
             log.close();
             CsvLogger log2 = new CsvLogger("t.csv");
             log2.setDirs(dirs);
@@ -1541,7 +1239,6 @@ public final class FanLabTest {
             eq(count(again, CsvLogger.HEADER), 1, "and does not repeat the header");
             log2.close();
 
-            // a destination that disappears must be dropped, not fatal
             CsvLogger log3 = new CsvLogger("t.csv");
             List<File> withDead = new ArrayList<File>();
             withDead.add(a);
@@ -1553,8 +1250,6 @@ public final class FanLabTest {
             check(log3.brokenPaths().size() >= 1, "the broken destination is reported");
             log3.close();
 
-            // an app update that adds columns must not append wide rows under a narrow
-            // header -- the old file is rolled aside and a correctly-headed one started
             File c = new File(base, "schema");
             c.mkdirs();
             List<File> one = new ArrayList<File>();
@@ -1581,7 +1276,6 @@ public final class FanLabTest {
                 }
             }
 
-            // reopening on the same schema must still append, or every restart would roll
             CsvLogger sameSchema = new CsvLogger("t.csv");
             sameSchema.setDirs(one);
             sameSchema.append("5,6,7,8");
@@ -1594,8 +1288,6 @@ public final class FanLabTest {
             check(CsvLogger.HEADER.contains(",thr_cpufreq,thr_cpucore,thr_gpufreq,thr_gpucore"),
                     "and so is what the thermal governor is doing about them");
 
-            // a row must have exactly as many fields as the header promises, or every
-            // downstream parser silently reads the wrong column
             Sample blank = new Sample();
             eq(blank.toCsv().split(",", -1).length, CsvLogger.HEADER.split(",", -1).length,
                     "an empty sample still fills every column");
@@ -1625,11 +1317,6 @@ public final class FanLabTest {
         }
     }
 
-    /**
-     * The backlog export: a stick inserted after the fact has to end up with the history,
-     * and a stick inserted again tomorrow has to gain the tail rather than a second copy
-     * of everything. Pure java.io, so the whole thing runs here.
-     */
     private static void testExport(File base) throws Exception {
         section("csv export: additive by watermark, and outside the sink namespace");
 
@@ -1639,7 +1326,6 @@ public final class FanLabTest {
         List<File> sinkOnly = new ArrayList<File>();
         sinkOnly.add(sink);
 
-        // a live log, written exactly the way the service writes one
         CsvLogger live = new CsvLogger("fanlab.csv");
         live.setDirs(sinkOnly);
         live.append("1000,a");
@@ -1660,8 +1346,6 @@ public final class FanLabTest {
         eq(countLines(read(dst)), 4, "header plus three rows");
         check(read(dst).startsWith(CsvLogger.HEADER + "\n"), "the header comes across");
 
-        // the live file keeps growing under the same name, which is exactly why a
-        // filename-based dedupe cannot work
         live.append("4000,d");
         live.append("5000,e");
         CsvLogger.Export e2 = CsvLogger.exportBacklog(out, srcs);
@@ -1673,7 +1357,6 @@ public final class FanLabTest {
         eq(once == null ? 0 : once.length, 1,
                 "yesterday's file is added to, not left beside a second copy");
 
-        // nothing new: no read of the destination turns into a write of it
         CsvLogger.Export e3 = CsvLogger.exportBacklog(out, srcs);
         eq(e3.filesWritten, 0, "an unchanged source writes nothing");
         eq((int) e3.rowsCopied, 0, "and copies no rows");
@@ -1682,8 +1365,6 @@ public final class FanLabTest {
         check(!new File(out, "fanlab-1000.csv.part").exists(),
                 "and no half-written temporary is left behind");
 
-        // The stick in the field holds 13-column files where this build writes 20. Two
-        // schemas in one file is the outcome to refuse.
         File oldSink = new File(base, "old-sink");
         oldSink.mkdirs();
         List<File> oldOnly = new ArrayList<File>();
@@ -1703,8 +1384,6 @@ public final class FanLabTest {
         eq(countLines(read(dst)), 6, "and the 20-column file is not appended to");
         eq(count(read(dst), "epoch_ms,degC,fan_ctrl\n"), 0, "no mixed schemas anywhere");
 
-        // A row without its newline is being written right now. append() flushes every
-        // complete line, so stopping short of it loses nothing.
         File growing = new File(base, "growing");
         File gout = new File(base, "export-growing");
         write(new File(growing, "fanlab.csv"),
@@ -1722,9 +1401,6 @@ public final class FanLabTest {
         eq((int) e6.rowsCopied, 1, "and it comes across once the row is finished");
         eq(countLines(read(gdst)), 4, "leaving one header and three rows");
 
-        // The two internal sinks are identical copies that rolled under different
-        // timestamps. Keying on the first row collapses them; the watermark makes the
-        // second a no-op.
         File collideOut = new File(base, "export-collide");
         String rolled = CsvLogger.HEADER + "\n4100,p\n4200,q\n";
         File r1 = new File(base, "sink-a/fanlab-1111111111111.csv");
@@ -1743,9 +1419,6 @@ public final class FanLabTest {
         check(new File(collideOut, "fanlab-4100.csv").isFile(),
                 "named after the first row, not after either rolled name");
 
-        // ---- the reason the destination is not a sink ----
-        // prune() deletes <stem>-*.csv in its target's own directory, so an export named
-        // fanlab-<epoch>.csv written into a sink is indistinguishable from a rolled file.
         File hazard = new File(base, "hazard");
         File safe = new File(base, "export-safe");
         hazard.mkdirs();
@@ -1755,7 +1428,6 @@ public final class FanLabTest {
                     CsvLogger.HEADER + "\n" + i + "000,x\n");
             write(new File(safe, "fanlab-" + i + "000.csv"), CsvLogger.HEADER + "\n");
         }
-        // an old-schema live file, so opening the sink rolls it and therefore prunes
         write(new File(hazard, "fanlab.csv"), "epoch_ms,degC\n1,2\n");
         CsvLogger pruner = new CsvLogger("fanlab.csv");
         List<File> hazardOnly = new ArrayList<File>();
@@ -1788,13 +1460,8 @@ public final class FanLabTest {
                 "and never under the live log's own name");
     }
 
-    // ----------------------------------------------------------------- closed loop
-
     /**
-     * A first-order thermal model, calibrated to the two things actually observed on the
-     * hardware: with the Presentation floor at 55 the machine cycles (so the steady-state
-     * temperature at duty 55 is above the stock ladder's 45.5 C boundary), and with the
-     * floor at 69 it is steady (so at 69-70 it is below it).
+     * A first-order thermal model, calibrated to the hardware:
      *
      * steady(duty) = 53.83 - 0.13333 * duty   =>  steady(55) = 46.5, steady(70) = 44.5
      * dT/dt = (steady(duty) - T) / tau,  tau = 60 s
@@ -1808,7 +1475,6 @@ public final class FanLabTest {
         int seconds = 3600;
         double tau = 60.0;
 
-        // ---- stock: 15 s poll, (int)(T+0.5) ladder, gated on a whole-degree change ----
         double t = 40.0;
         int duty = 55;
         int stockFloor = 55;
@@ -1842,7 +1508,6 @@ public final class FanLabTest {
             }
         }
 
-        // ---- the curve: 1 Hz, hysteresis, slew ----
         CurveConfig c = new CurveConfig();
         FanCurve f = new FanCurve();
         f.resync(55);
@@ -1860,11 +1525,6 @@ public final class FanLabTest {
             ms += 1000;
             if (want != duty2) {
                 int delta = Math.abs(want - duty2);
-                // The first minute is the controller converging on a duty it was handed
-                // rather than chose (resync(55) above), which is deliberately faster than
-                // the comfort slew. The invariant being measured here is about RUNNING --
-                // that ordinary operation never produces an audible step -- so the
-                // convergence is excluded rather than allowed to define the worst case.
                 if (s >= 60) {
                     curveChanges++;
                     if (delta >= 5) {
@@ -1899,10 +1559,6 @@ public final class FanLabTest {
                 "the curve holds a tighter temperature band than the stock ladder ("
                         + round2(curveMax - curveMin) + " C vs "
                         + round2(stockMax - stockMin) + " C)");
-        // The trade, asserted rather than assumed. This used to demand the curve never run
-        // hotter than stock; that was the conservative position before the plant was
-        // measured, and giving it up IS the feature. What replaces it is a bound: hotter,
-        // yes, but never past the ceiling, and much quieter for it.
         check(curveMax > stockMax,
                 "the curve deliberately runs hotter than stock (" + round2(curveMax)
                         + " vs " + round2(stockMax) + " C) -- that is the trade");
@@ -1913,13 +1569,6 @@ public final class FanLabTest {
                 "and it buys a lot of quiet for it: settles at duty " + duty2
                         + " where stock sits at " + duty);
     }
-
-    // ================================================================== AUTO / VERIFY
-    //
-    // There is no device and no emulator, so the only way any of this gets exercised is
-    // by driving the pure state machines through a thermal model on the host. A whole
-    // ninety-minute sweep runs here in a fraction of a second, which means every abort
-    // path can be tested, which is the part that actually matters.
 
     /** First-order thermal model, calibrated the same way as the closed-loop test above. */
     private static double steadyFor(int duty, int rgblevel) {
@@ -1937,8 +1586,6 @@ public final class FanLabTest {
         }
         return base - 0.133333 * duty;
     }
-
-    // ----------------------------------------------------------------- the fit
 
     private static void testExpFit() {
         section("exponential fit: recovering T_inf and tau from a first-order transient");
@@ -1972,7 +1619,6 @@ public final class FanLabTest {
             check(!f.tauPinned, "  tau did not land on a search bound");
         }
 
-        // The whole point of the fit: call a step long before it has settled.
         double tinf = 45.0;
         double tau = 120.0;
         int n = 180;                      // 1.5 time constants, the minimum dwell
@@ -1993,7 +1639,6 @@ public final class FanLabTest {
                 "  and the raw sensor is still " + round2(tinf - y[n - 1])
                         + " C short of it at that moment");
 
-        // Noise. A deterministic pseudo-random walk so the test cannot flake.
         long seed = 12345L;
         double[] yn = new double[600];
         double[] tn = new double[600];
@@ -2010,8 +1655,6 @@ public final class FanLabTest {
         check(noisy.rms > 0.0 && noisy.rms < 0.06,
                 "  and the reported residual reflects the noise (" + round2(noisy.rms) + ")");
 
-        // Flat: T_inf is the mean and is fine, tau is not identifiable and must not be
-        // reported as though it had been measured.
         double[] flat = new double[300];
         double[] ft = new double[300];
         for (int i = 0; i < 300; i++) {
@@ -2024,7 +1667,6 @@ public final class FanLabTest {
         check(!level.tauIdentifiable, "  but tau is flagged as not identifiable");
         check(Double.isNaN(level.tau), "  and tau is reported as NaN, not as a number");
 
-        // Refusals, none of which may throw.
         check(!ExpFit.fit(null, null, 10).ok, "null input is refused");
         check(!ExpFit.fit(new double[]{0, 1}, new double[]{1, 2}, 2).ok,
                 "two samples is refused (needs " + ExpFit.MIN_SAMPLES + ")");
@@ -2044,8 +1686,6 @@ public final class FanLabTest {
         }
         check(!ExpFit.fit(same, bad, 20).ok, "all-one-timestamp input is refused");
     }
-
-    // ----------------------------------------------------------------- the plan
 
     private static void testSweepPlanConstants() {
         section("sweep plan: the schedule and the limits that are not negotiable");
@@ -2101,9 +1741,6 @@ public final class FanLabTest {
                 "rgblevel writes are clamped to 1..4, nothing else being exercised by stock");
     }
 
-    // ----------------------------------------------------------------- the sweep
-
-    /** Everything one simulated run produced, so the assertions can be read off it. */
     private static final class RunResult {
         SweepEngine engine;
         int ticks;
@@ -2135,8 +1772,6 @@ public final class FanLabTest {
             if (abortAtTick >= 0 && r.ticks == abortAtTick) {
                 e.abort("user", ms, 1000000L + ms);
             }
-            // Mode 3 puts a slow wobble on the sensor, so no fit ever settles and every
-            // step runs to its dwell cap. That is what exercises the overall time cap.
             double reported = t + 0.5
                     + (mode == 3 ? 0.5 * Math.sin(2 * Math.PI * r.ticks / 300.0) : 0.0);
             SweepEngine.Tick tk = e.tick(ms, 1000000L + ms, reported);
@@ -2188,7 +1823,6 @@ public final class FanLabTest {
                         + round2(r.maxSeen) + " C)");
         check(r.elapsedSec < SweepPlan.capSeconds(), "it finished inside the run cap");
 
-        // Every scheduled condition was actually held.
         Set<String> held = new HashSet<String>();
         int fits = 0;
         int settled = 0;
@@ -2225,8 +1859,6 @@ public final class FanLabTest {
                 "at least the 28 duty steps ended early on the fit rather than timing out ("
                         + settled + " settled)");
 
-        // The baselines at 83 are themselves T_eq(83, mode) for each mode - the reference
-        // every other point is read against.
         int baselines = 0;
         for (int i = 0; i < e.steps().size(); i++) {
             SweepStep s = e.steps().get(i);
@@ -2242,7 +1874,6 @@ public final class FanLabTest {
         }
         eq(baselines, 4, "one baseline per brightness mode");
 
-        // T_eq must fall as duty rises. That relation is the whole deliverable.
         double prevTinf = -999;
         int prevDuty = 999;
         boolean monotone = true;
@@ -2259,7 +1890,6 @@ public final class FanLabTest {
         }
         check(monotone, "in Presentation, the fitted T_eq rises as the duty falls");
 
-        // The audibility marker.
         SweepEngine e2 = new SweepEngine(0L, 5000L);
         e2.tick(1000L, 6000L, 42.0);
         SweepEngine.Marker mk = e2.mark("audible", 6000L);
@@ -2314,8 +1944,6 @@ public final class FanLabTest {
         eq(guardHolds, guards, "every trip is followed by a recorded backed-off hold");
         check(!r.commandedBelowFloor, "and it still never commands below the duty floor");
 
-        // A trip abandons the rest of that mode's descent: everything below the duty that
-        // tripped is strictly worse, so there is nothing down there worth holding.
         for (int i = 0; i < e.steps().size(); i++) {
             SweepStep s = e.steps().get(i);
             if (!SweepStep.END_RATE_GUARD.equals(s.endReason)) {
@@ -2356,7 +1984,6 @@ public final class FanLabTest {
         check("abort:bad_temperature".equals(e.endReason()),
                 "  and the reason is recorded (\"" + e.endReason() + "\")");
 
-        // An implausible number is treated exactly like no reading at all.
         SweepEngine e2 = new SweepEngine(0L, 0L);
         e2.tick(1000L, 0L, 41.0);
         e2.tick(2000L, 0L, 500.0);
@@ -2365,7 +1992,6 @@ public final class FanLabTest {
         check(z.finished, "500 C, -200 C and -infinity all count as unusable readings");
         eq(z.duty, FanIo.FAIL_SAFE_DUTY, "  and the fan ends at 83");
 
-        // A good reading in between clears the counter.
         SweepEngine e3 = new SweepEngine(0L, 0L);
         e3.tick(1000L, 0L, 41.0);
         e3.tick(2000L, 0L, Double.NaN);
@@ -2391,7 +2017,6 @@ public final class FanLabTest {
         SweepStep last = e.steps().get(e.steps().size() - 1);
         check(SweepStep.END_ABORT.equals(last.endReason),
                 "the step in progress is closed as aborted, not left open");
-        // Aborting twice must be harmless.
         e.abort("again", 3000000L, 0L);
         check("abort:user".equals(e.endReason()), "a second abort does not overwrite the first");
     }
@@ -2411,8 +2036,6 @@ public final class FanLabTest {
                         + " minutes (" + (r.elapsedSec / 60) + " min)");
         check(e.steps().size() > 0, "and everything measured before the cap is kept");
     }
-
-    // ----------------------------------------------------------------- VERIFY
 
     private static void testHoldSession() {
         section("VERIFY: holding one duty, and logging what a person sees");
@@ -2447,7 +2070,6 @@ public final class FanLabTest {
         h.check(HoldSession.ABOUT_FAN, HoldSession.VERDICT_AUDIBLE, 5000L, 6000L);
         eq(h.checks().size(), 3, "the audibility verdict is logged the same way");
 
-        // The ceiling.
         eq(h.tick(6000L, SweepPlan.CEILING_C), FanIo.FAIL_SAFE_DUTY,
                 "58 C stops it and commands 83");
         check(h.finished(), "  the session is over");
@@ -2455,7 +2077,6 @@ public final class FanLabTest {
         eq(h.tick(7000L, 40.0), FanIo.FAIL_SAFE_DUTY,
                 "every tick after that still commands 83, even once it has cooled");
 
-        // Bad reads.
         HoldSession h2 = new HoldSession(55, 2, 0L, 0L);
         h2.tick(1000L, 43.0);
         eq(h2.tick(2000L, Double.NaN), 55, "one unusable reading holds the duty");
@@ -2464,15 +2085,12 @@ public final class FanLabTest {
         check(h2.finished() && "bad_temperature".equals(h2.endReason()),
                 "  and record the reason");
 
-        // Stopping is idempotent.
         HoldSession h3 = new HoldSession(50, 1, 0L, 0L);
         h3.stop("user");
         h3.stop("something else");
         check("user".equals(h3.endReason()), "a second stop does not overwrite the first");
         eq(h3.tick(1000L, 40.0), FanIo.FAIL_SAFE_DUTY, "and a stopped session commands 83");
     }
-
-    // ----------------------------------------------------------------- picoreg
 
     private static void testPicoReg() throws Exception {
         section("DLPC system temperature (D6h) - and the honest reporting of its absence");
@@ -2501,7 +2119,6 @@ public final class FanLabTest {
         eq(PicoReg.word(new int[]{0x2B, 0x00}), 0x2B,
                 "the raw word is little endian, and is always kept");
 
-        // Parsing whatever shape the driver's log line turns out to have.
         int[] p = PicoReg.parseHexBytes(" 0x2b 0x00", 2);
         check(p != null && p[0] == 0x2b && p[1] == 0x00, "0x-prefixed bytes parse");
         p = PicoReg.parseHexBytes("2b 00", 2);
@@ -2513,9 +2130,6 @@ public final class FanLabTest {
         check(PicoReg.parseHexBytes("zip zip", 2) == null,
                 "text with no hex in it is refused");
         check(PicoReg.parseHexBytes(null, 2) == null, "null is refused");
-        // "banana" is, unhelpfully, mostly hex digits. The parser cannot tell that apart
-        // from a real payload and does not try to - the decode is what refuses it, which
-        // is why decodeSystemTemperature validates the shape rather than trusting bytes.
         check(Double.isNaN(PicoReg.fromResponseText("banana", "test").degC),
                 "hex-looking junk is caught by the decode, not silently reported as a "
                         + "temperature");
@@ -2527,8 +2141,6 @@ public final class FanLabTest {
         check(PicoReg.parseKernelLogLine("something else entirely", 0xD6, 2) == null,
                 "an unrelated line is ignored");
 
-        // Against a stub tree: the node missing, unwritable, and returning junk. In every
-        // case the answer must be "unavailable" with a specific reason, never a number.
         File tmp = File.createTempFile("fanlab-pico", "");
         tmp.delete();
         tmp.mkdirs();
@@ -2557,10 +2169,6 @@ public final class FanLabTest {
                             + "handler on this firmware, so the response goes to the kernel "
                             + "log and not back through sysfs");
 
-            // If the round trip ever does close on real hardware, it must work. Driven
-            // through the response handler directly, because a stub file cannot behave
-            // like a sysfs node: writing to a file truncates it, writing to the node does
-            // not affect what it reads back.
             PicoReg.Reading good = PicoReg.fromResponseText("2b 00\n", "sysfs");
             check(PicoReg.STATUS_OK.equals(good.status),
                     "a real response is read (this is the hoped-for case)");
@@ -2580,8 +2188,6 @@ public final class FanLabTest {
             check(Double.isNaN(PicoReg.fromResponseText("hello", "sysfs").degC),
                     "an unparseable response yields no temperature");
 
-            // The node echoing the command back must never be mistaken for data. The stub
-            // does exactly that, because writing to an ordinary file truncates it.
             PicoReg.resetRouteLatch();
             r = PicoReg.readSystemTemperature();
             check(PicoReg.STATUS_UNAVAILABLE.equals(r.status),
@@ -2604,19 +2210,9 @@ public final class FanLabTest {
         }
     }
 
-    // ----------------------------------------------------------------- CAIC
-
-    /**
-     * The CAIC toggle is one write with a one-write undo, and the whole of its safety
-     * argument is that the bytes on the wire are exactly the two DLPU078 documents and
-     * that the read-back never invents a state. So: the strings, byte for byte; the
-     * decode against good, wrong and absent bytes; and the write landing on the stub
-     * node with nothing added to it.
-     */
     private static void testCaic() throws Exception {
         section("CAIC (0x50/0x51) - the command bytes, and never inferring the state");
 
-        // The opcodes are DLPU078's, and the strings are the picoreg format.
         eq(PicoReg.OPCODE_LED_OUTPUT_CONTROL_WRITE, 0x50, "Write LED Output Control Method is 0x50");
         eq(PicoReg.OPCODE_LED_OUTPUT_CONTROL_READ, 0x51, "Read LED Output Control Method is 0x51");
         eq(PicoReg.OPCODE_CAIC_MAX_POWER, 0x57, "Read CAIC LED Max Available Power is 0x57");
@@ -2631,7 +2227,6 @@ public final class FanLabTest {
                         PicoReg.CAIC_MAX_POWER_LEN)),
                 "the max-power read is \"r 57 2\"");
 
-        // Decoding: two values are states, everything else is a wrong answer.
         check(PicoReg.CAIC_ON.equals(PicoReg.decodeLedOutputControl(new int[]{0x01})),
                 "0x01 decodes as on");
         check(PicoReg.CAIC_OFF.equals(PicoReg.decodeLedOutputControl(new int[]{0x00})),
@@ -2645,7 +2240,6 @@ public final class FanLabTest {
         check(PicoReg.CAIC_UNKNOWN.equals(PicoReg.decodeLedOutputControl(new int[0])),
                 "an empty array is unknown");
 
-        // The driver's kernel-log line, for the opcode we asked about and no other.
         int[] p = PicoReg.parseKernelLogLine(
                 "<6>[  456.789] lcd extern: read 0x51 data: 01", 0x51, 1);
         check(p != null && p.length == 1 && p[0] == 0x01, "\"read 0x51 data: 01\" parses as on");
@@ -2660,7 +2254,6 @@ public final class FanLabTest {
         check(PicoReg.parseKernelLogLine("read 0x50 data: 01", 0x51, 1) == null,
                 "nor is the write opcode's own echo");
 
-        // The response handler: on, off, and every way of not knowing.
         PicoReg.CaicReading r = PicoReg.caicFromResponseText("01\n", "sysfs");
         check(PicoReg.CAIC_ON.equals(r.state) && r.known(), "\"01\" reads as on");
         check("sysfs".equals(r.source) && "0x01".equals(r.rawHex()),
@@ -2680,8 +2273,6 @@ public final class FanLabTest {
         r = PicoReg.caicFromResponseText("zip", "sysfs");
         check(PicoReg.CAIC_UNKNOWN.equals(r.state) && r.rawByte < 0,
                 "text with no hex in it is unknown and yields no byte");
-        // "banana" is mostly hex digits; parseHexBytes hands back 0xba and the decode
-        // refuses it. Same shape as the D6h case, and the same reason it matters.
         r = PicoReg.caicFromResponseText("banana", "sysfs");
         check(PicoReg.CAIC_UNKNOWN.equals(r.state),
                 "hex-looking junk is caught by the decode, not reported as a state");
@@ -2689,7 +2280,6 @@ public final class FanLabTest {
                         && !new PicoReg.CaicReading().known(),
                 "a fresh reading is unknown with a reason, never a default state");
 
-        // Max power: raw first, the watts interpretation flagged.
         PicoReg.CaicPower pw = PicoReg.caicPowerFromBytes(new int[]{0x34, 0x12}, "kernel log");
         eq(pw.rawWord, 0x1234, "0x57's word is little endian");
         eq(pw.watts, 46.60, 0.001, "  and /100 gives watts if DLPU078's scaling holds");
@@ -2699,8 +2289,6 @@ public final class FanLabTest {
                         && Double.isNaN(PicoReg.caicPowerFromBytes(null, "x").watts),
                 "one byte, or none, is no power reading");
 
-        // Against the stub tree: the write lands as the bare command, and the read never
-        // manufactures a state out of an echo, an empty node, or a missing one.
         File tmp = File.createTempFile("fanlab-caic", "");
         tmp.delete();
         tmp.mkdirs();
@@ -2724,8 +2312,6 @@ public final class FanLabTest {
             check(PicoReg.writeLedOutputControl(false), "the off write succeeds");
             check("w 50 1 0".equals(slurp(node)), "and the node holds exactly \"w 50 1 0\"");
 
-            // The stub echoes whatever was last written, which is what a file does and
-            // exactly what a node with no show() must not be mistaken for.
             r = PicoReg.readLedOutputControl();
             check(PicoReg.CAIC_UNKNOWN.equals(r.state),
                     "an echo of \"r 51 1\" is not decoded as a state");
@@ -2746,16 +2332,6 @@ public final class FanLabTest {
         }
     }
 
-    // ----------------------------------------------------------------- image processing
-
-    /**
-     * The two image-processing controls, which are the reason CAIC had nothing to do.
-     *
-     * The whole case rests on bytes: the fixed-point gain, the packed LABB control byte, and
-     * the exact command strings. The projector's own read-backs -- {@code 00 20 60} and
-     * {@code 10 80 20 00} -- are in here verbatim, so a decoder that drifts from what the
-     * hardware actually said fails here rather than on the machine.
-     */
     private static void testImageProcessing() throws Exception {
         section("CAIC image control (0x84/0x85) and LABB (0x80/0x81) - the bytes");
 
@@ -2764,7 +2340,7 @@ public final class FanLabTest {
         eq(PicoReg.OPCODE_LABB_WRITE, 0x80, "Write Local Area Brightness Boost is 0x80");
         eq(PicoReg.OPCODE_LABB_READ, 0x81, "and the read is 0x81");
 
-        // ---- the fixed-point gain: b7=2^2 down to b0=2^-5, so the byte is gain x 32 ----
+        // The fixed-point gain: b7=2^2 down to b0=2^-5, so the byte is gain x 32.
         eq(PicoReg.encodeCaicGain(1.0), 0x20, "1.0 encodes as 0x20");
         eq(PicoReg.encodeCaicGain(1.5), 0x30, "1.5 encodes as 0x30");
         eq(PicoReg.encodeCaicGain(2.0), 0x40, "2.0 encodes as 0x40");
@@ -2773,7 +2349,6 @@ public final class FanLabTest {
         eq(PicoReg.decodeCaicGain(0x30), 1.5, 1e-9, "0x30 back to 1.5");
         eq(PicoReg.decodeCaicGain(0x40), 2.0, 1e-9, "0x40 back to 2.0");
         eq(PicoReg.decodeCaicGain(0x80), 4.0, 1e-9, "0x80 back to 4.0");
-        // Every representable step round-trips, not just the four named ones.
         for (int b = 0x20; b <= 0x80; b++) {
             if (PicoReg.encodeCaicGain(PicoReg.decodeCaicGain(b)) != b) {
                 check(false, "the gain round trip loses byte 0x" + Integer.toHexString(b));
@@ -2782,9 +2357,6 @@ public final class FanLabTest {
         }
         check(true, "and every byte from 0x20 to 0x80 survives decode-then-encode");
 
-        // Out of range is refused, not clamped: the controller rejects the whole command on
-        // an invalid write parameter, so a clamp would send a gain the caller never asked
-        // for while a pass-through would send one that silently does not execute.
         eq(PicoReg.encodeCaicGain(0.9), -1, "0.9 is refused - below the 1.0 the DLPC accepts");
         eq(PicoReg.encodeCaicGain(4.1), -1, "4.1 is refused - above the 4.0 the DLPC accepts");
         eq(PicoReg.encodeCaicGain(0.0), -1, "and so is 0");
@@ -2793,7 +2365,6 @@ public final class FanLabTest {
                 "so no command string is produced for one either - nothing is sent at all");
         check(Double.isNaN(PicoReg.decodeCaicGain(-1)), "no byte decodes to NaN, never to 0");
 
-        // ---- what the projector actually answered ----
         PicoReg.CaicImage img = PicoReg.caicImageFromBytes(new int[]{0x00, 0x20, 0x60}, "kernel log");
         check(img.known, "the projector's own \"00 20 60\" is a reading");
         eq(img.gain, 1.0, 1e-9,
@@ -2814,7 +2385,6 @@ public final class FanLabTest {
                         && PicoReg.caicImageFromResponseText("002060", "sysfs").known,
                 "and it parses whether the bytes arrive spaced or packed");
 
-        // ---- the LABB control byte, and the sharpness it must not drop ----
         eq(PicoReg.labbControlByte(1, true), 0x11,
                 "sharpness 1 with LABB enabled is 0x11: b7:4 the sharpness, b1:0 the control "
                         + "- and 0x11 is the byte that was actually written on 2026-09-07, "
@@ -2843,7 +2413,6 @@ public final class FanLabTest {
                 "b3:2 are left clear - which is where an earlier version of this put the "
                         + "control field, on the datasheet alone and before anyone had run it");
 
-        // ---- what the projector actually answered ----
         PicoReg.Labb labb = PicoReg.labbFromBytes(new int[]{0x10, 0x80, 0x20, 0x00}, "kernel log");
         check(labb.known, "the projector's own \"10 80 20 00\" is a reading");
         check(!labb.enabled, "  and LABB is Disabled - control field 0h");
@@ -2869,7 +2438,6 @@ public final class FanLabTest {
         check(!PicoReg.labbFromResponseText("zip", "x").known,
                 "and text with no hex in it is not one either");
 
-        // ---- the command strings, byte for byte, against the stub node ----
         check("w 84 3 0 40 60".equals(PicoReg.caicImageControlCommand(2.0, 0x60)),
                 "a 2.0 gain is exactly \"w 84 3 0 40 60\"");
         check("w 84 3 0 20 60".equals(
@@ -2917,16 +2485,11 @@ public final class FanLabTest {
                     "the off write succeeds");
             check("w 80 2 10 80".equals(slurp(node)), "and holds exactly \"w 80 2 10 80\"");
 
-            // An out-of-range gain must not reach the node at all: the DLPC would reject the
-            // whole command, so the byte on the wire would change nothing while the app
-            // believed it had set a budget.
             check(!PicoReg.writeCaicImageControl(9.0, 0x60),
                     "a 9.0 gain is refused even with the node right there");
             check("w 80 2 10 80".equals(slurp(node)),
                     "  and nothing was written - the node still holds the previous command");
 
-            // The stub echoes what was last written, which is what a file does and exactly
-            // what a node with no show() must not be mistaken for.
             PicoReg.Labb echoed = PicoReg.readLabb();
             check(!echoed.known, "an echo of \"r 81 4\" is not decoded as a state");
             check(echoed.reason.indexOf("show()") >= 0
@@ -2947,23 +2510,6 @@ public final class FanLabTest {
         }
     }
 
-    // ----------------------------------------------------------------- the Looks
-
-    /**
-     * The colour sequence presets, and the arithmetic that says Look 0 is the end of it.
-     *
-     * A Look divides the frame's time between the three LEDs. The total is fixed, so every
-     * Look is a trade, and the sweep of all 19 on 2026-09-07 says what each one trades:
-     * Look 0 is 40/40/20 and reads white on a white field, and every other Look takes red
-     * down to 25-33 % and gives the time to green. Looks 1 and 15 read visibly green.
-     *
-     * Two things are pinned here. The <b>duty encoding</b>, because UQ8.8 over 256 is where
-     * TI's own guide and TI's own reference Python disagree, and the guide's worked example
-     * settles it -- the three have to sum to 100 and only /256 delivers that. And the
-     * <b>sum check</b> itself, which is what makes the decode self-verifying: get the byte
-     * order or the scale wrong and the three stop adding up, so a wrong reading is refused
-     * rather than reported.
-     */
     private static void testLooks() {
         section("the Looks (22h/23h/26h) - the duty split, and why 0 is the only one");
 
@@ -2982,7 +2528,7 @@ public final class FanLabTest {
                         PicoReg.SEQUENCE_HEADER_LEN)),
                 "the split read is \"r 26 1e\" - thirty in hex, which is what the node wants");
 
-        // ---- UQ8.8: high byte whole percent, low byte 256ths ----
+        // UQ8.8: high byte whole percent, low byte 256ths.
         eq(PicoReg.decodeDuty(0x00, 0x28), 40.0, 1e-9, "00 28 little endian is 40.0 %");
         eq(PicoReg.decodeDuty(0x00, 0x14), 20.0, 1e-9, "00 14 is 20.0 %");
         eq(PicoReg.decodeDuty(0x80, 0x1E), 30.5, 1e-9,
@@ -2993,7 +2539,6 @@ public final class FanLabTest {
         check(Math.abs((30.5 + 50.0 + 19.5) - PicoReg.DUTY_SUM) < 1e-9,
                 "  those three summing to exactly 100, as DLPU078A requires");
 
-        // ---- Look 0, as the projector answered it ----
         PicoReg.Look zero =
                 PicoReg.sequenceHeaderFromBytes(look(0x2800, 0x2800, 0x1400), "kernel log");
         check(zero.known, "Look 0's own 40/40/20 is a reading");
@@ -3008,7 +2553,6 @@ public final class FanLabTest {
         check(zero.summary().indexOf("40.0/40.0/20.0") >= 0,
                 "which the screen prints as the split: " + quote(zero.summary()));
 
-        // ---- and one of the eighteen that are not ----
         PicoReg.Look fifteen =
                 PicoReg.sequenceHeaderFromBytes(look(0x1900, 0x3700, 0x1400), "kernel log");
         check(fifteen.known, "a 25/55/20 Look reads too - the fifteen points red lost");
@@ -3019,7 +2563,6 @@ public final class FanLabTest {
         PicoReg.lookSelectIntoBytes(fifteen, new int[]{15, 0, 0x10, 0x27, 0, 0});
         check(!fifteen.neutral(), "  and it is not the neutral Look");
 
-        // ---- the sum check is the decode's own proof ----
         PicoReg.Look bad = PicoReg.sequenceHeaderFromBytes(look(0x2800, 0x2800, 0x2800), "x");
         check(!bad.known, "three duty cycles summing to 120 are not a reading");
         check(bad.reason.indexOf("100") >= 0,
@@ -3032,7 +2575,6 @@ public final class FanLabTest {
                 "and getting the byte order wrong stops the three adding up, which is the "
                         + "whole point of checking the sum rather than trusting the layout");
 
-        // ---- blocks that disagree are reported, not averaged ----
         int[] mismatch = look(0x2800, 0x2800, 0x1400);
         mismatch[15] = 0x01;
         PicoReg.Look apart = PicoReg.sequenceHeaderFromBytes(mismatch, "x");
@@ -3041,7 +2583,6 @@ public final class FanLabTest {
         check(apart.summary().indexOf("DISAGREE") >= 0,
                 "  and puts it on the screen: " + quote(apart.summary()));
 
-        // ---- nothing short of thirty bytes is a reading ----
         check(!PicoReg.sequenceHeaderFromBytes(new int[]{0x00, 0x28}, "x").known,
                 "two bytes is not a 0x26 reading");
         check(!PicoReg.sequenceHeaderFromBytes(null, "x").known, "nor is none");
@@ -3056,8 +2597,7 @@ public final class FanLabTest {
 
     /**
      * A 0x26 response: three UQ8.8 duty words, little endian, in the Look block, and the
-     * same three again in the Sequence block fifteen bytes later. Everything between is the
-     * frame counts and the vector count, which this app does not read.
+     * same three again in the Sequence block fifteen bytes later.
      */
     private static int[] look(int red, int green, int blue) {
         int[] b = new int[PicoReg.SEQUENCE_HEADER_LEN];
@@ -3071,18 +2611,11 @@ public final class FanLabTest {
         return b;
     }
 
-    // ----------------------------------------------------------------- LED drive
-
     /**
-     * The configured levels, and the clamp that is the whole reason this class has an upper
-     * bound at all.
-     *
-     * 97 is not a round number and not a preference. The driver turns a percent into a
-     * 7-bit DAC code, {@code code = (30*mA + 40000) / 1968}, and clamps it with
-     * {@code if (code > 0x7F) code = 0x3F} -- so an over-request does not saturate the
-     * channel, it drops it to about 40 % and the picture goes <i>dim</i>. The code crosses
-     * 127 at about 99 % of the measured 7.1 A per-channel maximum, so anything that could
-     * store 100 would be storing a dim picture.
+     * The configured levels and the upper clamp. 97 is where the driver's DAC code
+     * {@code code = (30*mA + 40000) / 1968} crosses 127, and its own
+     * {@code if (code > 0x7F) code = 0x3F} then drops the channel to about 40 % --
+     * so anything that could store 100 would be storing a dim picture.
      */
     private static void testLedDriveConfig() {
         section("LED drive: the four levels, and the 97 that is not a round number");
@@ -3108,7 +2641,6 @@ public final class FanLabTest {
                 "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
         eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
 
-        // ---- the clamp, which is the point ----
         LedDrive.Config hot = new LedDrive.Config();
         for (int i = 0; i < LedDrive.TIERS; i++) {
             hot.level[i] = 100;
@@ -3126,7 +2658,6 @@ public final class FanLabTest {
         check(LedDrive.Config.decode("d1,-40,0,255,9999").encode().equals("d1,20,20,97,97"),
                 "including on a line nobody could have typed by accident");
 
-        // ---- channel 1 keeps the stock table's ratio, whatever the level ----
         eq(LedDrive.redFor(3, 95), 89, "Presentation 95 drives the red die at 89");
         eq(LedDrive.redFor(3, 90), 84, "and the older 90 drove it at 84");
         eq(LedDrive.redFor(3, 97), 91, "and the ceiling level at 91");
@@ -3141,7 +2672,6 @@ public final class FanLabTest {
         eq(LedDrive.tierOf(3), 3, "Presentation the last");
         eq(LedDrive.tierOf(5), -1, "and an unknown mode has none");
 
-        // ---- a broken setting must never leave the LEDs somewhere nobody chose ----
         check(LedDrive.Config.decode(null).isStock(), "a missing config is stock");
         check(LedDrive.Config.decode("").isStock(), "an empty one is stock");
         check(LedDrive.Config.decode("d1,30,50").isStock(), "a truncated one is stock");
@@ -3153,21 +2683,16 @@ public final class FanLabTest {
     }
 
     /**
-     * The {@code rgbcurrent} show handler, which is racy, off by one, and now explained.
-     *
-     * A failed SPI read hands the driver {@code 0x8080}; it computes
-     * {@code current = -1333 ma, percent = -18}; sysfs prints that percent as an unsigned
-     * byte. That is where the 238 and 241 seen in the field come from, and it is why any
-     * field above 100 has to read as "could not tell" rather than as the kernel having
-     * overwritten the drive -- treating it as a mismatch would rewrite the nodes every
-     * five seconds for ever.
+     * The {@code rgbcurrent} show handler. A failed SPI read hands the driver
+     * {@code 0x8080}, which computes percent = -18 and prints as an unsigned byte --
+     * the 238 and 241 seen in the field. Any field above 100 therefore reads as
+     * "could not tell", never as the kernel having overwritten the drive.
      */
     private static void testLedDriveReadback() {
         section("LED drive: reading back, the off-by-one and the 238/241 glitch");
 
-        // Exactly what the projector printed on 2026-09-07 with 90 written to rgbcurrent
-        // and 84 to redcurrent. duty_g is the red channel: the kernel prints ch0..ch3
-        // under the labels r/g/b/b2 while the map is green/red/b2/blue.
+        // duty_g is the red channel: the kernel prints ch0..ch3 under the labels
+        // r/g/b/b2 while the map is green/red/b2/blue.
         int[] rb = LedDrive.parseReadback("red_current=13 green_current=13 blue_current=13 "
                 + "duty_r=89 duty_g=83 duty_b=89 duty_b2=89");
         check(rb != null && rb[0] == 83 && rb[1] == 89 && rb[2] == 89,
@@ -3175,7 +2700,6 @@ public final class FanLabTest {
         check(LedDrive.parseReadback("duty_r=100 duty_g=100") != null,
                 "100 is a legal reading");
 
-        // Three fields carry the common level, so one glitching is not a lost reading.
         rb = LedDrive.parseReadback("duty_r=238 duty_g=83 duty_b=89 duty_b2=89");
         check(rb != null && rb[0] == 83 && rb[1] == 89 && rb[2] == 89,
                 "a glitch in one common field is covered by the other two");
@@ -3183,9 +2707,6 @@ public final class FanLabTest {
         check(rb != null && rb[1] == 89 && rb[2] == 89,
                 "two glitches still leave a usable reading");
 
-        // The half-written table: the kernel writes the four channels one at a time, and
-        // this is Eco part way through, read off the projector. Agreeing with it is how a
-        // colour cast gets reported as a correct override.
         rb = LedDrive.parseReadback("duty_r=49 duty_g=44 duty_b=39 duty_b2=39");
         check(rb != null && rb[1] == 39 && rb[2] == 49,
                 "channels that disagree come back as a range, not as whichever was first");
@@ -3218,16 +2739,6 @@ public final class FanLabTest {
         check(!LedDrive.matches(55, 76), "and the stock table reappearing certainly is");
     }
 
-    /**
-     * The decision, walked through the states it has to get right, with the writes landing
-     * on the stub tree.
-     *
-     * The sequences here are the ones that cost something when they are wrong: an override
-     * that never applies, one that rewrites the nodes every second, one that does not come
-     * back after the kernel reinstates the stock table, one that does not go away when the
-     * app stops being the fan controller, and a ceiling trip that re-arms itself and
-     * flickers the picture.
-     */
     private static void testLedDriveDecide() throws Exception {
         section("LED drive: apply, hold, rewrite, restore, and the ceiling latch");
 
@@ -3240,24 +2751,18 @@ public final class FanLabTest {
             File rgbLevel = new File(root, "sys/class/dlpc343x/rgblevel");
 
             LedDrive d = new LedDrive();
-            // Pinned at the older 90 rather than taken from Config.bright(), on purpose.
-            // This test drives the state machine against the read-back string the projector
-            // actually printed on 2026-09-07 -- "duty_r=89 duty_g=83", 90 written and one
-            // below on the way back -- so it must not move every time the one-press preset
-            // does. What bright() currently holds is testLedDriveConfig's business.
+            // Pinned at 90 rather than Config.bright(), to match the read-back below.
             LedDrive.Config raised = new LedDrive.Config();
             raised.level[2] = 70;
             raised.level[3] = 90;
             long t = 1000000L;
 
-            // ---- not allowed: nothing is written, and nothing is believed ----
             LedDrive.Plan p = d.decide(raised, 3, false, 45.0, null, t);
             eq(p.action, LedDrive.Plan.NONE, "not allowed writes nothing at all");
             check(!d.overriding(), "and believes nothing is applied");
             eq(d.appliedLevel(), -1, "which is the blank the CSV column carries");
             check("stock".equals(d.state()), "with the screen saying stock");
 
-            // ---- the enabling edge applies, immediately ----
             p = d.decide(raised, 3, true, 45.0, null, t);
             eq(p.action, LedDrive.Plan.APPLY, "the enabling edge applies");
             eq(p.other, 90, "at Presentation's configured level");
@@ -3270,24 +2775,16 @@ public final class FanLabTest {
             check(d.state().startsWith("applied 90/84"),
                     "and the screen says so  (got " + quote(d.state()) + ")");
 
-            // ---- steady state: a read-back that agrees writes nothing ----
             t += 1000L;
             p = d.decide(raised, 3, true, 45.0, "duty_r=89 duty_g=83", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "a read-back one below what was written is agreement, not a mismatch");
 
-            // ---- the glitch is not a mismatch ----
             t += 1000L;
             p = d.decide(raised, 3, true, 45.0, "duty_r=238 duty_g=241 duty_b=238", t);
             eq(p.action, LedDrive.Plan.NONE,
                     "and the 238 glitch is 'could not tell', which also writes nothing");
 
-            // ---- a genuine mismatch rewrites, but not before the rate limit ----
-            // Anchored to the constant rather than to a wall-clock guess: this assertion
-            // was written against a 5 s limit and silently became untrue when the limit
-            // was shortened, which is the sort of test that only fails once it matters.
-            // Start the limit's clock from a known write rather than from whatever the
-            // steps above happened to leave behind.
             p = d.decide(raised, 3, true, 45.0, "duty_r=76 duty_g=71", t, true);
             eq(p.action, LedDrive.Plan.APPLY,
                     "urgent rewrites regardless of the limit -- what a mode change needs");
@@ -3305,7 +2802,6 @@ public final class FanLabTest {
             eq(p.other, 90, "at the same level");
             check(d.perform(p), "and the rewrite lands");
 
-            // ---- a brightness-mode change is an edge, and ignores the limit ----
             put(root, "sys/class/dlpc343x/rgblevel", "2\n");
             t += 1000L;
             p = d.decide(raised, 2, true, 45.0, null, t);
@@ -3315,7 +2811,6 @@ public final class FanLabTest {
             eq(p.red, 61, "and Normal's own ratio");
             check(d.perform(p), "with both writes landing again");
 
-            // ---- losing the coupling puts the stock table back ----
             t += 1000L;
             p = d.decide(raised, 2, false, 45.0, null, t);
             eq(p.action, LedDrive.Plan.RESTORE,
@@ -3332,7 +2827,6 @@ public final class FanLabTest {
             eq(p.action, LedDrive.Plan.NONE,
                     "and it is done once, not on every tick that follows");
 
-            // ---- the ceiling: dropped, latched, and no automatic re-arm ----
             put(root, "sys/class/dlpc343x/rgblevel", "3\n");
             LedDrive e = new LedDrive();
             long u = 2000000L;
@@ -3355,7 +2849,6 @@ public final class FanLabTest {
                             + "more objectionable than a fan swing, so it waits to be asked");
             check(e.tripped(), "the latch holds");
 
-            // ---- and releases on the two things that make the trip stale ----
             u += 1000L;
             p = e.decide(raised, 2, true, 40.0, null, u);
             check(!e.tripped(), "a brightness-mode change is a different LED load, so it releases");
@@ -3374,7 +2867,6 @@ public final class FanLabTest {
             eq(p.action, LedDrive.Plan.APPLY, "at the new levels");
             eq(p.other, 80, "which is the new Presentation level");
 
-            // ---- the handback that is not a tick ----
             LedDrive g = new LedDrive();
             long w = 4000000L;
             check(g.forceRestore(w).action == LedDrive.Plan.NONE,
@@ -3386,7 +2878,6 @@ public final class FanLabTest {
             eq(back.action, LedDrive.Plan.RESTORE, "forcing a restore asks for the rewrite");
             check(!g.overriding(), "and drops the belief immediately");
 
-            // ---- a stock table is the same as off, whatever the switch says ----
             LedDrive h = new LedDrive();
             p = h.decide(new LedDrive.Config(), 3, true, 45.0, null, w);
             eq(p.action, LedDrive.Plan.NONE,
@@ -3399,16 +2890,6 @@ public final class FanLabTest {
         }
     }
 
-    /**
-     * LINEAR's ceiling under the LED drive override: promoted when it is still the untouched
-     * default, left exactly alone when somebody has set it.
-     *
-     * The numbers behind the promotion are inferred from the x1.18 the boost costs, not
-     * measured, and they are in {@link LinearConfig#BOOST_CEILING_C}. What is checked here
-     * is the rule, which is the part that can be wrong in a way nobody notices: a controller
-     * that quietly rewrote a ceiling its owner had chosen, or that stored 54 where 52 was
-     * meant, would both look correct on screen.
-     */
     private static void testLinearCeilingPromotion() {
         section("linear: the ceiling the LED drive override moves, and the ones it must not");
 
@@ -3430,7 +2911,6 @@ public final class FanLabTest {
                 "and a second pass over an already-raised config moves nothing and claims "
                         + "nothing, so the status line does not announce it twice");
 
-        // A ceiling somebody chose is a ceiling somebody chose, whatever else is on.
         double[] hand = {35.0, 49.0, 51.9, 52.1, 54.0, 60.0};
         for (int i = 0; i < hand.length; i++) {
             LinearConfig h = new LinearConfig();
@@ -3442,9 +2922,6 @@ public final class FanLabTest {
             eq((int) Math.round(h.ceilingC * 10), (int) Math.round(was * 10), "  exactly");
         }
 
-        // Nothing is stored. The promotion is applied to the copy the loop is about to use,
-        // so the encoded line -- which is what reaches SharedPreferences -- still says 52.0,
-        // and switching the override off puts the ceiling back without a migration.
         LinearConfig stored = new LinearConfig();
         LinearConfig loaded = LinearConfig.decode(stored.encode());
         LinearConfig.promoteForBoost(loaded, true);
@@ -3470,12 +2947,9 @@ public final class FanLabTest {
         }
     }
 
-    // ----------------------------------------------------------------- output
-
     private static void testReportOutput() throws Exception {
         section("the output files - which are the actual deliverable");
 
-        // The trace: same first thirteen columns as ordinary telemetry, then the sweep's.
         int headerCols = csvFields(SweepReport.TRACE_HEADER).size();
         check(SweepReport.TRACE_HEADER.startsWith(CsvLogger.HEADER),
                 "the trace begins with exactly the ordinary telemetry columns, so anything "
@@ -3502,14 +2976,12 @@ public final class FanLabTest {
                 "the DLPC columns are blank on rows where no reading was taken - a stale "
                         + "value repeated down a column is indistinguishable from a fresh one");
 
-        // Numbers must never be written as NaN, which is not JSON.
         check("null".equals(Json.num(Double.NaN, 2)), "NaN is written as JSON null");
         check("null".equals(Json.num(Double.POSITIVE_INFINITY, 2)), "so is infinity");
         check("43.00".equals(Json.num(43.0, 2)), "and an ordinary number keeps its decimals");
         check("-0.50".equals(Json.num(-0.5, 2)), "including negatives");
         check("\"a\\\"b\\nc\"".equals(Json.escape("a\"b\nc")), "quotes and newlines escape");
 
-        // A whole report from a real (simulated) run.
         RunResult r = runSweep(0, 60.0, 3 * 3600, -1);
         r.engine.mark("audible", 1234L);
         SweepReport.Meta m = new SweepReport.Meta();
@@ -3542,7 +3014,6 @@ public final class FanLabTest {
         check(json.indexOf("\"kind\": \"audible\"") >= 0,
                 "the audibility marker is in the file");
 
-        // The loud part: an unreadable DLPC must be shouted about, not quietly omitted.
         check(json.indexOf("DLPC SYSTEM TEMPERATURE (D6h) UNAVAILABLE") >= 0,
                 "an unreadable DLPC temperature produces a loud top-level warning rather "
                         + "than a quietly missing column");
@@ -3553,7 +3024,6 @@ public final class FanLabTest {
                         + "the DMD's limit is an array temperature nobody can measure, and "
                         + "the relation between them is an unestablished board constant");
 
-        // With a reading attached, the warning must go away and the value appear.
         PicoReg.Reading good = new PicoReg.Reading();
         good.status = PicoReg.STATUS_OK;
         good.degC = 41.0;
@@ -3572,7 +3042,6 @@ public final class FanLabTest {
         check(json2.indexOf("\"raw_word\": \"0x0029\"") >= 0,
                 "  with the raw word kept so the units can be reinterpreted offline");
 
-        // A run with no markers must say the human half is still missing.
         RunResult bare = runSweep(0, 60.0, 400, 300);
         String json3 = SweepReport.sweepJson(bare.engine, m, 0L, 300L);
         check(json3.indexOf("No audibility marker was recorded") >= 0,
@@ -3581,7 +3050,6 @@ public final class FanLabTest {
         check(json3.indexOf("The run did not complete") >= 0,
                 "and an aborted run says that too, together with what survived");
 
-        // VERIFY's report.
         HoldSession h = new HoldSession(62, 3, 0L, 1000L);
         h.tick(1000L, 44.0);
         h.check(HoldSession.ABOUT_PATTERN, HoldSession.VERDICT_SHARP, 2000L, 3000L);
@@ -3616,13 +3084,11 @@ public final class FanLabTest {
                 "  and the reversal count, which is what separates settling from hunting");
         check(sj.indexOf("\"judged_span\": 0") >= 0, "  and how far the duty travelled");
 
-        // The names.
         check("trace_1700000000.csv".equals(SweepReport.traceName(1700000000L, false)),
                 "trace file name matches the specification");
         check("sweep_1700000000.json".equals(SweepReport.reportName(1700000000L, false)),
                 "report file name matches the specification");
 
-        // Whole-file fan-out, which is what puts the report on a USB stick.
         File tmp = File.createTempFile("fanlab-out", "");
         tmp.delete();
         File a = new File(tmp, "a");
@@ -3642,7 +3108,6 @@ public final class FanLabTest {
                             + "stick is always a complete document");
             eq(CsvLogger.writeWhole(null, "x", "y").size(), 0, "a null list writes nothing");
 
-            // A trace logger with the sweep header.
             CsvLogger t = new CsvLogger("trace_1.csv", SweepReport.TRACE_HEADER);
             t.setDirs(dirs);
             t.append(row);
@@ -3656,7 +3121,6 @@ public final class FanLabTest {
         }
     }
 
-    /** Split a CSV line on top-level commas, respecting the quoting CsvLogger.q produces. */
     private static List<String> csvFields(String line) {
         List<String> out = new ArrayList<String>();
         StringBuilder cur = new StringBuilder();
@@ -3687,7 +3151,6 @@ public final class FanLabTest {
         return out;
     }
 
-    /** Braces and brackets balance, and never go negative, outside of string literals. */
     private static boolean jsonBalanced(String s) {
         int depth = 0;
         boolean inQuote = false;
@@ -3715,7 +3178,6 @@ public final class FanLabTest {
         return depth == 0 && !inQuote;
     }
 
-    /** True if {@code token} appears outside any string literal, i.e. as a JSON value. */
     private static boolean hasBareToken(String s, String token) {
         boolean inQuote = false;
         for (int i = 0; i < s.length(); i++) {
@@ -3737,28 +3199,11 @@ public final class FanLabTest {
         return false;
     }
 
-    // ----------------------------------------------------------------- linear
-
-    /**
-     * Measured LED rise above ambient in Presentation, duty by duty -- the same table
-     * {@code tools/CurveSim.java} runs on.
-     *
-     * Interpolated rather than fitted to a line on purpose. The plant is roughly ten times
-     * more responsive at duty 35 than at 80 (0.60 against 0.06 C per duty point), and an
-     * earlier straight-line model was three times too gentle exactly where the quiet end
-     * operates, which made every ramp look stable.
-     */
+    /** Measured LED rise above ambient in degrees C, Presentation, duty by duty. */
     private static final int[] RISE_DUTY = {30, 35, 40, 45, 50, 55, 60, 70, 83};
     private static final double[] RISE_PRES =
             {33.76, 29.92, 26.91, 24.9, 23.7, 22.3, 21.5, 20.2, 19.4};
 
-    /**
-     * Drive a VERIFY steady phase against the same two-pole plant the hunting check uses.
-     *
-     * The plant starts at the equilibrium for {@code startDuty} unless {@code fromCold},
-     * in which case it starts at ambient and warms -- which is what a settling transient
-     * looks like and is the thing the judged tail exists to exclude.
-     */
     private static HoldSession runSteady(CurveConfig cfg, double ambient, int startDuty,
                                          int seconds, double noise, boolean fromCold) {
         HoldSession h = new HoldSession(startDuty, 3, 0L, 0L);
@@ -3782,7 +3227,6 @@ public final class FanLabTest {
     private static void testHoldSteadyPhase() {
         section("VERIFY steady phase: does the fan sit still once the curve is driving");
 
-        // ---- the gate FanService reads to decide whether the LED drive may stay on ----
         HoldSession g = new HoldSession(50, 3, 0L, 0L);
         eq(g.phase(), HoldSession.PHASE_HOLD, "a session starts in the hold phase");
         check(!g.closedLoop(), "a pinned hold is NOT closed-loop, so the LED drive is dropped");
@@ -3795,7 +3239,6 @@ public final class FanLabTest {
         g.stop("user");
         check(!g.closedLoop(), "a finished session is never closed-loop");
 
-        // ---- guards on beginSteady ----
         HoldSession c1 = new HoldSession(50, 3, 0L, 0L);
         c1.beginSteady(CurveConfig.preset(0), 5, 50, 0L);
         eq(c1.steady().seconds, 60, "a silly short phase is raised to 60 s");
@@ -3811,7 +3254,6 @@ public final class FanLabTest {
         c4.beginSteady(CurveConfig.preset(0), 600, 50, 0L);
         check(c4.steady() == null, "a finished session cannot be restarted into a steady phase");
 
-        // ---- the target: the fan does not move ----
         CurveConfig quiet = CurveConfig.preset(0);
         HoldSession st = runSteady(quiet, 24.0, 38, 900, 0.03, false);
         check("steady".equals(st.verdict()), "Quiet resting on its shelf: the fan never moves"
@@ -3824,13 +3266,6 @@ public final class FanLabTest {
 
         eq(st.steady().maxTick, 0, "  and no tick moved it at all");
 
-        // ---- settling is not hunting, and a change count alone cannot tell them apart ----
-        //
-        // Warming from cold is the honest worst case: over half an hour the duty climbs
-        // twenty-odd points, and because the slow pole is still arriving at the end, the
-        // judged half is NOT quiet. That is correct and is why the verdict leans on
-        // direction rather than on the tail alone -- a settle is overwhelmingly
-        // one-directional however long it takes.
         HoldSession se = runSteady(quiet, 24.0, 35, 1800, 0.03, true);
         check(se.steady().changes > 0, "warming up from cold, the duty moves ("
                 + se.steady().changes + " changes over the whole phase)");
@@ -3841,14 +3276,9 @@ public final class FanLabTest {
         check(!"hunting".equals(se.verdict()),
                 "  so it is not called hunting (\"" + se.verdict() + "\")");
 
-        // ---- the judged tail, driven directly so the window is exact ----
-        // No plant here on purpose: this is testing the windowing arithmetic, and a plant
-        // would make the answer depend on how fast the plant happens to settle.
         HoldSession jt = new HoldSession(40, 3, 0L, 0L);
         jt.beginSteady(quiet, 600, 40, 0L);
         for (int t = 1; t <= 600; t++) {
-            // swing it for the first two hundred seconds, then hold it dead flat, so the
-            // judged half beginning at 300 s sees a machine that has finished moving
             double c = t <= 200 ? ((t / 20) % 2 == 0 ? 50.0 : 54.0) : 52.0;
             jt.tick(t * 1000L, c);
         }
@@ -3861,17 +3291,10 @@ public final class FanLabTest {
         check("steady".equals(jt.verdict()),
                 "  so the verdict is steady (\"" + jt.verdict() + "\")");
 
-        // ---- a machine that is still drifting cannot be reported as well-behaved ----
-        //
-        // This is the hole the reversal count leaves on its own. A light engine still
-        // warming ratchets its duty one way and never turns round, so it scores zero
-        // reversals -- identical to a curve that is genuinely sitting still. Reading that
-        // as "no hunting" is wrong: the fan has not yet had the chance to hunt. So drift is
-        // measured, and while it is above SETTLED_C_PER_HOUR no quiet verdict is offered.
         HoldSession dr = new HoldSession(40, 3, 0L, 0L);
         dr.beginSteady(quiet, 600, 40, 0L);
         for (int t = 1; t <= 600; t++) {
-            dr.tick(t * 1000L, 50.0 + 6.0 * t / 600.0);      // a steady climb, no wobble
+            dr.tick(t * 1000L, 50.0 + 6.0 * t / 600.0);
         }
         check(dr.steady().changes > 0, "a warming machine moves the duty ("
                 + dr.steady().changes + " changes)");
@@ -3883,7 +3306,6 @@ public final class FanLabTest {
                 "  so no opinion is offered rather than a reassuring one (\""
                 + dr.verdict() + "\")");
 
-        // ...but drift must never HIDE a hunt. A reversal is proof whenever it happens.
         HoldSession dh = new HoldSession(40, 3, 0L, 0L);
         dh.beginSteady(quiet, 600, 40, 0L);
         for (int t = 1; t <= 600; t++) {
@@ -3894,14 +3316,6 @@ public final class FanLabTest {
         check(!"unsettled".equals(dh.verdict()),
                 "  and that is reported, not suppressed by the drift (\"" + dh.verdict() + "\")");
 
-        // ---- the 2026-09-08 measurement, as a regression test ----
-        //
-        // This row rested 3.7 duty points quieter than the shipped one, cleared the noise
-        // ceiling, cleared the 60 C trip by the same margin and scored 84 of 84 in
-        // CurveSim. On the hardware it moved nine times in twelve minutes where the shipped
-        // row moved zero, because it steepens the segment the machine rests on from 3.0 to
-        // 4.4 duty/C and the light engine wanders 0.6-0.9 C at a fixed duty. Nothing on the
-        // device could see that before this phase existed. Now it can, so it is pinned here.
         CurveConfig rejected = CurveConfig.decode(
                 "v1,47,51,55,60,66,70,30,38,40,50,68,83,30,38,40,50,68,83,30,38,40,62,76,83,"
                 + "0.8,0.25,0.12,10,30,83,1,70,2.0,62,1.5");
@@ -3917,7 +3331,6 @@ public final class FanLabTest {
         check(!"steady".equals(hunt.verdict()),
                 "  so it is not reported as steady (\"" + hunt.verdict() + "\")");
 
-        // ---- the statistics are self-consistent ----
         HoldSession.Steady k = keep.steady();
         check(k.samples > 0, "every tick is counted");
         check(k.judgedSamples > 0 && k.judgedSamples < k.samples,
@@ -3947,15 +3360,6 @@ public final class FanLabTest {
         return RISE_PRES[RISE_PRES.length - 1];
     }
 
-    /**
-     * The controller is a pure function of temperature, duty and the clock, so it is driven
-     * directly here rather than through anything that needs a device.
-     *
-     * The clock never starts at 0 in these tests. Both controllers use 0 to mean "no
-     * previous step" -- the same convention {@link FanCurve} has always used for its slew --
-     * and on hardware the argument is {@code elapsedRealtime()}, which is only 0 at the
-     * instant of boot, minutes before the service exists.
-     */
     private static void testLinearController() {
         section("linear: walks toward the ceiling and never stops walking");
         LinearConfig cfg = new LinearConfig();
@@ -3971,25 +3375,17 @@ public final class FanLabTest {
         eq(cfg.minDuty, 30, "the floor is 30");
         eq(cfg.maxDuty, 83, "the ceiling duty is 83");
 
-        // ---- direction ----
         FanLinear f = new FanLinear();
         f.resync(50);
         long ms = 10000L;
-        f.step(cfg, 52.0, true, ms);                     // the look-before-moving tick
+        f.step(cfg, 52.0, true, ms);
         ms += cfg.upStepMs;
         eq(f.step(cfg, 52.5, true, ms), 51, "above the ceiling, one point up");
         ms += cfg.downStepMs;
         eq(f.step(cfg, 51.0, true, ms), 50, "below it, one point down");
         ms += cfg.upStepMs;
-        // Exactly on the ceiling steps UP. With no resting state there is no "on the
-        // boundary and therefore fine", and if a branch has to own the exact value it
-        // should be the one that cools.
         eq(f.step(cfg, 52.0, true, ms), 51, "exactly at the ceiling, up");
 
-        // ---- it never holds ----
-        // The property the whole design rests on: there is no third branch, so every
-        // decision moves the duty unless it is clamped. A hold zone would stop the walk
-        // above the quietest duty that holds the ceiling, which is what it exists to find.
         FanLinear nh = new FanLinear();
         nh.resync(55);
         long t = 10000L;
@@ -3998,11 +3394,7 @@ public final class FanLabTest {
         int decisions = 0;
         int prev = nh.baseDuty();
         for (int i = 0; i < 200; i++) {
-            // The slowest of the three intervals, so a decision is guaranteed to be due
-            // whichever branch this temperature selects.
             t += cfg.downStepMs;
-            // A temperature that wanders either side of the ceiling without ever settling
-            // on a duty: the point is that no input value produces a hold.
             double c = 52.0 + (i % 7 - 3) * 0.3;
             nh.step(cfg, c, true, t);
             int now = nh.baseDuty();
@@ -4015,7 +3407,6 @@ public final class FanLabTest {
         eq(decisions, 200, "200 decisions were taken");
         eq(held, 0, "and not one of them held the duty still away from a limit");
 
-        // ---- the step interval is respected ----
         FanLinear r = new FanLinear();
         r.resync(50);
         long base = 10000L;
@@ -4028,17 +3419,6 @@ public final class FanLabTest {
         eq(r.step(cfg, 60.0, true, base + cfg.upStepMs), before + 1,
                 "and the call that crosses it moves exactly one point");
 
-        // ---- and WHICH interval is chosen by where the temperature is ----
-        // This is the fix for the one thing about this mode the owner rejected by ear. A
-        // single 5 s interval measured a 14-point settled swing and he heard it climbing;
-        // 60 s measured 3 and he did not notice it. Descending is therefore slow near the
-        // ceiling, where precision is the whole job, and fast below it, where dropping
-        // quickly cannot overshoot anything. Asserted directly, because the schedule is
-        // invisible in the settled behaviour these tests otherwise check.
-        //
-        // 51.0 C is exactly the edge with the default 1.0 C band: it is NOT more than
-        // nearC below the ceiling, so it takes the slow clock. The boundary belongs to the
-        // careful side.
         FanLinear sched = new FanLinear();
         sched.resync(50);
         long sb = 10000L;
@@ -4055,9 +3435,6 @@ public final class FanLabTest {
         eq(far.step(cfg, 45.0, true, fb + cfg.downFastMs), 49,
                 "seven degrees below it, the fast interval is the one that applies");
 
-        // The interval is re-read every tick rather than latched at the start of a
-        // descent, so a temperature drifting back up towards the ceiling slows the walk
-        // before it arrives rather than after.
         FanLinear drift = new FanLinear();
         drift.resync(50);
         long db = 10000L;
@@ -4067,15 +3444,12 @@ public final class FanLabTest {
         eq(drift.step(cfg, 51.5, true, db + cfg.downFastMs), 49,
                 "and then, close to the ceiling, the same gap buys nothing");
 
-        // A long gap buys one step, not one per interval that elapsed. A catch-up burst
-        // after a resume would be the audible jump the walk exists to avoid.
         FanLinear g = new FanLinear();
         g.resync(40);
         g.step(cfg, 60.0, true, 10000L);
         eq(g.step(cfg, 60.0, true, 10000L + 3600000L), 41,
                 "an hour-long suspend buys one duty point, not seven hundred");
 
-        // ---- the limits, and saturation on the edge ----
         FanLinear hot = new FanLinear();
         hot.resync(82);
         long h = 10000L;
@@ -4095,8 +3469,6 @@ public final class FanLabTest {
         }
         check(hot.saturated(), "83 and still too hot is out of authority");
         eq(edges, 1, "which becomes true once and stays true, so the log notes it once");
-        // ...and clears as soon as it has somewhere to go, so a note is not left standing.
-        // 40 C is far below the ceiling, so this is the headroom clock, not the attack one.
         h += cfg.downFastMs;
         eq(hot.step(cfg, 40.0, true, h), 82, "a cool reading walks it back down");
         check(!hot.saturated(), "and clears the saturation");
@@ -4112,7 +3484,6 @@ public final class FanLabTest {
         eq(cold.step(cfg, 40.0, true, k), 30, "and stays there");
         check(cold.saturated(), "30 and still too cold is out of authority");
 
-        // ---- engine off ----
         FanLinear idle = new FanLinear();
         idle.resync(45);
         eq(idle.step(cfg, 52.0, false, 10000L), cfg.idleDuty,
@@ -4121,7 +3492,6 @@ public final class FanLabTest {
         eq(idle.baseDuty(), 45,
                 "the integrator keeps its duty, so coming back on does not re-walk from 10");
 
-        // ---- resync adopts rather than jumping ----
         FanLinear a = new FanLinear();
         a.resync(59);
         eq(a.baseDuty(), 59, "resync adopts the duty actually on the node");
@@ -4130,7 +3500,6 @@ public final class FanLabTest {
                 "an unreadable fan_ctrl adopts 83: not knowing where the fan is never "
                         + "lowers it");
 
-        // ---- fail safe ----
         FanLinear bad = new FanLinear();
         bad.resync(40);
         bad.step(cfg, 52.0, true, 10000L);
@@ -4140,19 +3509,10 @@ public final class FanLabTest {
                 "an infinite reading -> 83");
         eq(bad.step(null, 52.0, true, 40000L), FanIo.FAIL_SAFE_DUTY,
                 "a missing config -> 83");
-        // A tick with no usable measurement is not a decision, so it must not consume one
-        // and must not move the duty. Otherwise a sensor that failed for a minute would
-        // leave the walk twelve points from where it was last justified in being.
         eq(bad.baseDuty(), 40, "and none of them moved the integrator");
         eq(bad.step(cfg, 60.0, true, 45000L), 41,
                 "the first good reading afterwards steps once, from where it was");
 
-        // ---- the SoC guard is additive on top, and can only raise ----
-        //
-        // Passing the curve now also seeds the walk, so the first tick adopts curve(52.0)
-        // rather than the 40 resync handed it. That is the point of seeding and it is
-        // asserted on its own below; here it only means the expected duties come from the
-        // curve, so they are read off it rather than written as literals.
         CurveConfig guard = new CurveConfig();
         int seedAt52 = guard.dutyAt(CurveConfig.PROFILE_HIGH, 52.0);
         FanLinear sg = new FanLinear();
@@ -4165,8 +3525,6 @@ public final class FanLabTest {
         int guarded = sg.step(cfg, guard, CurveConfig.PROFILE_HIGH, 52.0, 74.0, true, 20000L);
         check(guarded > sg.baseDuty(), "a hot die raises the duty above the walk's own");
         check(sg.guardBoost() > 0, "and says by how much");
-        // Never downward. A monitoring sensor must not be able to argue down the sensor the
-        // safety case rests on.
         boolean everLower = false;
         FanLinear mono = new FanLinear();
         mono.resync(50);
@@ -4181,13 +3539,6 @@ public final class FanLabTest {
         }
         check(!everLower, "at no SoC temperature does the guard lower the commanded duty");
 
-        // ---- seeded from the curve, which is where the walk should start ----
-        //
-        // Measured justification, not taste: over thirty-six hours of field log the curve
-        // predicted the settled operating point to within 0.39 duty points. Starting the
-        // integrator there starts it at the answer, which deletes the multi-minute descent
-        // that was the worst thing about this mode -- on hardware the accepted 60 s decay
-        // took about seven minutes to come down from 48 to 42 and had not finished.
         CurveConfig seedCurve = new CurveConfig();
         for (int seedC = 46; seedC <= 60; seedC++) {
             FanLinear sd = new FanLinear();
@@ -4197,8 +3548,6 @@ public final class FanLabTest {
                     "seeded to the curve's answer at " + seedC + " C, not the 83 it was given");
         }
 
-        // It seeds once, not on every tick: after the first, the walk is the walk. If this
-        // regressed the mode would silently become the curve with extra steps.
         FanLinear once = new FanLinear();
         once.resync(83);
         long sq = 10000L;
@@ -4209,26 +3558,21 @@ public final class FanLabTest {
         once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, sq);
         eq(once.baseDuty(), afterSeed + 1,
                 "and thereafter walks by one, rather than re-seeding to the same value");
-        // Walking AWAY from the curve is the whole reason the mode exists: a unit or a room
-        // the plant table is wrong about must be able to pull it off the curve's answer.
         sq += cfg.upStepMs;
         once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, sq);
         check(once.baseDuty() > seedCurve.dutyAt(CurveConfig.PROFILE_HIGH, 60.0),
                 "and is free to leave the curve's answer behind");
 
-        // A resync re-arms the seed, because a resync means something else moved the fan.
         once.resync(83);
         once.step(cfg, seedCurve, CurveConfig.PROFILE_HIGH, 52.0, Double.NaN, true, sq + 99999L);
         eq(once.baseDuty(), seedCurve.dutyAt(CurveConfig.PROFILE_HIGH, 52.0),
                 "a later resync seeds again, at the temperature current then");
 
-        // With no curve to read there is nothing to seed from, so the adopted duty stands.
         FanLinear noCurve = new FanLinear();
         noCurve.resync(46);
         noCurve.step(cfg, 52.0, true, 10000L);
         eq(noCurve.baseDuty(), 46, "with no curve passed, the resync value is kept");
 
-        // The seed is clamped by the config's own limits, like every other duty here.
         LinearConfig tight = new LinearConfig();
         tight.minDuty = 44;
         tight.maxDuty = 46;
@@ -4239,21 +3583,11 @@ public final class FanLabTest {
         check(clamped.baseDuty() >= tight.minDuty && clamped.baseDuty() <= tight.maxDuty,
                 "a seed below the floor is clamped up to it, not obeyed");
 
-        // ---- the trend gate: do not push while it is already coming down ----
-        //
-        // This is the fix for windup, and it is the difference between settling and sailing
-        // past. Measured on hardware 2026-09-07: seeded to 38 with the ceiling at 52, the
-        // ungated walk climbed to 53 while the thermistor had been falling for 36 seconds,
-        // overshooting an equilibrium of 45. Swept against the two-pole plant over twelve
-        // noise seeds in tools/LinearSim.java, the gate takes the peak of the approach at
-        // 30 C ambient from 83 % to 62 % and cuts the settled swing at every ambient.
         LinearConfig gated = new LinearConfig();     // 90 s window by default
         LinearConfig ungated = new LinearConfig();
         ungated.trendWindowS = 0;
         ungated.sanitise();
 
-        // Above the ceiling but falling steadily: the ungated walk keeps adding fan, the
-        // gated one waits. Feed a clean ramp down, well clear of the noise floor.
         FanLinear gOn = new FanLinear();
         FanLinear gOff = new FanLinear();
         gOn.resync(50);
@@ -4264,8 +3598,6 @@ public final class FanLabTest {
         for (int i = 0; i < 200; i++) {
             gOn.step(gated, null, CurveConfig.PROFILE_HIGH, falling, Double.NaN, true, gt);
             gOff.step(ungated, null, CurveConfig.PROFILE_HIGH, falling, Double.NaN, true, gt);
-            // trendHeld() reports the most recent DECISION, and decisions are five seconds
-            // apart, so it has to be sampled every tick rather than read at the end.
             everHeld = everHeld || gOn.trendHeld();
             gt += 1000L;
             falling -= 0.01;                          // 0.01 C/s, far above the noise floor
@@ -4276,26 +3608,17 @@ public final class FanLabTest {
         check(everHeld, "and the gated one held steps back along the way");
         check(gOn.trendPerSec() < 0, "because it measured the temperature falling");
 
-        // Symmetrically: below the ceiling but still climbing, do not give fan back.
-        // The gate needs history before it can say anything -- fitTrend wants at least
-        // half the window -- so the duty does drop for the first ~45 s. What must hold is
-        // that it STOPS dropping once the trend is measurable, which is the property under
-        // test. Measured from there, not from the cold start.
-        // The ramp has to stay below the ceiling for the whole run, or the walk correctly
-        // switches to attacking and the test measures the wrong thing. 0.005 C/s over 420 s
-        // climbs 2.1 C from 45, so it never reaches 52 -- and it is still five times the
-        // gate's own noise floor, so the trend is unambiguous.
         FanLinear rising2 = new FanLinear();
         rising2.resync(50);
         long rt = 10000L;
         double climbing = 45.0;
-        for (int i = 0; i < 120; i++) {              // fill the window
+        for (int i = 0; i < 120; i++) {
             rising2.step(gated, null, CurveConfig.PROFILE_HIGH, climbing, Double.NaN, true, rt);
             rt += 1000L;
             climbing += 0.005;
         }
         int settled2 = rising2.baseDuty();
-        for (int i = 0; i < 300; i++) {              // and now it must stop giving fan back
+        for (int i = 0; i < 300; i++) {
             rising2.step(gated, null, CurveConfig.PROFILE_HIGH, climbing, Double.NaN, true, rt);
             rt += 1000L;
             climbing += 0.005;
@@ -4305,8 +3628,6 @@ public final class FanLabTest {
                 "below the ceiling but warming, the gate holds the duty rather than dropping it");
         check(settled2 < 50, "having dropped only while it had no trend to go on");
 
-        // The gate delays; it must never cap. A genuine sustained climb has to reach the
-        // maximum, or an unreachable ceiling would silently under-cool.
         FanLinear hot2 = new FanLinear();
         hot2.resync(50);
         long ht = 10000L;
@@ -4317,7 +3638,6 @@ public final class FanLabTest {
         eq(hot2.baseDuty(), gated.maxDuty,
                 "a sustained overshoot still reaches full authority: the gate waits, never caps");
 
-        // With the gate off, behaviour is exactly the pre-gate controller.
         FanLinear plain2 = new FanLinear();
         plain2.resync(40);
         long pt = 10000L;
@@ -4326,7 +3646,6 @@ public final class FanLabTest {
         eq(plain2.step(ungated, null, CurveConfig.PROFILE_HIGH, 60.0, Double.NaN, true, pt), 41,
                 "trendWindowS 0 restores the ungated walk exactly");
 
-        // ---- the mode plumbing ----
         check(Mode.writes(Mode.LINEAR), "LINEAR writes fan_ctrl");
         check(Mode.controls(Mode.LINEAR),
                 "and is a temperature controller, so the stock ladder stands down for it");
@@ -4388,10 +3707,6 @@ public final class FanLabTest {
                         .equals(new LinearConfig().encode()),
                 "a truncated line falls back to the defaults");
 
-        // ---- l2 is still read, and does not silently reinstate the ungated walk ----
-        // l2 predates the trend gate. The ungated walk was measured winding to 83 % on the
-        // approach at 30 C ambient where the answer is 58, so a stored l2 must not quietly
-        // turn the gate off -- it takes the default instead.
         LinearConfig l2 = LinearConfig.decode("l2,47.5,3000,30000,6000,2.5,12,35,80");
         eq((int) Math.round(l2.ceilingC * 10), 475, "an l2 ceiling is read");
         eq((int) l2.upStepMs, 3000, "and its three intervals");
@@ -4400,11 +3715,6 @@ public final class FanLabTest {
         eq(l2.trendWindowS, 90, "but the trend gate takes the default rather than 0");
         check(l2.encode().startsWith("l3,"), "and it is re-encoded in the new format");
 
-        // ---- the superseded single-interval line is still read, and read SAFELY ----
-        // l1 existed while this mode was being tuned, and its one interval applied in both
-        // directions -- which is the 14-point-swing configuration the owner rejected. So a
-        // stored l1 maps onto the attack interval and lets the two decay intervals default,
-        // rather than reinstating a symmetric 5 s walk without saying so.
         LinearConfig legacy = LinearConfig.decode("l1,47.5,3000,12,35,80");
         eq((int) Math.round(legacy.ceilingC * 10), 475, "an l1 ceiling is read");
         eq((int) legacy.upStepMs, 3000, "its single interval becomes the attack interval");
@@ -4415,10 +3725,6 @@ public final class FanLabTest {
         eq(legacy.maxDuty, 80, "all of it");
         check(legacy.encode().startsWith("l3,"), "and it is re-encoded in the new format");
 
-        // ---- the step interval is repaired, not accepted ----
-        // This is the parameter the plant's measured lag bounds, so a value from outside
-        // the range has to be clamped rather than obeyed. One point per second was measured
-        // building a growing limit cycle; nothing should be able to store faster.
         LinearConfig fast = new LinearConfig();
         fast.upStepMs = 10L;
         fast.downStepMs = 10L;
@@ -4446,10 +3752,6 @@ public final class FanLabTest {
         check(LinearConfig.MIN_STEP_MS == 1000L && LinearConfig.MAX_STEP_MS == 120000L,
                 "the range is the specified 1000..120000 ms");
 
-        // ---- an inverted schedule is repaired, not obeyed ----
-        // downFastMs is the fast one by definition. A config asking for slow-with-headroom
-        // and fast-at-the-ceiling would invert the whole design: it would crawl where
-        // dropping is free and sprint where it costs an audible swing.
         LinearConfig inverted = new LinearConfig();
         inverted.downStepMs = 5000L;
         inverted.downFastMs = 90000L;
@@ -4458,7 +3760,6 @@ public final class FanLabTest {
                 "the headroom interval is never slower than the near-ceiling one");
         eq((int) inverted.downFastMs, 5000, "it is pulled back to it rather than rejected");
 
-        // ---- the band is repaired ----
         LinearConfig wide = new LinearConfig();
         wide.nearC = 500.0;
         wide.sanitise();
@@ -4474,7 +3775,6 @@ public final class FanLabTest {
         nanb.sanitise();
         eq((int) Math.round(nanb.nearC * 10), 10, "NaN restores the default band");
 
-        // ---- the trend window is repaired ----
         LinearConfig tw = new LinearConfig();
         tw.trendWindowS = 9999;
         tw.sanitise();
@@ -4484,7 +3784,6 @@ public final class FanLabTest {
         eq(tw.trendWindowS, LinearConfig.MIN_TREND_S,
                 "and a negative one becomes zero, which simply turns the gate off");
 
-        // ---- the ceiling is repaired ----
         LinearConfig low = new LinearConfig();
         low.ceilingC = 5.0;
         low.sanitise();
@@ -4500,9 +3799,8 @@ public final class FanLabTest {
         nan.sanitise();
         eq((int) Math.round(nan.ceilingC * 10), 520, "NaN restores the default");
 
-        // --ef arrives as a float, so 52.3 reaches the receiver as 52.29999923706055. The
-        // snap to a tenth is what stops that appearing in the stored line and in every
-        // reply that echoes it -- and what lets the round trip be byte-identical at all.
+        // --ef arrives as a float, so 52.3 reaches the receiver as 52.29999923706055;
+        // the snap to a tenth is what keeps that out of the stored line.
         LinearConfig snap = new LinearConfig();
         snap.ceilingC = (double) 52.3f;
         snap.sanitise();
@@ -4511,7 +3809,6 @@ public final class FanLabTest {
         check(LinearConfig.decode(snap.encode()).encode().equals(snap.encode()),
                 "and then round trips");
 
-        // A hostile config must not be able to command something unwritable.
         LinearConfig bad = new LinearConfig();
         bad.ceilingC = -1000.0;
         bad.upStepMs = -1L;
@@ -4539,57 +3836,8 @@ public final class FanLabTest {
         check(allValid, "and the controller running on it only ever commands a legal duty");
     }
 
-    /**
-     * Every preset, driven through the real {@link FanCurve} against the plant, at every
-     * room temperature from 14 to 34 C. None may hunt.
-     *
-     * This is the check the static rules above cannot make. A segment can be four degrees
-     * wide, monotone, correctly clipped and exactly what its shape derives, and still leave
-     * the controller with nowhere to rest: Cold's rise from the pinned floor passed every static
-     * assertion in this file and hunted by four duty points at 17 C ambient, because 23 duty
-     * points in 4 C is a slope of 5.75 duty/C and the 0.8 C deadband then spans 4.6 duty
-     * points. The width test never saw it. This one does.
-     *
-     * One pole rather than two, for the same reason {@link #testLinearConvergence} uses one:
-     * it runs on every build in a few seconds, and {@code tools/CurveSim.java} -- two poles,
-     * four slow-pole values, the SoC guard -- is the fuller gate to run before shipping a
-     * curve. But the single-pole run reproduces both hunts CurveSim found on the presets
-     * that shipped on 2026-09-07, so it is a real regression guard and not a formality.
-     *
-     * The bound is two duty points. That is not zero, and it is worth saying why: Quiet at
-     * 16 C ambient wobbles by two, on a rounding knife-edge where the operating point lands
-     * almost exactly between integers on the rise below the shelf. 15, 17 and 18 C are all
-     * still. That was accepted as a known corner rather than moved, because moving a flat
-     * region off a measured operating point costs more than a two-point wobble six degrees
-     * below the coldest room this unit has seen. Two is therefore the accepted state; three
-     * is a regression.
-     */
     private static void testCurvePresetsDoNotHunt() {
         section("curve: no preset hunts against the plant, 14 to 34 C ambient");
-        // The only check that has ever caught a hunt in this curve. Three static rules --
-        // segment width, slope, and their product -- were each written down as the criterion
-        // and each passed a curve that hunts; the measurements are in docs/curve.md.
-        //
-        // This mirrors tools/CurveSim.java's pole sweep on purpose, detail for detail,
-        // because a first version of this test -- one pole at 120 s, no noise, started at
-        // duty 40 -- PASSED the Cold preset that CurveSim had already caught hunting by four
-        // points at 17 C. A hunt on a rounding knife-edge is decided by exactly the details
-        // a tidy model leaves out: the 70/30 split between the fast pole and the chassis,
-        // the slow pole's value, and 0.03 C of seeded sensor noise. So they are all here.
-        //
-        // It is driven off PRESETS.length rather than a list, so adding a curve puts it
-        // under this check without anyone remembering to. That is how all four Bright rungs
-        // got here, and it is why the count assertion at the bottom exists.
-        //
-        // It runs the STOCK plant, and that is deliberate rather than an oversight now that
-        // half the presets are drawn for a raised one. Seven of the eight can only ever run
-        // at stock drive, and the eighth pairing -- a Bright preset at stock drive -- is a
-        // legitimate state: the drive can trip off under a Bright curve and the curve stays.
-        // The reverse, a standard curve at raised drive, is the state the family gate makes
-        // unreachable, so nothing here needs to model it. tools/CurveSim.java sweeps the
-        // raised plant with --scale high=1.208 and its verdicts, including the one place the
-        // Bright family is worse than the standard one, are recorded against the preset
-        // lines in CurveConfig.
         final double tauFast = 230.0;
         final double[] tauSlow = {0.0, 900.0, 1500.0, 3000.0};
         int checked = 0;
@@ -4613,7 +3861,6 @@ public final class FanLabTest {
                         fast += (total * 0.70 - fast) * (1.0 - Math.exp(-1.0 / tauFast));
                         slow += (total * 0.30 - slow)
                                 * (tauSlow[k] == 0.0 ? 1.0 : (1.0 - Math.exp(-1.0 / tauSlow[k])));
-                        // The last fifty minutes only, as CurveSim judges it.
                         if (t > 9000) {
                             lo = Math.min(lo, d);
                             hi = Math.max(hi, d);
@@ -4636,18 +3883,6 @@ public final class FanLabTest {
                 "and every curve on offer went through it, not a list of them kept here");
     }
 
-    /**
-     * The controller against the measured plant with one thermal pole.
-     *
-     * What this establishes and what it does not. It establishes that the walk converges
-     * from the floor, that it arrives where the plant says it should, and that the residual
-     * oscillation is bounded -- a regression guard on the controller's own logic. It is
-     * <b>not</b> evidence of field stability: one pole cannot produce the growing limit
-     * cycle that duty-per-second was actually measured producing on hardware, which is why
-     * {@code tools/CurveSim.java} sweeps two. Anyone tempted to lower {@link
-     * LinearConfig#downStepMs} on the strength of this test should read that field's comment
-     * and repeat the step test instead.
-     */
     private static void testLinearConvergence() {
         section("linear: converges on the ceiling and stays within a bounded swing");
         LinearConfig cfg = new LinearConfig();
@@ -4672,7 +3907,6 @@ public final class FanLabTest {
                 if (settledAt < 0 && Math.abs(temp - cfg.ceilingC) <= 0.5) {
                     settledAt = s;
                 }
-                // The second half only: the first is the walk getting there.
                 if (s >= 7200) {
                     lo = Math.min(lo, duty);
                     hi = Math.max(hi, duty);
@@ -4686,28 +3920,17 @@ public final class FanLabTest {
                         + " C: reaches the ceiling's neighbourhood, in " + settledAt + " s");
                 eq(thi - tlo, 0.0, 1.0, ambient
                         + " C: and thereafter holds it to within a degree");
-                // The swing is set by decay rate against plant lag, and this is where
-                // the split earns its keep. A single 5 s interval swung twelve points here
-                // and fourteen on hardware, which the owner heard; a 60 s decay measured
-                // three on hardware and the bound below is the simulated equivalent. If
-                // this test starts failing upward, the asymmetry has been weakened.
                 check(hi - lo <= 4, ambient + " C: the duty swing is " + (hi - lo)
                         + " points, inside the handful a 60 s decay implies");
                 check(lo >= cfg.minDuty && hi <= cfg.maxDuty,
                         ambient + " C: and stays between the floor and the ceiling duty");
             } else {
-                // At 30 C ambient the plant's minimum rise is 19.4 C, so 52 C is only just
-                // reachable and a cooler ceiling would not be. A correct controller pegs
-                // the fan and says so rather than pretending.
                 eq(hi, cfg.maxDuty, ambient
                         + " C: an unreachable ceiling pegs the duty at the maximum");
                 check(f.saturated(), "and reports being out of authority");
             }
         }
 
-        // The ceiling was chosen so that LINEAR and CURVE/Quiet agree at 24 C, which is
-        // what makes an A/B of the two a comparison of controllers rather than of targets.
-        // Quiet settles at 38.0 % and 52.1 C there; this lands within a couple of points.
         FanLinear m = new FanLinear();
         m.resync(cfg.minDuty);
         double temp = 24.0 + presentationRise(cfg.minDuty);
@@ -4728,25 +3951,12 @@ public final class FanLabTest {
                 "at 24 C it settles where CURVE with the Quiet preset does, 38 %");
     }
 
-    // ----------------------------------------------------------------- provenance
-
-    /**
-     * The off-duration is the entire basis of the power-on ambient reading, and it has two
-     * cases that look nothing like each other. Answering from the wrong one is not a
-     * rounding error: it is the difference between a settled 27.9 C and a reading four
-     * degrees warm, and the log would carry no sign of which had happened.
-     */
     private static void testOffDuration() {
         section("ambient: how long the projector had been off, both cases");
 
         long hour = 3600000L;
         long boot = 1000000000000L;
 
-        // A true power-down. Android was not running for the thirteen hours, so this boot
-        // began after the gap and elapsedRealtime knows nothing whatever about it -- the
-        // persisted wall instant is the only witness there is. The previous boot's
-        // monotonic reading is deliberately smaller than this gap: a cross-check that
-        // failed to test the boot identity first would report eight hours here.
         long onWall = boot + 40000L;
         long stampWall = boot - 13 * hour;
         long stampBoot = stampWall - 2 * hour;
@@ -4757,9 +3967,6 @@ public final class FanLabTest {
         check(Provenance.OFF_BOOT.equals(Provenance.offSource(stampWall, stampBoot, boot)),
                 "and is reported as the power-down case");
 
-        // Standby: Android stayed up, so no boot intervened and the monotonic clock spans
-        // the whole gap. Nothing derived from boot time could answer this -- it would
-        // report the twenty hours of uptime instead of the three the engine was off.
         long mono = 20 * hour;
         eq((int) (Provenance.offDurationMs(boot + mono, mono, boot + 17 * hour,
                         17 * hour, boot, boot) / 1000L),
@@ -4769,17 +3976,12 @@ public final class FanLabTest {
                         Provenance.offSource(boot + 17 * hour, boot, boot)),
                 "and is reported as the standby case");
 
-        // Same boot, but the wall clock was corrected forward by a year after the stamp
-        // was taken. The monotonic witness is the shorter of the two and therefore wins,
-        // which is the point of taking the shorter: it can only grade the reading as less
-        // settled, never as more.
         long year = 365L * 24 * hour;
         eq((int) (Provenance.offDurationMs(boot + mono + year, mono, boot + 17 * hour,
                         17 * hour, boot, boot) / 1000L),
                 (int) ((3 * hour) / 1000L),
                 "a clock correction inside one boot cannot inflate the gap");
 
-        // Nothing persisted: a fresh install, or pm clear.
         eq((int) Provenance.offDurationMs(onWall, 40000L, 0L, 0L, 0L, boot), -1,
                 "with no stamp the off-duration is unknown, which is not zero");
         check(Provenance.OFF_NONE.equals(Provenance.offSource(0L, 0L, boot)),
@@ -4794,12 +3996,6 @@ public final class FanLabTest {
                 "five minutes apart is not");
     }
 
-    /**
-     * The exclusive-control flag stands in for a filter that was assembled by hand out of
-     * three different notes, so the transitions it reports have to be the ones that used
-     * to be found by grep -- including the two that are easy to get backwards, MANUAL and
-     * a running session.
-     */
     private static void testExclusiveControl() {
         section("exclusive control: one column instead of three greps");
 
@@ -4819,8 +4015,6 @@ public final class FanLabTest {
         eq(Provenance.exclusive(Mode.CURVE, false, null, t, 0L), -1,
                 "an unreadable kill switch is 'cannot say', which the CSV writes blank");
 
-        // The quiet window, which is the part with a number in it: a foreign write
-        // disqualifies the row and keeps doing so until the window has closed.
         eq(Provenance.exclusive(Mode.CURVE, false, "0", t, t), 0,
                 "a foreign write this second is not exclusive");
         eq(Provenance.exclusive(Mode.CURVE, false, "0",
@@ -4833,12 +4027,6 @@ public final class FanLabTest {
                 "and the window is at least four of the stock ladder's poll periods wide");
     }
 
-    /**
-     * The columns the field questions needed, and the property that matters more than
-     * any of them: a field nothing could read comes out blank, never as a zero and never
-     * as an exception. Then the revision itself, because a header change has already
-     * fired unattended once and is about to again.
-     */
     private static void testProvenanceColumns() throws Exception {
         section("csv: the ambient and provenance columns, blank against zero");
 
@@ -4852,8 +4040,6 @@ public final class FanLabTest {
         check(SweepReport.TRACE_HEADER.startsWith(CsvLogger.HEADER + ","),
                 "the sweep trace grew with them rather than shifting underneath its reader");
 
-        // Nothing read at all. Every new field has to be empty rather than a 0 or a -1,
-        // or a downstream mean is quietly wrong instead of loudly absent.
         Sample blank = new Sample();
         String[] f = blank.toCsv().split(",", -1);
         eq(f.length, cols.length, "an unpopulated sample still fills every column");
@@ -4890,9 +4076,6 @@ public final class FanLabTest {
         check(s.toCsv().split(",", -1)[22].equals("23"),
                 "a stated room temperature is the number itself");
 
-        // The revision. A file left on the device under the old twenty columns must be
-        // rolled aside rather than appended to: this fired for real, unattended, when the
-        // header went 16 -> 20, and the same thing has to happen at 20 -> 26.
         File base = new File(System.getProperty("java.io.tmpdir"),
                 "fanlab-schema-" + System.nanoTime());
         File dir = new File(base, "sink");
@@ -4926,8 +4109,6 @@ public final class FanLabTest {
                 }
             }
 
-            // Reopening on the new header has to append, or every service start would
-            // roll the file and the cap would stop meaning anything again.
             CsvLogger again = new CsvLogger("fanlab.csv");
             again.setDirs(one);
             again.append(new Sample().toCsv());
@@ -4948,8 +4129,6 @@ public final class FanLabTest {
         w.write(content);
         w.close();
     }
-
-    // ----------------------------------------------------------------- utils
 
     private static String read(File f) throws Exception {
         byte[] b = new byte[(int) f.length()];

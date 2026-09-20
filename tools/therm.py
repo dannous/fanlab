@@ -1,10 +1,4 @@
-"""SCN350 LED thermistor conversion, byte-identical to the framework arithmetic.
-
-Mirrors app/src/com/daleygames/fanlab/Thermistor.java:
-    Rt   = adc * 100000 / (4095 - adc)
-    T_K  = 1 / ( ln(Rt/100000)/4311 + 0.0033540164346805303 )
-    degC = T_K - 273.15 + 0.5          # the +0.5 bias is in the framework
-"""
+"""SCN350 LED thermistor conversion, byte-identical to Thermistor.java (+0.5 C bias included)."""
 import math
 
 FULL_SCALE = 4095.0
@@ -27,7 +21,6 @@ def adc_for(degc):
     kelvin = degc - 0.5 + 273.15
     rt = R0 * math.exp(BETA * (1.0 / kelvin - INV_T0))
     return FULL_SCALE * rt / (rt + R0)
-
 
 if __name__ == "__main__":
     # The handover's confirmed calibration point, to four decimal places.

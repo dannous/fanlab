@@ -1,9 +1,6 @@
 package com.daleygames.fanlab;
 
-/**
- * One second of telemetry. Immutable-ish value object shared by the CSV writer and the UI.
- * Pure Java.
- */
+/** One second of telemetry, shared by the CSV writer and the UI. */
 public final class Sample {
 
     public long epochMs;
@@ -26,54 +23,30 @@ public final class Sample {
     /** /sys/class/dlpc343x/led_status, or -1. */
     public int ledStatus = -1;
 
-    /** Profile the controller selected for this sample. */
     public int profile = CurveConfig.PROFILE_HIGH;
-    /** OFF / MANUAL / CURVE. */
     public int mode = Mode.OFF;
     /** What the controller wanted, or -1 if it wanted nothing. */
     public int desired = -1;
     /** What was actually written this tick, or -1 if nothing was. */
     public int wrote = -1;
-    /** Free text: failsafe reasons, resume events, mode changes. */
     public String note = "";
 
-    /**
-     * SoC die temperatures in degrees C -- pll, ddr, sar -- or NaN if unreadable.
-     * NaN rather than a sentinel so a missing reading is blank in the CSV instead of
-     * being mistaken for a real value.
-     */
+    /** SoC die temperatures in degrees C -- pll, ddr, sar -- or NaN if unreadable, which logs as a blank. */
     public double[] socC = {Double.NaN, Double.NaN, Double.NaN};
 
-    /**
-     * Cooling-device states, in {@link Sysfs#COOLING_DEVICES} order; -1 if unreadable.
-     * Any value above zero means the governor is throttling, now.
-     */
+    /** Cooling-device states in {@link Sysfs#COOLING_DEVICES} order; -1 if unreadable, anything above zero means throttling now. */
     public int[] throttle = {-1, -1, -1, -1};
 
-    /**
-     * Which run this row belongs to, from {@link Prefs#session}; -1 before it is known.
-     * Segmentation stops being a guess about {@code epoch_ms} gaps.
-     */
+    /** Which run this row belongs to, from {@link Prefs#session}; -1 before it is known. */
     public int session = -1;
 
-    /**
-     * How long the light engine had been off before it came on, milliseconds, or -1 on
-     * every row that is not the first sample of a power-on.
-     *
-     * Non-blank marks the row as an ambient measurement: {@code degC} and
-     * {@code soc_pll_c} on this same row <i>are</i> the power-on readings, so they are
-     * not repeated here -- the marker is a column on the row precisely so that they do
-     * not have to be. The note says the same thing in words, for grepping.
-     */
+    /** Milliseconds the light engine was off before this power-on, -1 on every other row; a non-blank marks the row as an ambient measurement. */
     public long offMs = -1L;
 
     /** The stated room temperature, or 0 for "not stated", which logs as a blank. */
     public int roomC;
 
-    /**
-     * Was this app alone on {@code fan_ctrl} for this row? 1 yes, 0 no, -1 not
-     * determinable, which logs as a blank rather than as a 0.
-     */
+    /** Was this app alone on fan_ctrl for this row? 1 yes, 0 no, -1 not determinable, which logs as a blank. */
     public int exclusive = -1;
 
     /** Is the controller still converging on the curve? 1, 0, or -1 for "not driving". */
@@ -82,17 +55,9 @@ public final class Sample {
     /** Milliseconds since the commanded duty last moved, or -1 if nothing is commanded. */
     public long dutyHoldMs = -1L;
 
-    /**
-     * The LED drive level this app has put on the hardware, percent of the driver's
-     * maximum for channels 0/2/3, or -1 when the stock table is in force -- which logs as
-     * a blank, so a row with nothing here was measured under stock LED drive. Channel 1
-     * follows from it through {@link LedDrive#redFor}. A column rather than a note
-     * because the thermal cost of the override is the thing the log has to be able to
-     * separate from everything else, on every row and not only on the edges.
-     */
+    /** LED drive this app put on the hardware, percent of the driver's maximum for channels 0/2/3; -1 when the stock table is in force, and logs as a blank. */
     public int ledDrive = -1;
 
-    /** Is the thermal governor actively throttling anything? */
     public boolean throttling() {
         for (int i = 0; i < throttle.length; i++) {
             if (throttle[i] > 0) {
@@ -102,7 +67,6 @@ public final class Sample {
         return false;
     }
 
-    /** The states as a log note, e.g. {@code cpufreq=2 gpufreq=1}; empty when idle. */
     public String throttleNote() {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < throttle.length && i < Sysfs.COOLING_NAMES.length; i++) {
@@ -149,7 +113,6 @@ public final class Sample {
         return sb.toString();
     }
 
-    /** Two decimal places without pulling in a Formatter or a Locale. */
     public static String fmt2(double v) {
         if (Double.isNaN(v) || Double.isInfinite(v)) {
             return "";
@@ -173,7 +136,6 @@ public final class Sample {
         return sb.toString();
     }
 
-    /** One decimal place. */
     public static String fmt1(double v) {
         if (Double.isNaN(v) || Double.isInfinite(v)) {
             return "--";

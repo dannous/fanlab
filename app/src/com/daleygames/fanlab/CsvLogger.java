@@ -7,41 +7,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Append-only CSV writer that fans one line out to several destinations at once, so the
- * same log lands in app-external storage <i>and</i> on any USB volume that happens to be
- * mounted. The USB copy is the whole point: it is how the telemetry gets to a PC on a
- * machine with no adb.
- *
- * Every line is flushed. A USB stick can be pulled at any moment and the file on it must
- * be complete up to the second before.
- *
- * A stick inserted after the fact only receives what is written from then on, so
- * {@link #exportBacklog} copies the history across as well. It is a separate mechanism on
- * purpose: it writes outside every sink, and it appends by watermark rather than fanning
- * out.
- *
- * A destination that fails is dropped and retried later rather than being allowed to
- * take the run down. Nothing here throws.
- *
- * Pure Java (java.io only), so the host test can drive it.
+ * Append-only CSV writer that fans one line out to several destinations at once, so the same
+ * log lands in app-external storage and on any mounted USB volume. Every line is flushed, and
+ * a destination that fails is dropped and retried later. Nothing here throws.
  */
 public final class CsvLogger {
 
-    /**
-     * The columns, and their order is a compatibility surface.
-     *
-     * New columns go on the end, never in the middle: every analysis script in
-     * {@code tools/} addresses fields by position, and a column inserted at 14 would move
-     * the SoC block underneath them and be read as data rather than as an error. The six
-     * added on 2026-09-07 answer the questions the first field log could not -- ambient,
-     * run boundaries, whether the app was alone on the node, and whether the controller
-     * had converged. {@code led_drive} says whether the LED drive override was on the
-     * hardware for the row, because a temperature measured under it is not comparable
-     * with one measured under the stock table.
-     *
-     * A file whose first line is not this string is rolled aside rather than appended to,
-     * so changing it is safe and is meant to be done in one revision rather than seven.
-     */
+    /** The columns. Their order is a compatibility surface: new columns go on the end, never in the middle, because the scripts in {@code tools/} address fields by position. */
     public static final String HEADER =
             "epoch_ms,iso_local,adc,degC,prop_led_temp,fan_ctrl,rgblevel,led_status,"
                     + "profile,mode,desired,wrote,note,soc_pll_c,soc_ddr_c,soc_sar_c"
@@ -60,23 +32,10 @@ public final class CsvLogger {
         }
     }
 
-    /**
-     * Cap on one log file, bytes. Telemetry runs at 1 Hz and about 400 kB an hour, and
-     * nothing else on this device is going to notice a full /sdcard until something
-     * important fails to write. 4 MB is roughly ten hours; past that the file rolls.
-     */
+    /** Cap on one log file, bytes. Telemetry is about 400 kB an hour, so 4 MB is roughly ten hours before the file rolls. */
     private static final long MAX_BYTES = 4L * 1024 * 1024;
 
-    /**
-     * How many rolled files to keep per directory, newest first. Six of them is about
-     * sixty hours of continuous logging -- far more than any question we ask of it needs
-     * -- and it bounds each destination at 28 MB -- six rolled files plus
-     * the live one -- instead of at infinity.
-     *
-     * The old behaviour was: a new timestamped file per service start, never capped,
-     * never pruned. Fine for an afternoon's measurement, wrong for something that ships
-     * and runs for years.
-     */
+    /** Rolled files kept per directory, newest first; bounds each destination at about 28 MB. */
     private static final int KEEP_FILES = 6;
 
     private final List<Target> targets = new ArrayList<Target>();
@@ -88,22 +47,16 @@ public final class CsvLogger {
         this(fileName, HEADER);
     }
 
-    /**
-     * A logger with its own column set. The sweep trace carries the ordinary telemetry
-     * columns plus the commanded duty, step, phase and event, so it needs a different
-     * header while reusing the same fan-out and flush-every-line behaviour.
-     */
+    /** A logger with its own column set, for the sweep trace. */
     public CsvLogger(String fileName, String header) {
         this.fileName = fileName;
         this.header = header == null || header.length() == 0 ? HEADER : header;
     }
 
-    /** Number of CSV rows written to at least one destination. */
     public long lineCount() {
         return lines;
     }
 
-    /** Human-readable list of the destinations currently working. */
     public List<String> activePaths() {
         List<String> out = new ArrayList<String>();
         for (int i = 0; i < targets.size(); i++) {
@@ -115,7 +68,6 @@ public final class CsvLogger {
         return out;
     }
 
-    /** Human-readable list of the destinations that failed. */
     public List<String> brokenPaths() {
         List<String> out = new ArrayList<String>();
         for (int i = 0; i < targets.size(); i++) {
@@ -127,17 +79,11 @@ public final class CsvLogger {
         return out;
     }
 
-    /**
-     * Set the destination directories. Existing targets are kept (so their file handles
-     * and byte offsets survive), new ones are opened, and ones that have gone away are
-     * closed. Safe to call repeatedly; the service calls it every 30 s so a stick
-     * inserted mid-run starts receiving data.
-     */
+    /** Set the destination directories. Existing targets keep their handles and offsets; safe to call repeatedly. */
     public synchronized void setDirs(List<File> dirs) {
         if (dirs == null) {
             return;
         }
-        // add anything new
         for (int i = 0; i < dirs.size(); i++) {
             File dir = dirs.get(i);
             if (dir == null) {
@@ -148,7 +94,6 @@ public final class CsvLogger {
             for (int j = 0; j < targets.size(); j++) {
                 if (targets.get(j).file.getAbsolutePath().equals(f.getAbsolutePath())) {
                     known = true;
-                    // a previously broken target gets one more chance on every rescan
                     targets.get(j).broken = false;
                     break;
                 }
@@ -166,14 +111,9 @@ public final class CsvLogger {
         try {
             File parent = t.file.getParentFile();
             if (parent != null && !parent.isDirectory()) {
-                // mkdirs can fail benignly if another thread won the race
                 parent.mkdirs();
             }
             if (t.file.exists() && t.file.length() > 0 && !headerMatches(t.file)) {
-                // An app update that adds a column would otherwise append wide rows under
-                // a narrow header, and the mismatch is invisible until someone tries to
-                // parse the file months later. Roll instead: the old data keeps the header
-                // it was written under, and the new file starts with the current one.
                 roll(t);
                 if (t.broken) {
                     return;
@@ -195,13 +135,6 @@ public final class CsvLogger {
         }
     }
 
-    /**
-     * Does the file on disk already carry the columns we are about to write?
-     *
-     * An unreadable first line counts as a mismatch. Rolling a file we cannot read is the
-     * conservative answer: it costs one rename, where guessing "close enough" costs the
-     * integrity of the log.
-     */
     private boolean headerMatches(File f) {
         java.io.BufferedReader r = null;
         try {
@@ -216,20 +149,11 @@ public final class CsvLogger {
                 try {
                     r.close();
                 } catch (Throwable ignored) {
-                    // nothing useful to do
                 }
             }
         }
     }
 
-    /**
-     * Rename the full file out of the way and start a new one, then prune the oldest.
-     *
-     * Renaming rather than truncating means the data already collected survives -- the
-     * whole point of logging is that somebody wants to read it later, and rolling a log
-     * by throwing away the interesting half is a classic way to discover that only after
-     * the event you needed it for.
-     */
     private void roll(Target t) {
         try {
             closeQuietly(t);
@@ -240,9 +164,6 @@ public final class CsvLogger {
             String ext = dot > 0 ? base.substring(dot) : "";
             File rolled = new File(dir, stem + "-" + System.currentTimeMillis() + ext);
             if (!t.file.renameTo(rolled)) {
-                // Could not rename (read-only volume, vanished stick). Leaving the file
-                // in place and continuing to append would defeat the cap, so stop writing
-                // to this target rather than grow without bound.
                 t.broken = true;
                 return;
             }
@@ -253,7 +174,6 @@ public final class CsvLogger {
         }
     }
 
-    /** Keep only the newest {@link #KEEP_FILES} rolled files for this stem. */
     private void prune(File dir, String stem, String ext) {
         try {
             File[] all = dir.listFiles();
@@ -275,12 +195,11 @@ public final class CsvLogger {
                     }
                 }
                 if (oldest == null || !oldest.delete()) {
-                    return;        // do not spin if the delete is refused
+                    return;
                 }
                 mine.remove(oldest);
             }
         } catch (Throwable ignored) {
-            // pruning is housekeeping; never let it break logging
         }
     }
 
@@ -289,17 +208,12 @@ public final class CsvLogger {
             try {
                 t.writer.close();
             } catch (Throwable ignored) {
-                // nothing useful to do
             }
             t.writer = null;
         }
     }
 
-    /**
-     * Append one row to every working destination.
-     *
-     * @return the number of destinations the row reached.
-     */
+    /** Append one row to every working destination; returns how many destinations it reached. */
     public synchronized int append(String csvLine) {
         int ok = 0;
         for (int i = 0; i < targets.size(); i++) {
@@ -321,7 +235,6 @@ public final class CsvLogger {
                 }
                 ok++;
             } catch (Throwable e) {
-                // most likely the stick was pulled; drop it, a later setDirs will retry
                 t.broken = true;
                 closeQuietly(t);
             }
@@ -332,23 +245,13 @@ public final class CsvLogger {
         return ok;
     }
 
-    /** Close everything. Safe to call more than once. */
     public synchronized void close() {
         for (int i = 0; i < targets.size(); i++) {
             closeQuietly(targets.get(i));
         }
     }
 
-    /**
-     * Write one whole file to every directory given, replacing anything already there.
-     *
-     * The JSON report is rewritten in full after every step rather than at the end, so an
-     * abort, a pulled stick, or a process kill still leaves a complete and parseable file
-     * describing everything measured up to that point. Each destination is independent: a
-     * failure on one is reported and does not stop the others.
-     *
-     * @return the paths that were written.
-     */
+    /** Write one whole file to every directory given, replacing anything already there; returns the paths written. */
     public static List<String> writeWhole(List<File> dirs, String fileName, String content) {
         List<String> written = new ArrayList<String>();
         if (dirs == null || fileName == null || content == null) {
@@ -370,13 +273,11 @@ public final class CsvLogger {
                 w.flush();
                 written.add(f.getAbsolutePath());
             } catch (Throwable ignored) {
-                // a destination that cannot take it is simply skipped
             } finally {
                 if (w != null) {
                     try {
                         w.close();
                     } catch (Throwable ignored) {
-                        // nothing useful to do
                     }
                 }
             }
@@ -384,55 +285,25 @@ public final class CsvLogger {
         return written;
     }
 
-    // ------------------------------------------------------------------ export
-
-    /**
-     * How many differently-headed files may share one first-row timestamp. It takes a
-     * schema change to make even the second, so this only exists to bound the loop.
-     */
+    /** How many differently-headed files may share one first-row timestamp; exists only to bound the loop. */
     private static final int MAX_SIBLINGS = 20;
 
-    /** What one {@link #exportBacklog} run managed to do, for the screen and the log. */
     public static final class Export {
-        /** Source files that held at least one complete row. */
         public int sources;
-        /** Destinations created or appended to. */
         public int filesWritten;
-        /** Rows appended, across every destination. */
         public long rowsCopied;
-        /** Destinations that already held everything their source had. */
         public int upToDate;
-        /** Sources that could not be read, or destinations that could not be written. */
         public int failures;
     }
 
     /**
-     * Copy the log backlog into {@code destDir}, adding to what is already there rather
-     * than replacing it.
+     * Copy the log backlog into {@code destDir}, adding to what is already there.
      *
-     * <h3>The destination must not be a sink</h3>
-     * {@link #prune} deletes everything matching {@code <stem>-*<ext>} in a target's own
-     * directory, so an export named {@code fanlab-1757.csv} written into a sink is
-     * indistinguishable from a rolled file and becomes prune fodder. {@link
-     * #openIfNeeded} would also roll a historic file aside for carrying the header it was
-     * written under. Both are avoided by exporting somewhere no logger writes.
-     *
-     * <h3>How "additive" is made to hold</h3>
-     * A destination is named after its source's <i>first</i> row, whose {@code epoch_ms}
-     * never changes for the life of that file. The live log therefore maps to the same
-     * destination however much it has grown since, and the two internal sinks -- which
-     * are identical copies of the same data under different rolled names -- collapse onto
-     * one destination too. Before appending, the destination's last complete row gives a
-     * watermark and only strictly newer source rows are copied, so the duplicate is a
-     * no-op and a stick brought back tomorrow gains today's tail instead of a second copy
-     * of everything. Filename-based dedupe cannot do this: the live file keeps its name
-     * and grows.
-     *
-     * A destination whose header differs from the source's gets a sibling rather than two
-     * schemas in one file. The sticks in the field already hold 13-column files where
-     * this build writes 20.
-     *
-     * Never throws.
+     * {@code destDir} must not be a directory any logger writes to: {@link #prune} would treat
+     * the export as a rolled file. A destination is named after its source's first row and
+     * appends only rows newer than the destination's last complete row, which is what makes
+     * repeat exports additive; a differing header gets a sibling file rather than two schemas
+     * in one. Never throws.
      */
     public static Export exportBacklog(File destDir, List<File> sources) {
         Export r = new Export();
@@ -460,9 +331,6 @@ public final class CsvLogger {
                 String header = headerOf(src);
                 long first = firstEpochMs(src);
                 if (header == null || first < 0) {
-                    // A header and nothing else yet, or a single row still being written.
-                    // Nothing is lost by waiting: the name comes from a row that is
-                    // already complete, so the next insertion picks the same destination.
                     continue;
                 }
                 r.sources++;
@@ -487,16 +355,7 @@ public final class CsvLogger {
         return r;
     }
 
-    /**
-     * The {@code epoch_ms} on the first data row of a log file. Fixed for the life of
-     * that file, which is what makes it usable as an identity.
-     *
-     * Only a row terminated by a newline counts. A half-written first row would otherwise
-     * name the destination after a truncated number, and that name has to come out the
-     * same on every insertion or nothing is additive.
-     *
-     * @return -1 if the file has no complete data row yet.
-     */
+    /** The {@code epoch_ms} on the first complete data row, which is fixed for the life of the file. Returns -1 if there is none yet. */
     public static long firstEpochMs(File f) {
         Rows rows = null;
         try {
@@ -504,7 +363,7 @@ public final class CsvLogger {
                 return -1L;
             }
             rows = new Rows(f);
-            rows.next();                       // the header
+            rows.next();
             if (!rows.terminated) {
                 return -1L;
             }
@@ -517,16 +376,7 @@ public final class CsvLogger {
         }
     }
 
-    /**
-     * The {@code epoch_ms} on the last complete row of a file -- the watermark an append
-     * starts from.
-     *
-     * Read from the tail rather than by scanning: a destination on the stick is already
-     * megabytes, and re-reading all of it to find one number would cost as much as the
-     * copy the watermark exists to avoid.
-     *
-     * @return -1 if the file holds no complete data row, in which case everything copies.
-     */
+    /** The {@code epoch_ms} on the last complete row - the watermark an append starts from - read from the tail. Returns -1 if there is none. */
     public static long lastEpochMs(File f) {
         java.io.RandomAccessFile raf = null;
         try {
@@ -541,8 +391,6 @@ public final class CsvLogger {
                 byte[] b = new byte[(int) (size - from)];
                 raf.seek(from);
                 raf.readFully(b);
-                // The last newline ends the last complete row; anything after it is a
-                // fragment and is deliberately ignored.
                 int end = lastIndexOfNl(b, b.length - 1);
                 int start = end < 0 ? -1 : lastIndexOfNl(b, end - 1);
                 if (end >= 0 && (start >= 0 || from == 0L)) {
@@ -560,28 +408,12 @@ public final class CsvLogger {
                 try {
                     raf.close();
                 } catch (Throwable ignored) {
-                    // nothing useful to do
                 }
             }
         }
     }
 
-    /**
-     * Copy every row of {@code src} newer than {@code watermark} onto the end of
-     * {@code dest}, giving {@code dest} the source's header if it has none yet.
-     *
-     * The new destination is built in {@code <dest>.part} and renamed into place, so a
-     * stick pulled part way through leaves the file that was already there exactly as it
-     * was. Appending to the real file instead would strand a half row in the middle of
-     * the log, and the next export would write the following row straight onto it.
-     *
-     * A source row without a terminating newline is being written right now. It is
-     * dropped: {@link #append} flushes every complete line, so a missing newline is the
-     * only signature a partial row has and nothing complete is lost by stopping short.
-     *
-     * @return rows copied, 0 if the destination was already up to date and therefore not
-     *         touched at all, or -1 if the copy failed and the destination was left alone.
-     */
+    /** Copy rows of {@code src} newer than {@code watermark} onto {@code dest}, built in {@code <dest>.part} and renamed into place. Returns rows copied, 0 if already up to date, -1 on failure. */
     public static long appendSince(File src, File dest, long watermark) {
         Rows rows = null;
         OutputStreamWriter w = null;
@@ -598,8 +430,6 @@ public final class CsvLogger {
             }
             String have = headerOf(dest);
             if (have != null && !have.equals(header)) {
-                // Different columns. The caller picks the destination and is the only one
-                // that can pick another; mixing them here is the thing to refuse.
                 return -1L;
             }
             String row;
@@ -612,8 +442,6 @@ public final class CsvLogger {
                     continue;
                 }
                 if (w == null) {
-                    // Opened lazily, so a source with nothing new costs no writing at
-                    // all -- the common case once a stick has been exported to once.
                     part = new File(dest.getParentFile(), dest.getName() + ".part");
                     w = openPart(part, dest, header);
                     if (w == null) {
@@ -630,9 +458,6 @@ public final class CsvLogger {
             w.flush();
             w.close();
             w = null;
-            // Swap in only now. If this is interrupted the .part holds everything the
-            // destination did plus the new rows, and the next export rebuilds the
-            // destination from the source anyway, so the data is not stranded.
             if (dest.exists() && !dest.delete()) {
                 return -1L;
             }
@@ -645,23 +470,15 @@ public final class CsvLogger {
                 try {
                     w.close();
                 } catch (Throwable ignored) {
-                    // nothing useful to do
                 }
             }
         }
     }
 
-    /**
-     * The file in {@code destDir} this source belongs in: named after its first row so a
-     * grown source lands on the same one, stepped to a sibling if what is already there
-     * was written under different columns.
-     */
     private static File destFor(File destDir, String srcName, long first, String header) {
         int dot = srcName.lastIndexOf('.');
         String stem = dot > 0 ? srcName.substring(0, dot) : srcName;
         String ext = dot > 0 ? srcName.substring(dot) : "";
-        // Drop a rolled file's own timestamp. fanlab.csv and fanlab-<millis>.csv are the
-        // same log at different ages and each keys on its own first row instead.
         int dash = stem.lastIndexOf('-');
         if (dash > 0 && allDigits(stem.substring(dash + 1))) {
             stem = stem.substring(0, dash);
@@ -677,12 +494,6 @@ public final class CsvLogger {
         return null;
     }
 
-    /**
-     * Start a replacement for {@code dest}, carrying its complete rows across first.
-     *
-     * Copying the rows rather than the bytes drops any fragment a previous interrupted
-     * copy left at the end, which is what stops the fragment being buried mid-file.
-     */
     private static OutputStreamWriter openPart(File part, File dest, String header) {
         OutputStreamWriter w = null;
         Rows rows = null;
@@ -711,7 +522,6 @@ public final class CsvLogger {
                 try {
                     w.close();
                 } catch (Throwable ignored) {
-                    // nothing useful to do
                 }
             }
             return null;
@@ -720,7 +530,6 @@ public final class CsvLogger {
         }
     }
 
-    /** The first complete line of a file, or null if it has none. */
     private static String headerOf(File f) {
         Rows rows = null;
         try {
@@ -737,7 +546,6 @@ public final class CsvLogger {
         }
     }
 
-    /** The {@code epoch_ms} a row starts with, or -1 if it does not start with one. */
     private static long epochOf(String row) {
         if (row == null) {
             return -1L;
@@ -788,15 +596,7 @@ public final class CsvLogger {
         }
     }
 
-    /**
-     * A line reader that also says whether the line it just returned was terminated.
-     *
-     * That distinction is the whole reason it exists: the file being read is being
-     * appended to by the control loop at the same time, and taking {@link #append}'s
-     * lock to read it would stall the loop behind a USB copy. Reading a row short of the
-     * newline is the one hazard that leaves, and a reader that reports termination turns
-     * it into a row to skip.
-     */
+    /** A line reader that also reports whether the line it just returned was newline-terminated. */
     private static final class Rows {
         private final java.io.Reader r;
         private final char[] buf = new char[8192];
@@ -804,14 +604,12 @@ public final class CsvLogger {
         private int len;
         private int pos;
 
-        /** Did the line just returned end in a newline? */
         boolean terminated;
 
         Rows(File f) throws java.io.IOException {
             r = new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8");
         }
 
-        /** The next line, or null at end of file. */
         String next() throws java.io.IOException {
             line.setLength(0);
             terminated = false;
@@ -838,12 +636,10 @@ public final class CsvLogger {
             try {
                 r.close();
             } catch (Throwable ignored) {
-                // nothing useful to do
             }
         }
     }
 
-    /** Escape a field for CSV. Only used for the free-text note column. */
     public static String q(String s) {
         if (s == null) {
             return "";

@@ -12,15 +12,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/**
- * The curve editor. Every control is a full-width row: LEFT/RIGHT changes the value,
- * UP/DOWN moves between rows, OK activates. Changes are saved as soon as they are made
- * and take effect on the service's next tick.
- *
- * The preview at the bottom prints the resulting duty for every degree from 38 to 58
- * next to what the stock ladder would have done, because a table of numbers is far more
- * useful than a graph when the reader is deciding whether a change is safe.
- */
+/** The curve editor: every control is a full-width D-pad row, and changes are saved as they are made. */
 public class CurveActivity extends Activity implements StepRow.Listener {
 
     private CurveConfig cfg;
@@ -126,8 +118,6 @@ public class CurveActivity extends Activity implements StepRow.Listener {
         return row;
     }
 
-    // ------------------------------------------------------------------ state
-
     private void render() {
         profileRow.display(CurveConfig.PROFILE_NAMES[profile]);
         profileRow.label("Tier — press OK to switch (rgblevel "
@@ -223,8 +213,7 @@ public class CurveActivity extends Activity implements StepRow.Listener {
             }
             cfg.sanitise();
             save();
-            // sanitise() can move later knees to keep them ascending, so show what was
-            // actually stored rather than what was typed.
+            // sanitise() can move later knees to keep them ascending, so show what was stored.
             for (int i = 0; i < CurveConfig.POINTS; i++) {
                 dutyRows[i].label("Duty at " + cfg.tempC[i] + " °C");
                 if ("temp".equals(n)) {

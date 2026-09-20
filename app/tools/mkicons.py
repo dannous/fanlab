@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the app's PNG resources with no third-party dependencies.
+"""Generate res/drawable PNGs (ic_launcher 192, banner 320x180, ic_stat 48), stdlib only.
 
-Writes:
-  res/drawable/ic_launcher.png   192x192  launcher icon
-  res/drawable/banner.png        320x180  leanback launcher banner
-  res/drawable/ic_stat.png        48x48   notification small icon (white on transparent)
-
-Pure stdlib: struct + zlib is all a PNG needs.
+    python mkicons.py [out-dir]
 """
 import math
 import os
@@ -79,7 +74,6 @@ def fan(px, w, h, cx, cy, radius, colour, blades=5, supersample=3):
                     if r > radius or r < 1e-6:
                         continue
                     theta = math.atan2(fy, fx)
-                    # blades sweep back as the radius grows
                     swirl = theta + 2.1 * (r / radius)
                     if r < radius * 0.20:
                         hits += 1
@@ -119,13 +113,11 @@ def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "res/drawable"
     os.makedirs(out, exist_ok=True)
 
-    # --- launcher icon ---
     n = 192
     px = blank(n, n, (0, 0, 0, 0))
     rounded_rect(px, n, n, 6, 6, n - 6, n - 6, 34, BG)
     rounded_rect(px, n, n, 6, 6, n - 6, n - 6, 34, (0x1B, 0x1B, 0x22, 255))
     fan(px, n, n, n / 2.0, n / 2.0 - 6, n * 0.36, ACCENT)
-    # a temperature bar along the bottom, cool to warm
     for x in range(28, n - 28):
         f = (x - 28) / float(n - 56)
         col = (int(0x4F + f * (0xFF - 0x4F)),
@@ -134,11 +126,9 @@ def main():
         bar(px, n, n, x, n - 44, x + 1, n - 34, col)
     print("ic_launcher.png", write_png(os.path.join(out, "ic_launcher.png"), n, n, px), "B")
 
-    # --- banner (leanback launchers want 320x180) ---
     w, hgt = 320, 180
     px = blank(w, hgt, BG)
     fan(px, w, hgt, 62, hgt / 2.0, 52, ACCENT)
-    # a stylised rising curve to the right of the impeller
     prev = None
     for i in range(0, 190):
         x = 128 + i
@@ -159,7 +149,6 @@ def main():
     bar(px, w, hgt, 126, hgt - 38, w - 4, hgt - 36, (0x3A, 0x3A, 0x46, 255))
     print("banner.png", write_png(os.path.join(out, "banner.png"), w, hgt, px), "B")
 
-    # --- notification small icon: white silhouette on transparent ---
     n = 48
     px = blank(n, n, (0, 0, 0, 0))
     fan(px, n, n, n / 2.0, n / 2.0, n * 0.44, WHITE, blades=5, supersample=4)

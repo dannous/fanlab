@@ -1,18 +1,5 @@
-"""Fold a run's holds into the plant table, letting the drift rate decide what counts.
-
-Every mode change starts a thermal transient. A hold taken while the chassis is still
-shedding (or absorbing) heat produces a confident-looking asymptote that is simply wrong,
-and the LED trace alone does not reveal it -- that is how run 2's Normal block came to be
-an upper bound while looking like a measurement.
-
-The discriminator is the drift at the END of the hold. A settled hold has nearly none. So
-each row is emitted with a trust grade instead of a bare number, and the grade comes from
-the data rather than from whoever is reading it:
-
-    |drift| <  1 C/h   CLEAN        use it
-    |drift| <  4 C/h   USABLE       use it, note the sign
-    |drift| >= 4 C/h   CONTAMINATED do not use; it is a bound, and only in the drift's
-                                    direction (cooling -> the number is too high)
+"""Fold a run's holds into the plant table, grading each by end-of-hold drift in C/h:
+|drift| < 1 CLEAN, < 4 USABLE, otherwise CONTAMINATED (a bound, not a measurement).
 
     python fold_plant.py <csv> [--ambient 24]
 """
@@ -67,7 +54,6 @@ def main():
             continue
         dt_h = (L[-1]["t"] - L[-n]["t"]) / 3600.0
         drift = (temps[-1] - temps[-n]) / dt_h if dt_h > 0 else 0.0
-        # the chassis tells you whether the machine as a whole is still moving
         ddr_drift = (L[-1]["ddr"] - L[-n]["ddr"]) / dt_h if dt_h > 0 else 0.0
         a = abs(drift)
         trust = "CLEAN" if a < 1 else ("USABLE" if a < 4 else "CONTAMINATED")

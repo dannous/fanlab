@@ -1,21 +1,6 @@
 package com.daleygames.fanlab;
 
-/**
- * Just enough JSON to write a report, and nothing more.
- *
- * {@code org.json} is in {@code android.jar}, but using it would put the report builder on
- * the impure side of the seam and out of reach of the headless test - and the whole point
- * of the sweep is that its output is the deliverable, so its output is exactly the thing
- * that must be tested. This is a few dozen lines instead.
- *
- * Numbers are written with a fixed number of decimals rather than through
- * {@code Double.toString}, so the file never contains {@code 4.9E-324} or a locale comma,
- * and non-finite values are written as JSON {@code null} rather than as the token
- * {@code NaN}, which is not valid JSON and which every parser on the analysis side would
- * reject.
- *
- * Pure Java.
- */
+/** Just enough JSON to write a report: fixed-decimal numbers, no locale, and non-finite values written as null. */
 public final class Json {
 
     private final StringBuilder sb = new StringBuilder(4096);
@@ -24,8 +9,6 @@ public final class Json {
 
     public Json() {
     }
-
-    // ------------------------------------------------------------------ structure
 
     public Json beginObject() {
         sep();
@@ -57,7 +40,6 @@ public final class Json {
         return this;
     }
 
-    /** Open a named object. */
     public Json obj(String key) {
         key(key);
         sb.append('{');
@@ -66,7 +48,6 @@ public final class Json {
         return this;
     }
 
-    /** Open a named array. */
     public Json arr(String key) {
         key(key);
         sb.append('[');
@@ -78,8 +59,6 @@ public final class Json {
     private void key(String k) {
         sep();
         quote(k);
-        // A space after the colon: these files are read by a person as often as by a
-        // script, and the run that produced them cannot be repeated cheaply.
         sb.append(": ");
         needComma = false;
     }
@@ -98,8 +77,6 @@ public final class Json {
             }
         }
     }
-
-    // ------------------------------------------------------------------ values
 
     public Json put(String key, String value) {
         key(key);
@@ -175,25 +152,16 @@ public final class Json {
         return this;
     }
 
-    // ------------------------------------------------------------------ output
-
     @Override
     public String toString() {
         return sb.toString();
     }
 
-    /** The finished document, newline terminated. */
     public String finish() {
         return sb.toString() + "\n";
     }
 
-    // ------------------------------------------------------------------ primitives
-
-    /**
-     * Format a double with a fixed number of decimals, no locale, no exponent.
-     *
-     * @return the number, or {@code null} (the JSON literal) if it is not finite.
-     */
+    /** Format a double with a fixed number of decimals, no locale and no exponent; the JSON literal null if it is not finite. */
     public static String num(double v, int decimals) {
         if (Double.isNaN(v) || Double.isInfinite(v)) {
             return "null";
@@ -208,7 +176,6 @@ public final class Json {
         for (int i = 0; i < decimals; i++) {
             scale *= 10;
         }
-        // Guard the rounding itself: a value beyond long range would wrap silently.
         double scaled = v * scale;
         if (scaled > 9.0e18 || scaled < -9.0e18) {
             return "null";

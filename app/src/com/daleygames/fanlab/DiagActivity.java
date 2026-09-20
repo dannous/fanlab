@@ -15,13 +15,7 @@ import android.widget.TextView;
 
 import java.io.File;
 
-/**
- * Read-only diagnostics: every sysfs node the investigation cares about, the property
- * dump, and where the CSV is going.
- *
- * Nothing on this screen writes anything. That is the point: it is the thing to open
- * first when something does not behave as the research predicted.
- */
+/** Read-only diagnostics: every sysfs node, the property dump, and where the CSV is going. Nothing here writes. */
 public class DiagActivity extends Activity {
 
     private static final int REFRESH_MS = 2000;
@@ -124,7 +118,6 @@ public class DiagActivity extends Activity {
             try {
                 len = new File(paths[i]).length();
             } catch (Throwable ignored) {
-                // report -1
             }
             sb.append("  ok      ").append(paths[i]).append("   ")
                     .append(len < 0 ? "?" : Long.toString(len)).append(" B\n");
@@ -139,9 +132,6 @@ public class DiagActivity extends Activity {
                 .append('\n');
         sb.append("  status: ").append(FanService.statusLine).append('\n');
 
-        // Separate from the sinks above, and it has to be: a sink receives new rows, the
-        // export carries the history, and only the second one answers "is the whole log
-        // on the stick I am about to walk away with".
         sb.append("\n--- backlog export ---\n");
         sb.append("  ").append(FanService.exporting ? "COPYING NOW  " : "")
                 .append(FanService.exportStatus).append('\n');
@@ -154,18 +144,7 @@ public class DiagActivity extends Activity {
         return sb.toString();
     }
 
-    /**
-     * The three display-controller features the app used to offer, as facts rather than
-     * controls.
-     *
-     * Each was a row on the main screen; each was measured on the projector and taken away.
-     * They are here because a negative result is worth keeping where it can be re-checked --
-     * a firmware that changed one of these answers would show up in this block and nowhere
-     * else in the app. The finding sits beside the reading so the two cannot drift apart.
-     *
-     * <b>Nothing on this screen writes.</b> The readings are sampled by {@link FanService}
-     * once a minute at most, on a thread of its own; this only prints what it last saw.
-     */
+    /** Display-controller findings, printed beside the readings; nothing here writes. */
     private void display(StringBuilder sb) {
         sb.append("\n--- display controller (read only, sampled ~1/min) ---\n");
         if (Process.myUid() != Process.SYSTEM_UID) {
@@ -221,7 +200,6 @@ public class DiagActivity extends Activity {
         try {
             canWrite = new File(path).canWrite();
         } catch (Throwable ignored) {
-            // leave false
         }
         sb.append("   [").append(canWrite ? "w" : "-").append("]\n");
     }

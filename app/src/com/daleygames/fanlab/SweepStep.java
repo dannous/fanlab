@@ -1,17 +1,6 @@
 package com.daleygames.fanlab;
 
-/**
- * One held condition in a sweep, and everything measured while it was held.
- *
- * A step is either a scheduled duty ({@code "step"}), the re-cool and re-baseline at duty
- * 83 that separates two brightness modes ({@code "baseline"}), or the backed-off hold that
- * follows a rate-guard trip ({@code "guard"}). All three are recorded the same way,
- * because the baseline holds are themselves a measurement: they are {@code T_eq(83, mode)}
- * for each of the four modes, which is the reference every other point is read against.
- *
- * Pure Java. The engine fills in the timing and the fit; the service fills in the two
- * fields that need I/O, {@link #dlpc} and {@link #ledCurrents}.
- */
+/** One held condition in a sweep, and everything measured while it was held. */
 public final class SweepStep {
 
     public static final String PHASE_BASELINE = "baseline";
@@ -27,10 +16,9 @@ public final class SweepStep {
 
     /** Global step number across the whole run, from 0. */
     public int index;
-    /** The brightness mode this step ran in, as an rgblevel (1..4). */
+    /** Brightness mode, as an rgblevel (1..4). */
     public int rgblevel;
     public String phase = PHASE_STEP;
-    /** The duty commanded throughout. */
     public int commandedDuty;
 
     public long startWallMs;
@@ -41,29 +29,23 @@ public final class SweepStep {
     public double tEndC = Double.NaN;
     public int samples;
 
-    /** The extrapolated equilibrium. This is what the whole sweep exists to produce. */
     public ExpFit.Fit fit = new ExpFit.Fit();
 
     public String endReason = "";
 
-    /**
-     * How many times the stock Java controller wrote {@code fan_ctrl} underneath us during
-     * this step. Free corroboration of the stock ladder operating in the wild - its rung
-     * values and its 15 s poll - which until now we only had from disassembly.
-     */
+    /** Writes to fan_ctrl by the stock controller underneath us during this step. */
     public int foreignWrites;
 
     /** The DLPC's own temperature at the end of the step, or the reason there is none. */
     public PicoReg.Reading dlpc;
 
-    /** What the DLPC says the LED drive was, so the log records the actual power. */
+    /** LED drive as the DLPC reports it. */
     public String ledCurrents = "";
 
     public String modeName() {
         return SweepPlan.modeName(rgblevel);
     }
 
-    /** Serialise this step into an open {@link Json} array. */
     public void writeJson(Json j) {
         j.beginObject();
         j.put("index", index);

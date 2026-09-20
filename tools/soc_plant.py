@@ -1,20 +1,5 @@
-"""Measure the SoC thermal plant directly: what does duty do to the die?
-
-The guard's gain and ceiling were first set from a *ratio* -- the die moved about as many
-degrees as the LED thermistor for a given duty change -- taken across holds that were
-themselves still drifting, in runs where UHD processing was off. That is inference, not
-measurement, and authority in C per duty point scales with dissipated power, so a low-load
-run can understate it. This reads a sweep taken under the load that actually matters.
-
-Every hold is fitted, not averaged. A hold that has not settled has an end value that is
-simply wrong, and the trace alone will not tell you -- so each channel gets
-
-    T(t) = Tinf + (T0 - Tinf) * exp(-t / tau)
-
-with tau found by grid search and (Tinf, T0) by least squares at each tau. The reported
-asymptote is Tinf. Two numbers say whether to believe it: the residual RMS, and how far
-the fit had to extrapolate beyond the last sample (`reach`). A fit that extrapolates
-several degrees past where the data stopped is an opinion.
+"""Measure the SoC thermal plant: fit T(t) = Tinf + (T0 - Tinf) * exp(-t / tau) to every
+hold, per channel, and report the asymptote with its residual RMS and extrapolation reach.
 
     python soc_plant.py <csv> [--ambient 24]
 """
@@ -99,8 +84,7 @@ def main():
         held = L[-1]["t"] - L[0]["t"]
         if held < 120:
             continue
-        # drop the first 45 s: the fan takes a moment to reach the commanded duty and
-        # those samples belong to the previous hold's plant, not this one's
+        # drop the first 45 s: the fan has not reached the commanded duty yet
         L = [r for r in L if r["t"] - L[0]["t"] >= 45]
         if len(L) < 30:
             continue
@@ -126,7 +110,6 @@ def main():
         print("  duty %-3d  %s" % (row["duty"], "  ".join(
             "%s rms %.2f tau %4.0f" % (c, row[c]["rms"], row[c]["tau"]) for c in CHANNELS)))
 
-    # --- closure: the same duty measured twice, at the start and at the end ---
     byduty = {}
     for row in table:
         byduty.setdefault(row["duty"], []).append(row)
@@ -143,7 +126,6 @@ def main():
     if not closed:
         print("  none -- no duty was held twice, so load drift is unmeasured")
 
-    # --- authority: what a duty point is worth, per channel ---
     print("\nauthority, C per duty point (first visit to each duty):")
     seen = {}
     for row in table:
@@ -163,7 +145,6 @@ def main():
     for ch in CHANNELS:
         print("  %-4s %5.1f C" % (ch, seen[lo][ch]["inf"] - seen[hi][ch]["inf"]))
 
-    # --- the number the guard is actually set from ---
     base = 40
     if base in seen:
         print("\nfrom duty %d (the operating point), what the guard could buy:" % base)

@@ -1,20 +1,14 @@
 #!/system/bin/sh
 #
-# fanlab.sh — drive /sys/class/fan_int/fan_ctrl through a plan of holds, log a CSV,
-# and hand control back to the stock controller on EVERY exit path.
+# fanlab.sh -- drive /sys/class/fan_int/fan_ctrl through a plan of holds and log a CSV.
 #
 #   usage:  fanlab.sh <csv-out> <plan-step> [<plan-step> ...]
 #   step:   LEVEL:DUTY:SECONDS      LEVEL 0 = leave the brightness mode alone
 #
-# Safety, in the order it matters:
-#   * The stock ladder is disabled only for the life of this script. A trap on EXIT,
-#     INT, TERM and HUP restores persist.sys.fanctrl.by.temperatue=1, so losing the
-#     adb connection or killing the script re-arms the stock controller rather than
-#     leaving the fan unmanaged.
-#   * Fail safe is HIGH. Every abort writes 83 before restoring.
-#   * ABORT_ADC is a hard over-temperature stop well below the framework's 75 C
-#     shutdown, so this script gives up long before the platform has to.
-#   * The brightness level is restored to whatever it was at start.
+# Safety: the stock fan ladder is disabled only for the life of this script -- traps on
+# EXIT, INT, TERM and HUP restore persist.sys.fanctrl.by.temperatue=1 and the original
+# brightness level on every exit path. Fail safe is HIGH: every abort writes duty 83.
+# ABORT_ADC is a hard over-temperature stop below the framework's own 75 C shutdown.
 
 OUT="$1"; shift
 
@@ -46,15 +40,11 @@ restore() {
     echo "# restored: $KILL=$(getprop $KILL) rgblevel=$ORIG_LVL duty=$FAILSAFE reason=$1" >> "$OUT"
     echo "RESTORED reason=$1"
 }
-# A trap handler RETURNS to where it was interrupted unless it exits. Without the
-# explicit exit below, a SIGTERM ran restore() -- re-arming the stock ladder, logging
-# "RESTORED" -- and then carried on driving the fan from the loop, so the script reported
-# a clean shutdown while still writing fan_ctrl. Two of these running at once fight over
-# the node and the fan audibly cycles between their two duties. Observed on hardware.
+# The explicit exit is load-bearing: without it a trap handler returns into the sampling
+# loop and keeps driving the fan after restore() has reported a clean shutdown.
 trap 'restore signal; exit 130' INT TERM HUP
 trap 'restore exit' EXIT
 
-# --- take control ---------------------------------------------------------
 setprop $KILL 0
 sleep 1
 GOT=$(getprop $KILL)

@@ -20,28 +20,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/**
- * VERIFY - hold one duty, in one mode, and look at the picture.
- *
- * AUTO answers "what temperature does this duty reach". VERIFY answers "is that actually
- * acceptable", and that is the question the target is phrased in:
- *
- * <blockquote>as quiet as possible, subject to: the image stays sharp over a long run in
- * the warmest room you actually use, and the projector never shuts down.</blockquote>
- *
- * The binding constraint on this projector is not a component limit - nothing in the DMD,
- * DLPC3436 or LED datasheets constrains anything near the 46 C the stock controller
- * triggers at. It is focus stability. Philips said so in writing: the Presentation fan
- * speed was raised because "the heat was too high for the optical engine and the metal
- * inside was shapeshifting by few mm and the image was getting unclear". That failure mode
- * has two properties that make it tractable - it is <b>observable</b>, and it is
- * <b>reversible</b> - so the honest way to confirm a candidate floor is to run at it, in
- * Presentation, in the warmest room, for forty-five minutes, and look at a fine pattern
- * every so often.
- *
- * Deliberately much simpler than AUTO: one duty, one mode, one pattern toggle, and a log.
- * Every look is recorded with the time, the temperature and the verdict.
- */
+/** VERIFY: hold one duty in one mode, look at a fine test pattern, then hand the fan to the curve and watch it. */
 public class VerifyActivity extends Activity implements StepRow.Listener {
 
     private static final int POLL_MS = 500;
@@ -77,13 +56,10 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
             try {
                 refresh();
             } catch (Throwable ignored) {
-                // the UI must never take a thermal run down
             }
             ui.postDelayed(this, POLL_MS);
         }
     };
-
-    // ------------------------------------------------------------------ lifecycle
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -120,8 +96,6 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
         }
         super.onDestroy();
     }
-
-    // ------------------------------------------------------------------ layout
 
     private void buildUi() {
         Context c = this;
@@ -267,8 +241,6 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
         return row;
     }
 
-    // ------------------------------------------------------------------ actions
-
     @Override
     public void onStepRow(StepRow row) {
         try {
@@ -344,11 +316,8 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
                     .setPositiveButton("OK", null)
                     .show();
         } catch (Throwable ignored) {
-            // a dialog failing must not matter
         }
     }
-
-    // ------------------------------------------------------------------ keys
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -391,14 +360,7 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    /**
-     * Stop pinning the duty and let the stored curve drive, while the app counts whether
-     * the fan then sits still.
-     *
-     * The held duty answered "is this acceptable". This answers "will you hear it move",
-     * which a pinned duty cannot: a fan only hunts when something is choosing its speed
-     * from a temperature that its own speed is changing.
-     */
+    /** Stop pinning the duty and let the stored curve drive, while the app counts whether the fan then sits still. */
     private void handToCurve() {
         FanService s = FanService.instance;
         if (s == null) {
@@ -424,8 +386,6 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
                 + (sm == null || Double.isNaN(sm.degC) ? "--" : Sample.fmt1(sm.degC))
                 + " °C, pattern " + field.patternName());
     }
-
-    // ------------------------------------------------------------------ refresh
 
     private void refresh() {
         if (!running) {

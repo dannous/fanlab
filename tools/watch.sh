@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 #
-# watch.sh -- observe whatever is currently driving the fan, and judge whether it is
-# actually steady. This is the acceptance test for "quiet, steadily".
+# watch.sh -- sample whatever is currently driving the fan and report how often the duty
+# changed.
 #
 #   ./watch.sh [minutes]        default 10
-#
-# Simulation said the duty would not move. This says whether it moved on the hardware,
-# which is a different claim and the only one that counts. It reports the number of duty
-# CHANGES rather than a plot, because a change is the thing you hear -- a fan sitting at
-# 47 is inaudible in a way that a fan alternating 45/49 is not, even though the average
-# is the same and a mean-and-stddev summary would rate them equally.
 
 set -u
 export MSYS_NO_PATHCONV=1

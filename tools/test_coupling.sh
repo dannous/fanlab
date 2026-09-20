@@ -1,16 +1,8 @@
 #!/usr/bin/env bash
 #
-# test_coupling.sh -- prove that the kill switch is owned by the service, not by whoever
-# last typed a command.
-#
-# The defect this guards against: persist.sys.fanctrl.by.temperatue=0 disables the stock
-# fan ladder and lives in /data, so it survives reboot, force-stop and uninstall. Set by
-# hand, it can leave the projector with no fan controller at all -- permanently, silently,
-# and across power cycles. FanService.syncStockLadder is supposed to make that
-# unreachable by tying the switch to whether the service is actually driving.
-#
-# "Supposed to" is the problem. This checks it on the hardware, including the case that
-# actually bites: the switch left at 0 by something else while the app is NOT driving.
+# test_coupling.sh -- check on hardware that FanService owns the stock-ladder kill switch
+# (persist.sys.fanctrl.by.temperatue): armed whenever the app is not driving, including
+# when something else forces it to 0 behind the app's back.
 #
 #   ./test_coupling.sh [package]        default: the system build
 

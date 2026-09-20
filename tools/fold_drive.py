@@ -1,56 +1,12 @@
-"""Turn a plantdrive.sh run into the four LED-drive scalings, with its own arithmetic shown.
-
-fold_plant.py grades a hold and stops there, because until now every hold was at the
-factory drive and a hold was the answer. This run holds each mode twice -- once at the
-factory drive and once at the raised one, ten minutes apart, at the same pinned fan
-duty -- so the answer is a ratio of two holds, and the interesting failure is a ratio
-that came out of one good hold and one bad one.
+"""Turn a plantdrive.sh run into the four LED-drive scalings.
 
     python fold_drive.py <csv> [--duty 45] [--room 22]
 
-WHY IT IS PAIRED RATHER THAN BRACKETED
-
-A scaling is a ratio of rises above ambient, and ambient is the number nobody measures:
-
-    scale = rise(raised) / rise(factory) = (T_raised - A) / (T_factory - A)
-
-The run this replaces took one ambient for the whole night from a bracket at each end,
-lost the end bracket, and every scaling came out 5-12 % low. Pairing each mode's raised
-hold with its own factory hold twenty minutes earlier does two things that a pair of
-brackets three hours apart cannot. Ambient has ten minutes to drift instead of three
-hours; and the expression collapses to
-
-    scale = 1 + (T_raised - T_factory) / rise_table(mode, duty)
-
-in which the only number from outside this run is rise_table -- the measured factory
-plant at the pinned duty. The difference of the two temperatures is measured in-session,
-in the same mode, at the same fan duty, with the same thermistor.
-
-It also gives four independent readings of ambient rather than two, one per factory hold,
-spread through the run:
-
-    A_i = T_factory,i - rise_table(mode_i, duty)
-
-Those four agreeing is a stronger statement than a bracket pair agreeing: they are four
-different modes and four different rises, so they can only agree if both the table and
-the room are right. Where they disagree, THAT is the model error, and it is printed
-rather than averaged away.
-
-WHAT IS GRADED AND WHY
-
-Every hold is fitted to the plant's two poles and reported by its asymptote, not by its
-last sample -- see TAU_NOTE, which is also why ten-minute holds are enough. Each is
-separately graded by the drift still present at its end, fold_plant.py's rule unchanged,
-because it is the one that caught a whole block of run 2 pretending to be a measurement:
-
-    |drift| <  1 C/h   CLEAN
-    |drift| <  4 C/h   USABLE, note the sign
-    |drift| >= 4 C/h   CONTAMINATED -- a bound, and only in the drift's direction
-
-A pair is only as good as its worse half, so the scaling carries the worse of the two
-grades. The state column is folded in too: a hold with samples the harness could not
-verify is reported with the count, because "the projector was in the mode we asked for"
-is the exact claim the run this replaces could not make.
+Each mode is held twice at the same pinned fan duty, once at the factory drive and once
+raised, so a scaling is  scale = 1 + (T_raised - T_factory) / rise_table(mode, duty)  and
+the only number from outside the run is the measured factory plant. Each factory hold also
+gives one independent reading of ambient,  A_i = T_factory,i - rise_table(mode_i, duty).
+A pair carries the worse of its two holds' grades.
 """
 import math
 import sys
@@ -59,9 +15,8 @@ from therm import celsius
 
 NAMES = {1: "Eco", 2: "Normal", 3: "Presentation", 4: "SuperEco"}
 
-# The measured factory plant: rise above ambient, degrees C, by duty and mode. Copied
-# from solve_curve.PLANT rather than imported, so that editing this run's arithmetic can
-# never edit the plant it is measured against.
+# The measured factory plant: rise above ambient in degrees C, by duty and mode. Copied
+# from solve_curve.PLANT so editing this run cannot edit the plant it is measured against.
 PLANT = {
     83: {3: 19.4, 2: 13.5, 1: None, 4: None},
     70: {3: 20.2, 2: 14.1, 1: None, 4: None},
@@ -78,21 +33,14 @@ FACTORY_DRIVE = {1: 40, 2: 55, 3: 76, 4: 20}
 
 
 def fitted_scale(mode, drive):
-    """solve_curve.drive_scale, reproduced: the prediction this run exists to test.
-
-    rise ~= 1.60 + 0.342 x drive, fitted across all four modes at duty 40, so a column at
-    a new drive is the measured column times the ratio of the two fitted rises. It is an
-    inference and has never been held against a measurement below Presentation.
+    """solve_curve.drive_scale reproduced: rise ~= 1.60 + 0.342 x drive, fitted across all
+    four modes at duty 40. An inference, never held against a measurement below Presentation.
     """
     return (1.60 + 0.342 * drive) / (1.60 + 0.342 * FACTORY_DRIVE[mode])
 
 
 def load(path):
-    """Rows of the plantdrive CSV, keeping only each step's last attempt.
-
-    An abandoned attempt is in the file on purpose -- it is the evidence that the harness
-    noticed -- but it is not data, and averaging it in would be the whole mistake again.
-    """
+    """Rows of the plantdrive CSV, keeping only each step's last attempt."""
     rows = []
     for line in open(path):
         line = line.strip()
@@ -117,9 +65,8 @@ def load(path):
     return [r for r in rows if r["attempt"] == last[r["step"]]]
 
 
-# The two poles of this plant, seconds, identified from the eight 40-minute holds of the
-# 2026-09-08 overnight run at a pinned fan 45 -- a shared-pole least squares over all
-# eight at once, rms 0.073 C. See TAU_NOTE.
+# The two poles of this plant, in seconds, identified from the eight 40-minute holds of
+# the 2026-09-08 overnight run at a pinned fan 45 (shared-pole least squares, rms 0.073 C).
 TAU_FAST = 50.0
 TAU_SLOW = 400.0
 
@@ -145,11 +92,8 @@ holding them fixed is what stops a short hold buying its own answer."""
 
 
 def asymptote(ts, temps):
-    """Fit T(t) = Tinf + A exp(-t/TAU_FAST) + B exp(-t/TAU_SLOW), return Tinf.
-
-    Linear in all three coefficients once the poles are fixed, so this is an exact least
-    squares rather than a search. The asymptote is reported rather than the last sample
-    because at ten minutes they differ by more than the effect being measured.
+    """Fit T(t) = Tinf + A exp(-t/TAU_FAST) + B exp(-t/TAU_SLOW), return (Tinf, A, B).
+    Linear in all three coefficients once the poles are fixed, so this is exact.
     """
     t0 = ts[0]
     xs = [t - t0 for t in ts]
@@ -180,27 +124,8 @@ LAST_RMS = 0.0
 
 
 def grade(to_come, rms):
-    """Grade a FITTED hold, which is not the same question fold_plant.py asks.
-
-    fold_plant.py grades the raw drift at the end of a hold, because there the last
-    sample is the answer and drift is the error. Here the asymptote is the answer and
-    residual drift is expected -- a ten-minute hold on a 400 s pole is still moving by
-    construction, and grading that as contamination would condemn every hold in the run
-    including the ones that are exactly right.
-
-    What actually threatens a fitted asymptote is different, and there are two of it:
-
-      how far it extrapolates   |Tinf - last sample|. The further past the data the
-                                answer sits, the more of it is the model talking.
-      how well the model fits   the rms residual. If the plant did not behave like these
-                                two poles over this hold -- something else moved, the
-                                room, the content, a fan the harness did not command --
-                                the residual says so, and the extrapolation is then
-                                unsupported however small it is.
-
-    Both have to be good. A tight fit extrapolating three degrees is a guess with good
-    manners, and a two-tenths extrapolation off a fit that does not describe the data is
-    not a measurement of anything.
+    """Grade a FITTED hold: how far the asymptote extrapolates past the last sample, and
+    the rms residual. Both have to be good.
     """
     if abs(to_come) < 0.35 and rms < 0.15:
         return "CLEAN"
@@ -265,7 +190,6 @@ def main():
                     "end": temps[-1], "drift": drift, "grade": g, "bad": bad,
                     "unk": unk, "t": ts[0]}
 
-    # ---- ambient, one reading per factory hold ---------------------------
     print()
     print("AMBIENT, from each factory hold against the measured plant at duty %d" % duty)
     print("%-4s %-13s %9s %9s %9s" % ("step", "mode", "asympt", "rise tbl", "ambient"))
@@ -289,7 +213,6 @@ def main():
             print("  owner-reported room %.1f C, mean reading is %+.2f against it"
                   % (room, sum(vals) / len(vals) - room))
 
-    # ---- the scalings ----------------------------------------------------
     print()
     print("SCALINGS: measured against the fitted line rise ~= 1.60 + 0.342 x drive")
     print("%-13s %8s %9s %9s %8s %9s %9s %8s  %s"
@@ -323,7 +246,6 @@ def main():
         print("  CurveSim        --scale " + ",".join(
             "%s=%.4f" % (prof[l], out[l]) for l in (3, 2, 1) if l in out))
 
-    # ---- the closing bracket --------------------------------------------
     reps = {}
     for k in sorted(holds):
         h = holds[k]
