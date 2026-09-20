@@ -2,8 +2,8 @@
     FanLab build -- aapt2 -> javac -> d8 -> zipalign -> apksigner. No Gradle.
 
     Usage
-        .\build.ps1                 # tests, then both variants
-        .\build.ps1 -Variant plain  # just the unsigned-privilege one
+        .\build.ps1                 # tests, then the system APK
+        .\build.ps1 -Variant plain  # development only; never published
         .\build.ps1 -Variant system # just the platform-signed one
         .\build.ps1 -SkipTests      # skip the headless test suite
         .\build.ps1 -Clean          # wipe build/ and out/ first
@@ -11,7 +11,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('both', 'plain', 'system')]
-    [string]$Variant = 'both',
+    [string]$Variant = 'system',
     [switch]$SkipTests,
     [switch]$Clean
 )

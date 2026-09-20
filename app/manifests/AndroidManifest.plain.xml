@@ -12,8 +12,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.daleygames.fanlab"
-    android:versionCode="1"
-    android:versionName="1.0-plain">
+    android:versionCode="2"
+    android:versionName="1.0.1-plain">
 
     <uses-sdk
         android:minSdkVersion="28"

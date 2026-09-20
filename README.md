@@ -127,6 +127,66 @@ almost nothing — it'd just be noise for nothing.
 than quieter. Turn the LED drive on and you get `Bright Quiet` through `Bright Cold` instead,
 which are the same four steps redrawn for the extra heat.
 
+## The fan curves, in numbers
+
+Everything below is percent duty on the fan, against the LED thermistor.
+
+### Philips
+
+Five fixed rungs, re-checked every fifteen seconds, with the same threshold used going up as
+coming down. That is the surge.
+
+| LED thermistor | Presentation | Normal | Eco / Super Eco |
+|---|---:|---:|---:|
+| ≤ 45 °C | 59 % | 48 % | 43 % |
+| 46 – 48 °C | 70 % | 60 % | 55 % |
+| 49 – 50 °C | 75 % | 65 % | 60 % |
+| 51 – 52 °C | 80 % | 70 % | 65 % |
+| 53 – 54 °C | *nothing written* | *nothing written* | *nothing written* |
+| ≥ 55 °C | 83 % | 80 % | 70 % |
+
+### FanLab
+
+Six knees with a straight line between them, flat below the first and flat above the last.
+Add 0.8 °C of hysteresis and a slew limit of one point every 4 s rising, 8 s falling. The
+same row is used in all four brightness modes.
+
+| | °C | Quiet | Balanced | Cool | Cold |
+|---|---|---:|---:|---:|---:|
+| floor | 47 (**43** on Cold) | 30 % | 30 % | 30 % | 30 % |
+| | 51 | 38 % | 43 % | 48 % | 53 % |
+| | 55 | 40 % | 45 % | 50 % | 55 % |
+| | 60 | 50 % | 55 % | 60 % | 65 % |
+| | 66 | 68 % | 73 % | 78 % | 83 % |
+| | 70 | 83 % | 83 % | 83 % | 83 % |
+
+Below the floor the fan sits at 30 % and never moves — that is Normal, Eco and Super Eco.
+The 51 → 55 °C step is only two duty points wide on purpose: that band is where Presentation
+settles, so five degrees of room drift move the fan by two points instead of slamming it.
+Above 55 °C the curve climbs at 2 duty/°C to arrest a runaway.
+
+### Bright Curve
+
+With the LED drive turned on the preset list becomes `Bright Quiet`, `Bright Balanced`,
+`Bright Cool`, `Bright Cold` — the same four steps, redrawn for the extra heat.
+
+| | °C | Bright Quiet | Bright Balanced | Bright Cool | Bright Cold |
+|---|---|---:|---:|---:|---:|
+| floor | 47 (**45** on Bright Cool, **43** on Bright Cold) | 30 % | 30 % | 30 % | 30 % |
+| | 51 | 38 % | 43 % | 48 % | 53 % |
+| | 55 | 50 % | 55 % | 60 % | 65 % |
+| | 60 | 62 % | 67 % | 72 % | 77 % |
+| | 66 | 76 % | 81 % | 83 % | 83 % |
+| | 70 | 83 % | 83 % | 83 % | 83 % |
+
+**These rows are used in Presentation only.** In Normal, Eco and Super Eco a Bright preset
+uses its ordinary counterpart's row unchanged — Bright Quiet *is* Quiet there. The 51 °C knee
+is unchanged too, so all four brightness modes are identical at and below 51 °C.
+
+You don't pick the family. The LED drive does: turning it on moves you to the Bright version
+of the step you're on, turning it off moves you back, and the preset button only cycles
+inside the family you're in. An ordinary curve can't be paired with the raised drive.
+
 ## Is it safe?
 
 Short answer: yes. Here's why, rather than just an assurance.
@@ -175,10 +235,6 @@ you don't need it.
 The fan takes about fifteen seconds to come down from wherever Philips had it. Then it should
 stay put. Leave it in Presentation for ten minutes and watch the number on screen — if it's
 working, it won't move.
-
-> **There are two files and you want the first.** `fanlab-system.apk` is the real one.
-> `fanlab-plain.apk` can only watch and log — it can't control the fan, and exists for
-> development. Install the wrong one and nothing bad happens, it just won't do anything.
 
 ## Using it
 
@@ -253,8 +309,8 @@ in, and FanLab puts it back within a second. Check **Re-assert every second** is
 60 °C and stays off until you change brightness mode or a setting. Your room is probably
 warmer than usual. Accept it, pick a cooler preset, or turn the drive off.
 
-**Nothing seems to have happened.** Check you installed `fanlab-system.apk` and not
-`fanlab-plain.apk`.
+**Nothing seems to have happened.** Check **Mode** is `CURVE` and not `OFF`, and give it
+fifteen seconds.
 
 **The projector shut down.** That's the 75 °C cut-out, and it means something is physically
 wrong — blocked vent, failing fan, very hot room. FanLab can't disable that cut-out. Check
@@ -314,10 +370,9 @@ cd app
 test suite runs as part of every build — 4586 assertions, and the build refuses to produce an
 APK if any of them fail.
 
-**Signing keys aren't included.** The system build needs the AOSP platform key, because
-that's what this firmware happens to be signed with. Supply your own as `app/keys/platform.pk8`
-and `app/keys/platform.x509.pem`. The build makes its own debug keystore for the plain
-variant.
+**Signing keys aren't included.** The build needs the AOSP platform key, because that's what
+this firmware happens to be signed with. Supply your own as `app/keys/platform.pk8` and
+`app/keys/platform.x509.pem`.
 
 ## What's in here
 
@@ -326,7 +381,7 @@ variant.
 | `app/` | the application — source, manifests, resources, host tests, build script |
 | `tools/` | measurement and deployment tooling |
 | `docs/` | how it works, safety, curve derivation, findings, and notes for working on the code |
-| `release/` | the signed APKs |
+| `release/` | the signed APK |
 | `final_curve.txt` | the deployed curve, in the app's own encoding |
 
 ## Licence
