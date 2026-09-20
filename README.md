@@ -6,9 +6,10 @@ If your Screeneo U4 sounds like it can't make its mind up, this fixes it. The fa
 surging up and down and settles at one speed, and that speed is a lot lower than the one it
 keeps jumping to.
 
-It's an ordinary app. You install it from a USB stick, the same way you'd install anything
-else on the projector. Nothing is flashed, no firmware is replaced, and you can remove it
-again from Settings.
+The projector runs Android, and that is what makes this possible at all: FanLab is an
+ordinary Android app, and you install it from a USB stick the same way you'd install
+anything else on the projector. Nothing is flashed, no firmware is replaced, nothing is
+rooted, and you can remove it again from Settings.
 
 For the Screeneo U4 (model SCN350) on firmware 1.7.1.
 
