@@ -1,6 +1,6 @@
 package com.daleygames.fanlab;
 
-/** SCN350 LED thermistor conversion, reproducing the platform framework's arithmetic exactly (BatteryService, services.vdex 1.7.1). */
+/** SCN350 LED thermistor conversion, reproducing the platform framework's arithmetic exactly (BatteryService, services.vdex 1.7.0). */
 public final class Thermistor {
 
     /** The node is a 12-bit ADC code, not millivolts. */

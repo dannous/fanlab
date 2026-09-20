@@ -2989,7 +2989,7 @@ public final class FanLabTest {
         m.packageName = "com.daleygames.fanlab";
         m.uid = 10123;
         m.model = "SCN350";
-        m.firmware = "1.7.1";
+        m.firmware = "1.7.0";
         m.ambientNote = "room approximately 22 C, entered on the projector";
         m.traceFile = "trace_1700000000.csv";
         String json = SweepReport.sweepJson(r.engine, m, 1700000000000L, 5400L);
