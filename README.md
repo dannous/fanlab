@@ -19,8 +19,8 @@ Philips' controller made **232** speed changes and FanLab made **25**, none bigg
 single percent.
 
 The projector runs Android, so this is just an app — installed from a USB stick, nothing
-flashed, nothing rooted, uninstalls from Settings. For the Screeneo U4 (SCN350) on firmware
-1.7.0.
+flashed, nothing rooted, uninstalls from Settings. For the Screeneo U4 (SCN350), run on
+firmware 1.7.0 and 1.7.1.
 
 ## Download
 
@@ -30,10 +30,16 @@ One file. You also need a USB stick. No PC, no cable, no adb, no unlocking anyth
 
 ## Installing it
 
-1. Copy `fanlab-system.apk` onto a USB stick and plug the stick into the projector.
-2. On the projector, open **AppInstaller** from the launcher and pick that file.
-3. Open **FanLab** from the launcher.
-4. Change **Mode** from `OFF` to `CURVE`.
+AppInstaller isn't on the launcher. It's in the hidden developer menu, which you open like
+this:
+
+1. Put `fanlab-system.apk` on the **root** of a USB stick, and plug the stick into the
+   projector.
+2. On the projector, open **Settings**.
+3. Press **OK** on the software version **five times**. The hidden developer menu opens.
+4. Scroll to **AppInstaller**, near the bottom.
+5. Find the APK on the USB stick, and install it.
+6. Open **FanLab**, and change **Mode** from `OFF` to `CURVE`.
 
 That's it. Choosing `CURVE` hands the fan over for you — there's a **Take over** button, but
 you don't need it.
@@ -41,6 +47,9 @@ you don't need it.
 The fan takes about fifteen seconds to come down from wherever Philips had it, then it should
 stay put. Leave it in Presentation for ten minutes and watch the number on screen — if it's
 working, it won't move.
+
+Start on **Curve preset: Quiet**. If you want the picture brighter as well, turn **LED drive**
+on and try the **Bright Quiet** curve.
 
 ## Using it
 

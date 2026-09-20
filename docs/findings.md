@@ -1,7 +1,8 @@
 # Findings
 
 Everything here was produced from an adb shell on a live Screeneo U4 running firmware
-1.7.0. Claims are marked **VERIFIED** (with the command and its output) or
+1.7.0. The app has since been run on 1.7.1 as well, but these findings were not re-derived
+on it. Claims are marked **VERIFIED** (with the command and its output) or
 **INFERRED**, and the command that produced each is given so it can be re-run.
 
 The tooling behind these results lives in `tools/`:

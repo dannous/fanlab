@@ -302,8 +302,9 @@ temperature — which has not been taken.
 
 ## Scope
 
-- **Firmware 1.7.0 only.** Property names, sysfs paths and every offset behind the analysis
-  are version-specific. Other versions have not been examined.
+- **Firmware 1.7.0 and 1.7.1.** Run on both; every measurement in this document was taken
+  on 1.7.0. Property names, sysfs paths and every offset behind the analysis are
+  version-specific, and no other version has been examined.
 - **The curve was measured at 24 °C ambient.** It is designed to hold its ceiling to about
   30 °C and has not been validated in a genuinely hot room.
 - **One unit.** Unit-to-unit variation is absorbed by the controller — it is closed on
