@@ -2,9 +2,9 @@
 
 **A quieter fan for the Philips Screeneo U4 projector.**
 
-If your U4 sounds like it can't make up its mind — fan climbing, dropping back, climbing
-again, forever — this fixes it. The fan settles on one speed and stays there, and that speed
-is a lot lower than the one it keeps jumping to.
+If your Screeneo U4 sounds like a jet engine, this fixes it. FanLab gives the fan a proper
+curve, so it settles on one speed and stays there — at roughly two thirds of Philips' speed,
+and in Presentation closer to half.
 
 The projector runs Android, so this is just an app. You install it from a USB stick like
 anything else. Nothing is flashed, nothing is rooted, and it uninstalls from Settings.
@@ -24,8 +24,8 @@ The trouble is it uses the same temperature to step up as it does to step down. 
 gap between them. The first step sits at 46 °C — and in a normal room, the projector settles
 at almost exactly 46 °C.
 
-So it drifts a fraction too warm, jumps to a much higher speed, cools down, drops back,
-warms up, and does it again. Forever.
+So it drifts a fraction too warm, jumps to a much higher speed, cools down, drops back to a
+lower (still high) speed, warms up, and does it again. Forever.
 
 That's what you're hearing. The fan isn't too fast. It's that it never stops changing, and a
 fan that changes is far more noticeable than one that's simply on.
@@ -56,9 +56,12 @@ The projector runs warmer than it used to. That's the trade — a slower fan mov
 
 ## Want it brighter too?
 
-This part surprised me. Philips runs the LEDs at about three-quarters of what the hardware
-actually allows, in every mode. There's an optional **LED drive** setting that turns all four
-up:
+Two things pull against each other here: how loud the fan is, and how much light the
+projector puts out. Philips fixes both. FanLab lets you move both.
+
+And this part surprised me. Philips runs the LEDs at about three-quarters of what the
+hardware actually allows, in every mode. There's an optional **LED drive** setting that turns
+all four up:
 
 | Brightness mode | Philips | FanLab | More light |
 |---|---:|---:|---:|
