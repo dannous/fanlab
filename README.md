@@ -2,16 +2,14 @@
 
 **A quieter fan for the Philips Screeneo U4 projector.**
 
-If your Screeneo U4 sounds like it can't make its mind up, this fixes it. The fan stops
-surging up and down and settles at one speed, and that speed is a lot lower than the one it
-keeps jumping to.
+If your Screeneo U4 sounds like a jet engine this fixes it. The fan now has a curve to keep the device cool and quiet. we run the fan under 60% of the original speeds.
 
 The projector runs Android, and that is what makes this possible at all: FanLab is an
 ordinary Android app, and you install it from a USB stick the same way you'd install
 anything else on the projector. Nothing is flashed, no firmware is replaced, nothing is
 rooted, and you can remove it again from Settings.
 
-For the Screeneo U4 (model SCN350) on firmware 1.7.1.
+For the Screeneo U4 (model SCN350)
 
 ---
 
@@ -23,13 +21,9 @@ temperature to step up as it does to step down, with no gap between them.
 
 In Presentation mode the projector naturally settles at almost exactly the temperature where
 one of those steps sits. So it gets a little too warm, jumps to a much higher fan speed,
-cools down, drops back to a low speed, warms up again, and repeats. Forever.
+cools down, drops back to a lower (still high) speed, warms up again, and repeats. Forever.
 
-That's the noise you're hearing. It isn't that the fan is too fast. It's that it keeps
-changing, and a fan that changes is far more noticeable than a fan that's simply on.
-
-FanLab replaces the five fixed speeds with a smooth curve. There are no steps left to trip
-over, so there's nothing to surge between.
+That's the noise you're hearing. FanLab replaces the five fixed speeds with a smooth curve. There are no steps left to trip over, so there's nothing to surge between.
 
 ## What you'll notice
 
@@ -41,7 +35,7 @@ In Presentation mode, in a normal room, at the projector's standard brightness:
 | How often it changes | constantly | typically not at all |
 | Other brightness modes | varies | 30 %, which you can't hear from a sofa |
 
-Measured over an hour against the projector's real thermal behaviour, Philips' controller
+Measured aginst the projector's real thermal behaviour, Philips' controller
 made 232 speed changes and FanLab made 25 — and none of FanLab's were bigger than a single
 percent, where 232 of Philips' were five percent or more.
 
@@ -53,11 +47,7 @@ ever isn't.
 
 Two things are adjustable here and they pull against each other, so it's worth seeing both
 in the same place: **how loud the fan is**, and **how much light the projector puts out**.
-Philips fixes both. FanLab lets you move both.
-
-Every fan figure is a percentage of full fan speed. Every light figure is the LED drive
-level — the percentage of the LED driver's own per-channel maximum that the light engine is
-actually being run at. Both are the numbers the firmware itself uses.
+Philips sets both at a fixed point. FanLab lets you move both.
 
 ### 1. How bright each mode actually is
 
