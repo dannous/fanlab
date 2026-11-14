@@ -71,8 +71,8 @@ public final class AdvancedPanel implements StepRow.Listener {
         add(root, new StepRow(c, "White screen (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits.")).display(">");
         add(root, new StepRow(c, "Colour slides").button().tag("slides", 0).hint("Full-screen white, red, green, blue and black, one at a time, to check each LED and look for dust or dead pixels.\n\nLeft and right change the slide. Back or OK exits.")).display(">");
         add(root, new StepRow(c, "Focus pattern").button().tag("focus", 0).hint("A fine grid with markers in the centre and corners, for setting focus and checking it is even across the picture.\n\nAny key exits.")).display(">");
-        manualRow = add(root, new StepRow(c, "Manual fan test %").range(Prefs.MIN_FAN_FLOOR, AutoHold.MAX_DUTY).steps(1, 5).tag("manual", 0)
-                .hint("Left and right hold the fan at one speed, to hear it or to cool the projector quickly. Brightness boost keeps working.\n\n"
+        manualRow = add(root, new StepRow(c, "Manual fan test %").range(Prefs.MIN_FAN_FLOOR, FanIo.MAX_DUTY).steps(1, 5).tag("manual", 0)
+                .hint("Left and right hold the fan at one speed, from 20 to 100 %, to hear it or to cool the projector quickly. Philips itself never goes above 83. Brightness boost keeps working.\n\n"
                         + "Nothing watches the temperature during the test, so it ends by itself after 30 minutes, or at "
                         + (int) FanService.MANUAL_END_C + " °C, and your fan mode takes over. Pick a Fan mode to end it sooner."));
         add(root, new StepRow(c, "Unattended test (" + WhiteActivity.planMinutes() + " min)").button().tag("plan", 0)

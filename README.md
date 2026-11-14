@@ -105,7 +105,7 @@ projector, and FanLab notices whichever one you are in within a few seconds.
 | **Brightness (LED drive)**, one per brightness mode | How hard the LEDs are driven, 20–97. Used when Brightness boost is on |
 | **Reset brightness and targets** | Puts both back to the tables above |
 | **Tests** | White screen (full load), colour slides (white, red, green, blue, black), a focus pattern, a manual fan test, and an unattended test that walks through the modes by itself |
-| **Tests → Manual fan test %** | Holds the fan at one speed, to hear it or to cool the projector quickly. It is a test, not a way to run: it ends by itself after 30 minutes or at 62 °C, and your fan mode takes over |
+| **Tests → Manual fan test %** | Holds the fan at one speed, 20–100 %, to hear it or to cool the projector quickly. Philips' own controller tops out at 83 %. It is a test, not a way to run: it ends by itself after 30 minutes or at 62 °C, and your fan mode takes over |
 | **Measure** | Sweep every fan speed, hold one fan speed, and a room temperature that is only written to the log |
 | **Logs** | Write the CSV log, copy it to shared storage, copy everything to a USB stick, and raw diagnostics |
 | **System → ADB over USB** | Switches the USB port so a PC can connect. Untested on this projector |
