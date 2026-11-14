@@ -2640,14 +2640,14 @@ public final class FanLabTest {
 
         LedDrive.Config bright = LedDrive.Config.bright();
         check(!bright.isStock(), "the Bright preset is not");
-        check(bright.encode().equals("d1,65,75,85,90"),
-                "and is 65/75/85/90  (got " + bright.encode() + ")");
-        eq(bright.levelFor(3), 90, "Presentation reads 90 - 76 stock, so 18 % more drive");
-        eq(bright.levelFor(2), 85, "Normal reads 85");
-        eq(bright.levelFor(1), 75, "Eco reads 75");
-        eq(bright.levelFor(4), 65, "Super Eco reads 65");
+        check(bright.encode().equals("d1,30,50,65,86"),
+                "and is 30/50/65/86, ten over stock in every mode  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 86, "Presentation reads 86, ten over the stock 76");
+        eq(bright.levelFor(2), 65, "Normal reads 65");
+        eq(bright.levelFor(1), 50, "Night reads 50");
+        eq(bright.levelFor(4), 30, "Super Eco reads 30");
         bright.sanitise();
-        check(bright.encode().equals("d1,65,75,85,90"),
+        check(bright.encode().equals("d1,30,50,65,86"),
                 "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
         eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
 

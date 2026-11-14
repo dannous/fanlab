@@ -71,20 +71,17 @@ public final class LedDrive {
         }
 
         /**
-         * The defaults the main screen's boost starts from; each level can be changed under Advanced.
-         * The owner's choice, 14 Nov 2026: every mode bright enough to watch (Super Eco 65 is brighter
-         * than stock Normal), and Presentation at 90, where the Bright curve family was solved: at 95
-         * it needed an audible 42 % fan to hold 58 C, for about 5 % more light.
+         * The defaults the Brightness boost starts from: ten points over Philips' own level in every
+         * mode (20/40/55/76 becomes 30/50/65/86). A modest step that anyone can turn on; each level
+         * can be raised or lowered under Advanced.
          */
         public static Config bright() {
             Config c = new Config();
-            c.level[0] = 65;
-            c.level[1] = 75;
-            c.level[2] = 85;
-            c.level[3] = 90;
+            for (int i = 0; i < TIERS; i++) {
+                c.level[i] = STOCK_OTHER[TIER_RGBLEVEL[i]] + 10;
+            }
             return c;
         }
-
         public boolean isStock() {
             for (int i = 0; i < TIERS; i++) {
                 if (level[i] != STOCK_OTHER[TIER_RGBLEVEL[i]]) {
