@@ -48,15 +48,19 @@ That's it. Picking a mode hands the fan over for you.
 The main screen is a short list. Move up and down with the remote, change a number with left
 and right, press OK on a button. A note about the row you are on appears beside it.
 
-**Fan mode** is the one choice that matters:
+Two choices matter. **Fan mode:**
 
-| Fan mode | Picture | What the fan does |
-|---|---|---|
-| **Curve to 55 °C** | Philips' own brightness | A simple fan curve that keeps the LED under 55 °C |
-| **Curve to 58 °C** | Your brighter levels | The same curve, allowed to 58 °C |
-| **Smart quiet** | Your brighter levels | Stays at or under your **Fan limit** (40 % unless you change it). If the LED gets too warm at the limit, the picture dims slightly instead of the fan getting louder |
-| **Manual** | Philips' own brightness | One fixed speed that you choose |
+| Fan mode | What the fan does |
+|---|---|
+| **Curve to 55 °C** | A simple fan curve that keeps the LED under 55 °C |
+| **Curve to 58 °C** | The same curve, allowed to 58 °C. Offered when Brightness boost is on |
+| **Smart quiet** | Stays at or under your **Fan limit** (40 % unless you change it). If the LED gets too warm at the limit, the picture dims slightly instead of the fan getting louder |
+| **Manual** | One fixed speed that you choose |
 
+And **Brightness boost**, which is its own switch. Off is Philips' own brightness. On runs each
+brightness mode at the level you set for it under Advanced (see
+[A brighter picture](#a-brighter-picture-optional)). It works with either curve and with Smart
+quiet, not with Manual.
 **Smart quiet** is the one to use if noise matters most. It finds the slowest fan that holds
 the LED at its target for the brightness mode you are in, and it learns your projector as it
 runs: how much more fan one mode needs than another, and what a point of fan is worth. That
@@ -87,6 +91,7 @@ projector, and FanLab notices whichever one you are in within a few seconds.
 | Control | What it does |
 |---|---|
 | **Fan mode** | The four choices above |
+| **Brightness boost** | On or Off. On uses your per-mode brightness levels |
 | **Fan limit %** | Shown in Smart quiet. The loudest the fan may go, 30–83, or Off |
 | **Manual fan %** | Shown in Manual. The fixed speed |
 | **Start on boot** | Leave this on, or Philips' controller takes back over at the next power-on |
@@ -97,7 +102,7 @@ projector, and FanLab notices whichever one you are in within a few seconds.
 |---|---|
 | **Smart quiet → target °C**, one per brightness mode | The LED temperature Smart quiet holds, 45–60 °C. Lower is kinder to the LEDs but needs more fan, or a dimmer picture at the limit |
 | **Smart quiet → Fan floor %** | The slowest the fan runs, 20–40, normally 30. Below 30 is untested. The curves never go below 25 |
-| **Brightness (LED drive)**, one per brightness mode | How hard the LEDs are driven, 20–97. Used by Curve to 58 °C and Smart quiet |
+| **Brightness (LED drive)**, one per brightness mode | How hard the LEDs are driven, 20–97. Used when Brightness boost is on |
 | **Reset brightness and targets** | Puts both back to the tables above |
 | **Tests** | White screen (full load), colour slides (white, red, green, blue, black), a focus pattern, and an unattended test that walks through the modes by itself |
 | **Measure** | Sweep every fan speed, hold one fan speed, and a room temperature that is only written to the log |
@@ -254,8 +259,8 @@ Derivation, the measured thermal plant and the stability analysis:
 
 ## A brighter picture (optional)
 
-Philips runs the LEDs at about three-quarters of what the hardware allows. **Curve to 58 °C**
-and **Smart quiet** turn all four modes up:
+Philips runs the LEDs at about three-quarters of what the hardware allows. **Brightness boost**
+turns all four modes up:
 
 | Brightness mode | Philips | FanLab | More LED drive |
 |---|---:|---:|---:|

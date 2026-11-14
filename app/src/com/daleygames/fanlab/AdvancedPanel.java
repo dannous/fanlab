@@ -59,7 +59,7 @@ public final class AdvancedPanel implements StepRow.Listener {
             driveRows[i] = add(root, new StepRow(c, LedDrive.TIER_NAMES[i] + " %")
                     .range(LedDrive.MIN_LEVEL, LedDrive.MAX_LEVEL).steps(1, 5).tag("drive", i)
                     .hint("How hard the LEDs are driven in " + LedDrive.TIER_NAMES[i] + ". Philips uses " + stock
-                            + ".\n\nHigher is brighter, but needs more fan and wears the LEDs faster. Used by Curve to 58 °C and Smart quiet; over "
+                            + ".\n\nHigher is brighter, but needs more fan and wears the LEDs faster. Used when Brightness boost is on; over "
                             + (int) LedDrive.DEFAULT_TRIP_C + " °C the brighter picture switches itself off."));
         }
         add(root, new StepRow(c, "Reset brightness and targets to the defaults").button().tag("drivereset", 0)

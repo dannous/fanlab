@@ -906,7 +906,8 @@ public class FanService extends Service {
                 boolean engineOn = s.ledStatus != 0;
                 int autoKind = Prefs.autoKind(this);
                 boolean boost = Prefs.ledBoostOn(this);
-                double target = AutoHold.targetFor(boost);
+                // The curve keeps the LED under 55 at Philips' brightness; with the boost on the owner picks 55 or 58.
+                double target = boost ? Prefs.curveTarget(this) : AutoHold.TARGET_C;
                 CurveConfig cfg = autoKind == Prefs.AUTO_STEP ? AutoStep.curve() : Prefs.curve(this);
                 if (autoKind == Prefs.AUTO_STEP) {
                     int was = autoStep.trim();

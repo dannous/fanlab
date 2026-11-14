@@ -94,6 +94,15 @@ public final class Prefs {
 
     public static final int DEFAULT_FAN_LIMIT = 40;
 
+    /** The temperature the curve keeps the LED under with the brightness boost on: 55 or 58. With the boost off it is always 55. */
+    public static int curveTarget(Context c) {
+        return get(c).getInt("curve_target", 58) == 55 ? 55 : 58;
+    }
+
+    public static void setCurveTarget(Context c, int celsius) {
+        get(c).edit().putInt("curve_target", celsius == 55 ? 55 : 58).apply();
+    }
+
     /** Lowest the fan goes under Smart quiet and the curves, percent. 30 is the lowest the written record proves against the stall watchdog. */
     public static final int MIN_FAN_FLOOR = 20;
     public static final int MAX_FAN_FLOOR = 40;
