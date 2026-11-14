@@ -41,6 +41,8 @@ public final class FanLimit {
     private long changedMs;
     private long lastMs;
     private double smoothC = Double.NaN;
+    private double lastTargetC = Double.NaN;
+    private double graceTargetC = Double.NaN;
 
     /** Points currently taken off the LED drive for the mode on screen. */
     public int trim() {
@@ -60,6 +62,8 @@ public final class FanLimit {
         changedMs = 0L;
         lastMs = 0L;
         smoothC = Double.NaN;
+        lastTargetC = Double.NaN;
+        graceTargetC = Double.NaN;
     }
 
     /** How often to dim one point, ms, for a reading {@code over} the target; 0 for not at all. */
@@ -103,6 +107,13 @@ public final class FanLimit {
             level = rgblevel;
             graceUntilMs = nowMs + GRACE_MS;
             changedMs = nowMs;
+            // A switch down arrives warm from the brighter mode: judge it against the higher target
+            // until the grace is over, or the limit lifts the moment a lower target appears.
+            graceTargetC = Double.isNaN(lastTargetC) ? targetC : Math.max(lastTargetC, targetC);
+        }
+        lastTargetC = targetC;
+        if (nowMs < graceUntilMs && graceTargetC > targetC) {
+            targetC = graceTargetC;
         }
         if (Double.isNaN(smoothC) || lastMs == 0L) {
             smoothC = degC;

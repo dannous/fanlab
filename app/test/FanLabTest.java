@@ -4339,6 +4339,37 @@ public final class FanLabTest {
                 "and above the point where the fan limit is lifted at a 60 target");
         check(LedDrive.DEFAULT_TRIP_C <= 70.0, "and still well under the 75 C shutdown");
         check("Night".equals(LedDrive.TIER_NAMES[1]), "Eco is called Night");
+
+        // 15 Nov 2026, 00:51: clicked down from Presentation (target 60, LED 59.7) through Night (55)
+        // and Super Eco (50). The LED was still warm, each lower target made it look hot, and the
+        // fan limit lifted on the spot. A switch down must not raise the fan or lift the limit.
+        FanLimit fl = new FanLimit();
+        long sm = 0L;
+        for (; sm < 5L * 60000L; sm += 1000L) {
+            fl.step(43, 43, 59.7, 60.0, 3, 19, sm);
+        }
+        check(!fl.lifted(), "Presentation at 59.7 against 60: the limit holds");
+        boolean everLifted = false;
+        for (int i = 0; i < 80; i++, sm += 1000L) {
+            fl.step(43, 43, 58.5 - i * 0.05, 55.0, 1, 25, sm);
+            everLifted |= fl.lifted();
+        }
+        check(!everLifted, "down to Night, warm from Presentation: the limit is not lifted");
+        eq(fl.trim(), 0, "and the picture is not dimmed for it");
+
+        AutoHold dn = new AutoHold();
+        dn.setDrive(true);
+        dn.resync(42);
+        for (sm = 0L; sm < 12L * 60000L; sm += 1000L) {
+            dn.step(59.9, 60.0, 30, 3, sm);
+        }
+        int atSwitch = dn.duty();
+        int top = atSwitch;
+        for (int i = 0; i < 85; i++, sm += 1000L) {
+            // The LED falls about 5 C in the first minute at Night's lower drive.
+            top = Math.max(top, dn.step(59.9 - Math.min(5.5, i * 0.09), 55.0, 30, 1, sm));
+        }
+        eq(top, atSwitch, "down to Night, the fan does not rise for the lower target");
     }
     private static void testAutoGuide() {
         section("auto: a learned speed guides a switch, and only a fresh one");

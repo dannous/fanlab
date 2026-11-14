@@ -104,6 +104,54 @@ public final class CsvLogger {
         }
     }
 
+    /**
+     * Delete every log file in those of this logger's directories that lie under one of
+     * {@code onlyUnder} (the projector's own storage). Anything else, a USB stick above all, is
+     * left alone: an allow-list, because the stick's path is not always discoverable. The handles
+     * are closed first and the next row starts a fresh file with its header. Returns how many
+     * files went.
+     */
+    public synchronized int wipe(List<File> onlyUnder) {
+        int gone = 0;
+        for (int i = 0; i < targets.size(); i++) {
+            Target t = targets.get(i);
+            try {
+                File dir = t.file.getParentFile();
+                if (dir == null || !under(dir, onlyUnder)) {
+                    continue;
+                }
+                closeQuietly(t);
+                t.bytes = 0;
+                File[] all = dir.listFiles();
+                if (all == null) {
+                    continue;
+                }
+                for (int j = 0; j < all.length; j++) {
+                    if (all[j].isFile() && all[j].delete()) {
+                        gone++;
+                    }
+                }
+            } catch (Throwable ignored) {
+                // One directory that will not list or delete must not stop the others.
+            }
+        }
+        return gone;
+    }
+
+    private static boolean under(File dir, List<File> roots) {
+        if (roots == null) {
+            return false;
+        }
+        String p = dir.getAbsolutePath();
+        for (int i = 0; i < roots.size(); i++) {
+            File r = roots.get(i);
+            if (r != null && p.startsWith(r.getAbsolutePath())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void openIfNeeded(Target t) {
         if (t.writer != null || t.broken) {
             return;

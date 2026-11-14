@@ -60,7 +60,7 @@ Leave it on, or Philips' controller takes the fan back at the next power-on.
 | **Brightness (LED drive)** | The boost level for each brightness mode, and a reset for brightness and targets |
 | **Tests** | White screen (full load), colour slides, a focus pattern, a manual fan test (20–100 %, ends by itself after 30 minutes or at 62 °C), and an unattended test |
 | **Measure** | Sweep every fan speed, hold one fan speed, and a room temperature for the log |
-| **Logs** | Write the CSV log, copy it to shared storage or a USB stick, and raw diagnostics |
+| **Logs** | Write the CSV log, copy it to shared storage or a USB stick, delete the logs on the projector (it asks first), and raw diagnostics |
 | **ADB over USB** | Untested on this projector |
 | **Restore stock controller** | Gives the fan back to Philips. Press this before uninstalling |
 

@@ -24,6 +24,18 @@ public final class AutoHold {
     /** The lowest floor the owner may set (see Prefs.fanFloor). Below 30 the stall watchdog is the only thing known to watch the fan. */
     public static final int ABS_MIN_DUTY = 20;
 
+    /**
+     * After a change of brightness mode, the higher of the old and new targets is used for this
+     * long, ms. Each mode has its own target, and a switch down arrives with the LED still warm
+     * from the brighter mode: on 15 Nov 2026 a click from Presentation through Night read 58.5 C
+     * against Night's 55 and lifted the fan limit on the spot. The LED cools by itself within a
+     * minute of the drive coming down; raising the fan for it is noise for nothing.
+     */
+    static final long SWITCH_GRACE_MS = 90000L;
+    private long graceUntilMs;
+    private double graceTargetC = Double.NaN;
+    private double lastTargetC = Double.NaN;
+
     private boolean driveSet;
     private boolean driveIs;
 
@@ -484,6 +496,7 @@ public final class AutoHold {
     public int step(double celsius, double targetC, int minDuty, int rgblevel, long nowMs) {
         // Told by the caller when it knows; otherwise read off the target, as before per-mode targets.
         boolean driveOn = driveSet ? driveIs : targetC >= BOOST_TARGET_C;
+        final double setTargetC = targetC;
         if (validLevel(rgblevel)) {
             if (rgblevel != pendingLevel) {
                 pendingLevel = rgblevel;
@@ -495,6 +508,9 @@ public final class AutoHold {
             } else if (rgblevel != level && nowMs - pendingSinceMs >= FLICK_MS) {
                 int from = level;
                 level = rgblevel;
+                // A lower target must not make a warm LED look hot: see SWITCH_GRACE_MS.
+                graceTargetC = Double.isNaN(lastTargetC) ? setTargetC : Math.max(lastTargetC, setTargetC);
+                graceUntilMs = nowMs + SWITCH_GRACE_MS;
                 // Steady time counts from the switch. Without this, the first tick in a new mode
                 // still saw ten unchanged minutes and a smoothed reading in the band, both left
                 // over from the old one: on 14 Nov 2026 it logged "settled Normal@42" the moment
@@ -529,6 +545,17 @@ public final class AutoHold {
                         : settledFor(driveOn, level) > 0 ? " (learned " + settledFor(driveOn, level) + " is over 3 h old)"
                         : " (nothing learned yet)");
             }
+        }
+        if (validLevel(rgblevel) && validLevel(level) && rgblevel != level) {
+            // A mode seen but not yet accepted (it may be one clicked past): keep the last target.
+            if (!Double.isNaN(lastTargetC)) {
+                targetC = Math.max(targetC, lastTargetC);
+            }
+        } else {
+            if (nowMs < graceUntilMs && graceTargetC > targetC) {
+                targetC = graceTargetC;
+            }
+            lastTargetC = setTargetC;
         }
         floor = minDuty < ABS_MIN_DUTY ? ABS_MIN_DUTY : minDuty > MAX_DUTY ? MAX_DUTY : minDuty;
         if (Double.isNaN(duty)) {

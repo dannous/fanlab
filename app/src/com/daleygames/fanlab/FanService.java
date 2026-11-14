@@ -1907,6 +1907,36 @@ public class FanService extends Service {
         }
     }
 
+    /**
+     * Delete the logs kept on the projector itself. A USB stick's copies are left alone. Refused
+     * while a sweep or a hold is running, because its trace is one of those files. Returns the
+     * number of files deleted, or -1 if refused.
+     */
+    public int wipeDeviceLogs() {
+        if (sweepEngine != null || holdSession != null || csv == null) {
+            return -1;
+        }
+        // The projector's own storage only: the app's private folder, its folder on internal shared
+        // storage, and the public FanLab folder. A USB stick is none of these.
+        List<File> device = new ArrayList<File>();
+        try {
+            device.add(getFilesDir());
+            File primary = getExternalFilesDir(null);
+            if (primary != null) {
+                device.add(primary);
+            }
+            File pub = Environment.getExternalStorageDirectory();
+            if (pub != null) {
+                device.add(new File(pub, "FanLab"));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "wipeDeviceLogs", t);
+        }
+        int n = csv.wipe(device);
+        note("logs on the projector wiped: " + n + " files");
+        return n;
+    }
+
     /** Where an export puts its files on a volume. Never a {@link CsvLogger} sink: {@code prune()} deletes everything matching {@code fanlab-*.csv} in a target's own directory. */
     public static final String EXPORT_DIR = "FanLab-export";
 

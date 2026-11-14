@@ -93,6 +93,8 @@ public final class AdvancedPanel implements StepRow.Listener {
                 .tag("storage", 0).hint("Also save the log to shared storage.\n\nAsks for permission."));
         exportRow = add(root, new StepRow(c, "Copy all logs to USB").button()
                 .tag("export", 0).hint("Copy the whole log history to a plugged-in USB stick."));
+        add(root, new StepRow(c, "Delete logs on the projector").button().tag("wipe", 0)
+                .hint("Deletes every log file stored on the projector. It asks first.\n\nCopies on a USB stick are not touched, and what Smart quiet has learned is kept.")).display(">");
         add(root, new StepRow(c, "Diagnostics").button().tag("diag", 0).hint("Raw sensor and system readings.")).display(">");
 
         root.addView(Ui.heading(c, "System"), Ui.wrap());
@@ -227,6 +229,8 @@ public final class AdvancedPanel implements StepRow.Listener {
                 Prefs.setRoomC(a, row.get());
             } else if ("storage".equals(t)) {
                 askStorage();
+            } else if ("wipe".equals(t)) {
+                confirmWipe();
             } else if ("export".equals(t)) {
                 FanService s = FanService.instance;
                 if (s == null) {
@@ -249,6 +253,25 @@ public final class AdvancedPanel implements StepRow.Listener {
         } catch (Throwable th) {
             say("Failed: " + th);
         }
+    }
+
+    private void confirmWipe() {
+        new AlertDialog.Builder(a)
+                .setTitle("Delete the logs on the projector?")
+                .setMessage("Every log file stored on the projector is deleted. This cannot be undone.\n\n"
+                        + "Copies on a USB stick are not touched. What Smart quiet has learned is kept.")
+                .setPositiveButton("Delete", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        FanService s = FanService.instance;
+                        int n = s == null ? -2 : s.wipeDeviceLogs();
+                        say(n == -2 ? "Turn the fan control on first."
+                                : n == -1 ? "Not while a measurement is running."
+                                : "Deleted " + n + " log file" + (n == 1 ? "" : "s") + ".");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void confirmTakeover() {
