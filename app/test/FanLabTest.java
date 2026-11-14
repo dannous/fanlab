@@ -105,6 +105,9 @@ public final class FanLabTest {
         testLedDriveDecide();
         testCurvePresetsDoNotHunt();
         testAutoTrim();
+        testAutoSwitchLocks();
+        testAutoFindsLowest();
+        testAutoGuide();
         testAutoStep();
         testOffDuration();
         testExclusiveControl();
@@ -2634,14 +2637,14 @@ public final class FanLabTest {
 
         LedDrive.Config bright = LedDrive.Config.bright();
         check(!bright.isStock(), "the Bright preset is not");
-        check(bright.encode().equals("d1,35,55,75,95"),
-                "and is 35/55/75/95  (got " + bright.encode() + ")");
-        eq(bright.levelFor(3), 95, "Presentation reads 95 - 76 stock, so 25 % more drive");
-        eq(bright.levelFor(2), 75, "Normal reads 75");
-        eq(bright.levelFor(1), 55, "Eco reads 55");
-        eq(bright.levelFor(4), 35, "Super Eco reads 35");
+        check(bright.encode().equals("d1,65,75,85,90"),
+                "and is 65/75/85/90  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 90, "Presentation reads 90 - 76 stock, so 18 % more drive");
+        eq(bright.levelFor(2), 85, "Normal reads 85");
+        eq(bright.levelFor(1), 75, "Eco reads 75");
+        eq(bright.levelFor(4), 65, "Super Eco reads 65");
         bright.sanitise();
-        check(bright.encode().equals("d1,35,55,75,95"),
+        check(bright.encode().equals("d1,65,75,85,90"),
                 "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
         eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
 
@@ -4030,6 +4033,242 @@ public final class FanLabTest {
         }
     }
 
+    /** The lowest whole duty whose steady LED temperature on the test plant is at or under 58 C, for a brightness mode. */
+    private static int idealDuty(int ambient, boolean pres) {
+        for (int d = AutoHold.minFor(pres ? 3 : 2); d <= AutoHold.MAX_DUTY; d++) {
+            if (ambient + autoRise(d) * 1.306 * (pres ? 1.0 : 0.8) <= AutoHold.BOOST_TARGET_C) {
+                return d;
+            }
+        }
+        return AutoHold.MAX_DUTY;
+    }
+
+    /**
+     * Normal 3 h, Presentation 2 h, Normal 2 h, then measures a switch up to Presentation (2 h)
+     * and back down to Normal (2 h), at drive 95 with the LED's own near-instant jump in the plant
+     * (54 to 58 C in 3 s on 14 Nov 2026). Each switch is split where the first probe starts: before
+     * it is the switch itself, after it the search for the lowest speed.
+     *
+     * Returns, per switch (up at 0, down at 7): {switch lock s, switch reversals, switch overshoot
+     * past where the switch landed, where the switch landed, reversals afterwards, end duty, probes}.
+     */
+    private static int[] guideRun(int ambient, boolean tellMode, int staleBy, long staleAgeMs) {
+        AutoHold h = new AutoHold();
+        h.resync(55);
+        java.util.Random rng = new java.util.Random(7);
+        double die = 0.0, fast = 0.0, slow = 0.0;
+        int last = -1;
+        int[] at = {0, 3 * 3600, 5 * 3600, 7 * 3600, 9 * 3600, 11 * 3600};
+        int[] lock = new int[2], rvSw = new int[2], rvAfter = new int[2], dp = new int[2], end = new int[2];
+        int[] hi = new int[2], lo = {200, 200}, probes = new int[2];
+        boolean[] probing = new boolean[2];
+        for (int t = 0; t < at[5]; t++) {
+            int s = t >= at[4] ? 4 : t >= at[3] ? 3 : t >= at[2] ? 2 : t >= at[1] ? 1 : 0;
+            boolean pres = s == 1 || s == 3;
+            if (staleBy != 0 && t == at[3] - 1) {
+                // Integer.MIN_VALUE forgets Presentation's speed altogether.
+                h.setSettled(true, 3, staleBy == Integer.MIN_VALUE ? 0 : h.settledFor(true, 3) + staleBy,
+                        t * 1000L - staleAgeMs);
+            }
+            double c = ambient + die + fast + slow + rng.nextGaussian() * 0.05;
+            int d = h.step(c, AutoHold.BOOST_TARGET_C, AutoHold.minFor(pres ? 3 : 2), tellMode ? (pres ? 3 : 2) : -1,
+                    t * 1000L);
+            String ev = h.takeEvent();
+            double tot = autoRise(d) * 1.306 * (pres ? 1.0 : 0.8);
+            die += (tot * 0.25 - die) * (1.0 - Math.exp(-1.0 / 4.0));
+            fast += (tot * 0.50 - fast) * (1.0 - Math.exp(-1.0 / 230.0));
+            slow += (tot * 0.25 - slow) * (1.0 - Math.exp(-1.0 / 900.0));
+            if (s >= 3) {
+                int i = s - 3;
+                if (ev != null && ev.startsWith("probe") && ev.contains("started")) {
+                    probing[i] = true;
+                    probes[i]++;
+                }
+                if (last >= 0 && d != last) {
+                    int dr = d > last ? 1 : -1;
+                    if (dp[i] != 0 && dr != dp[i]) {
+                        if (probing[i]) {
+                            rvAfter[i]++;
+                        } else {
+                            rvSw[i]++;
+                        }
+                    }
+                    dp[i] = dr;
+                    if (!probing[i]) {
+                        lock[i] = t - at[s];
+                    }
+                }
+                if (!probing[i]) {
+                    hi[i] = Math.max(hi[i], d);
+                    lo[i] = Math.min(lo[i], d);
+                    end[i] = d;
+                }
+                if (probing[i]) {
+                    end[i] = d;
+                }
+            }
+            last = d;
+        }
+        // Where the switch landed is the duty just before the first probe (or the end, if none).
+        return new int[] {lock[0], rvSw[0], 0, hi[0], rvAfter[0], end[0], probes[0],
+                lock[1], rvSw[1], 0, lo[1], rvAfter[1], end[1], probes[1]};
+    }
+
+    private static void testAutoSwitchLocks() {
+        section("auto: a switch goes one way to its speed, then probing finds the lowest that holds 58");
+        for (int ambient = 22; ambient <= 30; ambient += 4) {
+            for (int told = 0; told <= 1; told++) {
+                int[] g = guideRun(ambient, told == 1, 0, 0L);
+                String w = "AUTO " + (told == 1 ? "learned" : "plain") + " at " + ambient + " C, ";
+                int idealP = idealDuty(ambient, true), idealN = idealDuty(ambient, false);
+                eq(g[1], 0, w + "Normal to Presentation: the switch goes one way only");
+                // 14 min unguided in the warm room: the look-ahead makes the last steps careful, and it
+                // lands on the lowest speed instead of two above it, as it did without.
+                check(g[0] <= (told == 1 ? 2 : 14) * 60, w + "Normal to Presentation: the switch lands within "
+                        + (told == 1 ? 2 : 14) + " min (" + g[0] + " s)");
+                check(g[3] <= idealP + 2, w + "Normal to Presentation: and never more than 2 over the lowest ("
+                        + g[3] + " vs " + idealP + ")");
+                check(g[5] <= g[3], w + "Normal to Presentation: probing only ever lowers it");
+                check(g[5] >= idealP && g[5] <= idealP + 1, w + "Normal to Presentation: ends on the lowest speed that "
+                        + "holds 58, or one above (" + g[5] + " vs " + idealP + ")");
+                check(g[4] <= 2, w + "Normal to Presentation: at most one failed probe (" + g[4] + " reversals)");
+                eq(g[8], 0, w + "Presentation to Normal: the switch goes one way only");
+                check(g[7] <= (told == 1 ? 6 : 28) * 60, w + "Presentation to Normal: the switch lands within "
+                        + (told == 1 ? 6 : 28) + " min (" + g[7] / 60 + " min)");
+                check(g[10] >= idealN, w + "Presentation to Normal: and never under the lowest that holds 58 ("
+                        + g[10] + " vs " + idealN + ")");
+                check(g[12] >= idealN && g[12] <= idealN + 1, w + "Presentation to Normal: ends on the lowest speed "
+                        + "that holds 58, or one above (" + g[12] + " vs " + idealN + ")");
+                check(g[11] <= 2, w + "Presentation to Normal: at most one failed probe (" + g[11] + " reversals)");
+            }
+        }
+    }
+
+    /**
+     * Settled a good way too high, as on 14 Nov 2026 (57.0 C at 45 in Presentation, with fan to
+     * spare): probing must walk it down to the lowest whole speed that holds 58, without the LED
+     * going past 58.2 and with at most one failed probe.
+     */
+    private static void testAutoFindsLowest() {
+        section("auto: from a speed that is too high, it finds the lowest that holds 58");
+        double[] slowTau = {900.0, 3000.0};
+        for (int pres = 0; pres <= 1; pres++) {
+            for (int ambient = 18; ambient <= 30; ambient += 4) {
+                for (double st : slowTau) {
+                    boolean p = pres == 1;
+                    int ideal = idealDuty(ambient, p);
+                    int start = Math.min(AutoHold.MAX_DUTY, ideal + 6);
+                    double tot0 = autoRise(start) * 1.306 * (p ? 1.0 : 0.8);
+                    double die = tot0 * 0.25, fast = tot0 * 0.5, slow = tot0 * 0.25, peak = 0.0;
+                    AutoHold h = new AutoHold();
+                    h.resync(start);
+                    java.util.Random rng = new java.util.Random(11);
+                    int last = -1, dp = 0, rev = 0, d = start, lastDown = 0;
+                    int[] hist = new int[8 * 3600];
+                    for (int t = 0; t < 8 * 3600; t++) {
+                        double c = ambient + die + fast + slow + rng.nextGaussian() * 0.05;
+                        d = h.step(c, AutoHold.BOOST_TARGET_C, AutoHold.minFor(p ? 3 : 2), p ? 3 : 2, t * 1000L);
+                        double tot = autoRise(d) * 1.306 * (p ? 1.0 : 0.8);
+                        die += (tot * 0.25 - die) * (1.0 - Math.exp(-1.0 / 4.0));
+                        fast += (tot * 0.50 - fast) * (1.0 - Math.exp(-1.0 / 230.0));
+                        slow += (tot * 0.25 - slow) * (1.0 - Math.exp(-1.0 / st));
+                        if (last >= 0 && d != last) {
+                            int dr = d > last ? 1 : -1;
+                            if (dp != 0 && dr != dp) {
+                                rev++;
+                            }
+                            dp = dr;
+                            if (dr < 0) {
+                                lastDown = t;
+                            }
+                        }
+                        peak = Math.max(peak, ambient + die + fast + slow);
+                        hist[t] = d;
+                        last = d;
+                    }
+                    String w = "AUTO " + (p ? "Presentation" : "Normal") + " at " + ambient + " C, slow pole "
+                            + (int) st + " s, from " + start + ": ";
+                    check(d >= ideal && d <= ideal + 1, w + "ends on the lowest speed that holds 58, or one above ("
+                            + d + " vs " + ideal + ")");
+                    check(peak <= AutoHold.BOOST_TARGET_C + 0.2, w + "the LED never past 58.2 (peak "
+                            + Sample.fmt1(peak) + ")");
+                    check(rev <= 2, w + "at most one failed probe (" + rev + " reversals)");
+                    int near = 0;
+                    for (int q = hist.length - 1; q >= 0; q--) {
+                        if (hist[q] > d + 1) {
+                            near = q + 1;
+                            break;
+                        }
+                    }
+                    // The search ends by checking one point that does not fit and handing it back,
+                    // so it is within a point well before it is done.
+                    check(near <= 15 * 60, w + "within a point of where it ends by 15 min (" + near / 60 + " min)");
+                    check(lastDown <= 25 * 60, w + "and done coming down within 25 min (last step down at "
+                            + lastDown / 60 + " min)");
+                }
+            }
+        }
+    }
+
+    private static void testAutoGuide() {
+        section("auto: a learned speed guides a switch, and only a fresh one");
+        for (int ambient = 22; ambient <= 30; ambient += 4) {
+            String w = "AUTO learned, at " + ambient + " C: ";
+            int[] plain = guideRun(ambient, false, 0, 0L);
+            int[] g = guideRun(ambient, true, 0, 0L);
+            check(g[0] <= plain[0] && g[7] < plain[7], w + "the switch lands sooner than without learning (up "
+                    + g[0] + " vs " + plain[0] + " s, down " + g[7] + " vs " + plain[7] + " s)");
+            int[] old = guideRun(ambient, true, 6, 4L * 3600L * 1000L);
+            int[] none = guideRun(ambient, true, Integer.MIN_VALUE, 0L);
+            eq(old[0], none[0], w + "a memory over 3 h old is used no more than none at all");
+            eq(old[3], none[3], w + "and the switch lands in the same place");
+        }
+        AutoHold fk = new AutoHold();
+        fk.resync(45);
+        long fms = 0L;
+        for (; fms < 60000L; fms += 1000L) {
+            fk.step(57.0, AutoHold.BOOST_TARGET_C, AutoHold.minFor(3), 3, fms);
+        }
+        fk.takeEvent();
+        fk.setSettled(true, 1, 26, fms);
+        String seen = null;
+        for (int i = 0; i < 4; i++, fms += 1000L) {
+            fk.step(57.0, AutoHold.BOOST_TARGET_C, AutoHold.minFor(1), 1, fms);
+            String e = fk.takeEvent();
+            seen = e != null && e.startsWith("guide") ? e : seen;
+        }
+        for (int i = 0; i < 20; i++, fms += 1000L) {
+            fk.step(57.0, AutoHold.BOOST_TARGET_C, AutoHold.minFor(3), 3, fms);
+            String e = fk.takeEvent();
+            seen = e != null && e.startsWith("guide") ? e : seen;
+        }
+        check(seen == null, "AUTO: Eco for 4 s on the way back to Presentation is not a switch (saw " + seen + ")");
+        fk.setSettled(true, 3, 44, fms);
+        fk.forgetLearned();
+        eq(fk.settledFor(true, 3), 0, "AUTO: new brightness levels forget every learned speed");
+
+        // 14 Nov 2026, 21:32:49: steady at 42 in Presentation, switched to Normal, and the first
+        // ticks in Normal logged "settled Normal@42" from Presentation's leftover steady time.
+        AutoHold sw = new AutoHold();
+        sw.resync(42);
+        long sms = 0L;
+        for (; sms < 15L * 60000L; sms += 1000L) {
+            sw.step(57.85, AutoHold.BOOST_TARGET_C, AutoHold.minFor(3), 3, sms);
+            sw.takeEvent();
+        }
+        String learnedNormal = null;
+        for (int i = 0; i < 9 * 60; i++, sms += 1000L) {
+            // The LED falls after the switch, as it did (57.9 to 52.6 C).
+            double c = 57.85 - Math.min(5.0, i / 12.0);
+            sw.step(c, AutoHold.BOOST_TARGET_C, AutoHold.minFor(2), 2, sms);
+            String e = sw.takeEvent();
+            if (e != null && e.startsWith("settled Normal")) {
+                learnedNormal = e;
+            }
+        }
+        check(learnedNormal == null, "AUTO: a switch does not hand the old mode's speed to the new one (saw "
+                + learnedNormal + ")");
+    }
     private static void testAutoStep() {
         section("auto step: its own curve, a 25 floor, and a trim that only adds");
         CurveConfig c = AutoStep.curve();

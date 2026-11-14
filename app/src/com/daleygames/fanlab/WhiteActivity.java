@@ -51,6 +51,9 @@ public class WhiteActivity extends Activity {
     private int savedLevel = -1;
     private boolean savedBoost;
 
+    /** The key that ended the screen, for the log; null if it was not a key. */
+    private String stopKey;
+
     private final Runnable poll = new Runnable() {
         @Override
         public void run() {
@@ -86,7 +89,10 @@ public class WhiteActivity extends Activity {
             Sample s = FanService.lastSample;
             savedLevel = s == null ? -1 : s.rgblevel;
             if (!savedBoost) {
-                Prefs.setLedDrive(this, LedDrive.Config.bright());
+                // Use the owner's own levels if they have set any; fill in the defaults only if not.
+                if (Prefs.ledDrive(this).isStock()) {
+                    Prefs.setLedDrive(this, LedDrive.Config.bright());
+                }
                 Prefs.setLedDriveOn(this, true);
             }
             FanService.mark("plan start");
@@ -103,12 +109,27 @@ public class WhiteActivity extends Activity {
     @Override
     protected void onPause() {
         ui.removeCallbacks(poll);
+        if (plan && !isFinishing()) {
+            FanService.mark("plan paused");
+        }
         super.onPause();
     }
 
     @Override
+    protected void onStop() {
+        if (plan && !isFinishing()) {
+            // Something else took the screen; the run keeps its settings until this is destroyed.
+            FanService.mark("plan hidden");
+        }
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
-        restore("closed");
+        // A stop on 14 Nov 2026 left only "plan closed" in the log; say who closed it.
+        restore(stopKey != null ? "closed key=" + stopKey
+                : isFinishing() ? "closed finishing" : isChangingConfigurations()
+                        ? "closed by system (config change)" : "closed by system");
         super.onDestroy();
     }
 
@@ -149,7 +170,7 @@ public class WhiteActivity extends Activity {
         readout.setText("STEP " + (step + 1) + "/" + PLAN.length + "  " + levelName(PLAN[step][0])
                 + ", " + (PLAN[step][1] == Prefs.AUTO_HOLD ? "Auto 58" : "Auto Step") + "  "
                 + (now - stepStartedMs) / 60000L + "/" + PLAN[step][2] + " min   " + live
-                + "   total " + totalMin + "/" + planMinutes() + " min   any key stops");
+                + "   total " + totalMin + "/" + planMinutes() + " min   Back or OK stops");
     }
 
     private void begin(int level, int autoKind) {
@@ -178,7 +199,8 @@ public class WhiteActivity extends Activity {
         plan = false;
         Prefs.setAutoKind(this, savedAuto);
         if (!savedBoost) {
-            Prefs.resetLedDrive(this);
+            // Off again, but the levels stay as the owner set them.
+            Prefs.setLedDriveOn(this, false);
         }
         FanService svc = FanService.instance;
         if (savedMode == Mode.OFF && svc != null) {
@@ -200,7 +222,21 @@ public class WhiteActivity extends Activity {
         if (System.currentTimeMillis() - startedMs < 800L) {
             return true;
         }
+        String name = KeyEvent.keyCodeToString(keyCode) + "/" + keyCode
+                + (event != null && event.getDeviceId() < 0 ? " virtual" : "");
+        if (plan && !finished && !isStopKey(keyCode)) {
+            // A run left alone must not end on a stray or injected key; note it and carry on.
+            FanService.mark("plan ignored key=" + name);
+            return true;
+        }
+        stopKey = name;
         finish();
         return true;
+    }
+
+    /** Keys that end an unattended run: the ones a person reaches for to leave a screen. */
+    private static boolean isStopKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_ESCAPE;
     }
 }

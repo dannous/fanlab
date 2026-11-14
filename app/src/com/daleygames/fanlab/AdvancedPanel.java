@@ -29,6 +29,8 @@ public final class AdvancedPanel implements StepRow.Listener {
     private StepRow storageRow;
     private StepRow exportRow;
     private StepRow takeoverRow;
+    /** One row per brightness mode, in {@link LedDrive#TIER_NAMES} order: Super Eco, Eco, Normal, Presentation. */
+    private final StepRow[] driveRows = new StepRow[LedDrive.TIERS];
 
     public AdvancedPanel(Activity activity) {
         a = activity;
@@ -97,6 +99,20 @@ public final class AdvancedPanel implements StepRow.Listener {
                 .hint("Which curve the Fan choice Curve runs. Quietest first."));
         add(root, new StepRow(c, "Edit curve").button().tag("curve", 0).hint("Change the curve's points by hand.")).display(">");
 
+        root.addView(Ui.heading(c, "Brightness (LED drive)"), Ui.wrap());
+        for (int i = 0; i < LedDrive.TIERS; i++) {
+            int stock = LedDrive.STOCK_OTHER[LedDrive.TIER_RGBLEVEL[i]];
+            driveRows[i] = add(root, new StepRow(c, LedDrive.TIER_NAMES[i] + " %")
+                    .range(LedDrive.MIN_LEVEL, LedDrive.MAX_LEVEL).steps(1, 5).tag("drive", i)
+                    .hint("How hard the LEDs are driven in " + LedDrive.TIER_NAMES[i] + ". Philips uses " + stock
+                            + ".\n\nHigher is brighter, but needs more fan and wears the LEDs faster. Auto holds "
+                            + (int) AutoHold.BOOST_TARGET_C + " °C either way; over "
+                            + (int) LedDrive.DEFAULT_TRIP_C + " °C the boost switches itself off."));
+        }
+        add(root, new StepRow(c, "Reset brightness to the defaults").button().tag("drivereset", 0)
+                .hint("Puts the four modes back to " + LedDrive.Config.bright().encode().substring(3).replace(",", " / ")
+                        + " (Super Eco to Presentation)."));
+
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
         add(root, new StepRow(c, "Sweep every fan speed").button().tag("sweep", 0).hint("Measures the LED temperature at every fan speed.\n\nTakes over an hour."))
                 .display(">");
@@ -159,6 +175,16 @@ public final class AdvancedPanel implements StepRow.Listener {
         roomRow.display(r == 0 ? "Not set" : Integer.toString(r));
         roomRow.valueColour(r == 0 ? Ui.DIM : Ui.ACCENT);
         onOff(storageRow, storageGranted());
+        boolean driveOn = Prefs.ledBoostOn(a);
+        LedDrive.Config cfg = Prefs.ledDrive(a);
+        if (cfg.isStock()) {
+            cfg = LedDrive.Config.bright();
+        }
+        for (int i = 0; i < LedDrive.TIERS; i++) {
+            driveRows[i].set(cfg.level[i]);
+            driveRows[i].display(driveOn ? cfg.level[i] + "%" : cfg.level[i] + "% (boost off)");
+            driveRows[i].valueColour(driveOn ? Ui.ACCENT : Ui.DIM);
+        }
         if (takeoverRow != null) {
             String v = SysProps.get(SysProps.PROP_FANCTRL_BY_TEMP);
             boolean stockOff = v != null && "0".equals(v.trim());
@@ -203,6 +229,19 @@ public final class AdvancedPanel implements StepRow.Listener {
                 LinearConfig lin = Prefs.linear(a);
                 lin.ceilingC = row.get();
                 Prefs.setLinear(a, lin);
+                FanService.poke(a, FanService.ACTION_REFRESH);
+            } else if ("drive".equals(t)) {
+                // Changing a level is asking for it: keep the other three, and turn the boost on.
+                LedDrive.Config cfg = Prefs.ledDrive(a);
+                if (cfg.isStock()) {
+                    cfg = LedDrive.Config.bright();
+                }
+                cfg.level[row.tagIndex] = row.get();
+                Prefs.setLedDrive(a, cfg);
+                Prefs.setLedDriveOn(a, true);
+                FanService.poke(a, FanService.ACTION_REFRESH);
+            } else if ("drivereset".equals(t)) {
+                Prefs.setLedDrive(a, LedDrive.Config.bright());
                 FanService.poke(a, FanService.ACTION_REFRESH);
             } else if ("reassert".equals(t)) {
                 Prefs.setReassert(a, !Prefs.reassert(a));

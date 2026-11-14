@@ -69,13 +69,18 @@ public final class LedDrive {
             }
         }
 
-        /** The one-press preset the main screen offers; Presentation 95 is the owner's choice; the Bright curve family was solved at 90. */
+        /**
+         * The defaults the main screen's boost starts from; each level can be changed under Advanced.
+         * The owner's choice, 14 Nov 2026: every mode bright enough to watch (Super Eco 65 is brighter
+         * than stock Normal), and Presentation at 90, where the Bright curve family was solved: at 95
+         * it needed an audible 42 % fan to hold 58 C, for about 5 % more light.
+         */
         public static Config bright() {
             Config c = new Config();
-            c.level[0] = 35;
-            c.level[1] = 55;
-            c.level[2] = 75;
-            c.level[3] = 95;
+            c.level[0] = 65;
+            c.level[1] = 75;
+            c.level[2] = 85;
+            c.level[3] = 90;
             return c;
         }
 

@@ -206,13 +206,16 @@ Philips runs the LEDs at about three-quarters of what the hardware allows. The o
 
 | Brightness mode | Philips | FanLab | More light |
 |---|---:|---:|---:|
-| Super Eco | 20 | **35** | +75 % |
-| Eco | 40 | **55** | +38 % |
-| Normal | 55 | **75** | +36 % |
+| Super Eco | 20 | **65** | +225 % |
+| Eco | 40 | **75** | +88 % |
+| Normal | 55 | **85** | +55 % |
 | Presentation | 76 | **90** | +18 % |
 
-Percentages of the LED driver's own maximum. Which gives you this — **turned-up Normal sits
-at 75, and Philips' Presentation sits at 76:**
+Percentages of the LED driver's own maximum. These are the defaults; each mode can be set from
+20 to 97 under **Advanced → Brightness (LED drive)**, and Auto finds the fan speed for whatever you
+choose. The fan figures below were measured with Normal
+at 75 and Presentation at 90 — **turned-up Normal at 75 sat level with Philips' Presentation
+at 76:**
 
 | What you're running | Light | Fan |
 |---|---:|---:|

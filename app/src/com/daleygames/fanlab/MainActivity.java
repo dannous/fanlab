@@ -125,7 +125,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
         addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
                 .display(">");
         addRow(root, new StepRow(c, "Unattended test (" + WhiteActivity.planMinutes() + " min)").button()
-                .tag("plan", 0).hint("Runs by itself on a white screen: Presentation, Normal and Eco on Auto 58, then Presentation and Normal on Auto Step.\n\nLeave a USB stick in. Any key stops it and puts your settings back."))
+                .tag("plan", 0).hint("Runs by itself on a white screen: Presentation, Normal and Eco on Auto 58, then Presentation and Normal on Auto Step.\n\nLeave a USB stick in. Back or OK stops it and puts your settings back."))
                 .display(">");
         addRow(root, new StepRow(c, "Restore stock fan (do this before uninstalling)").button()
                 .tag("restore", 0).hint("Gives the fan back to Philips for good.\n\nDo this before uninstalling.")).display(">");
@@ -247,10 +247,14 @@ public class MainActivity extends Activity implements StepRow.Listener {
             if ("fan".equals(row.tagName)) {
                 chooseFan();
             } else if ("bright".equals(row.tagName)) {
+                // Off and on again keeps the four levels set under Advanced; only an unset (stock)
+                // table is filled with the defaults.
                 if (Prefs.ledBoostOn(this)) {
-                    Prefs.resetLedDrive(this);
+                    Prefs.setLedDriveOn(this, false);
                 } else {
-                    Prefs.setLedDrive(this, LedDrive.Config.bright());
+                    if (Prefs.ledDrive(this).isStock()) {
+                        Prefs.setLedDrive(this, LedDrive.Config.bright());
+                    }
                     Prefs.setLedDriveOn(this, true);
                 }
                 FanService.poke(this, FanService.ACTION_REFRESH);

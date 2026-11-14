@@ -139,6 +139,8 @@ public class FanService extends Service {
     private CsvLogger csv;
     private final FanCurve curve = new FanCurve();
     private final AutoHold autoHold = new AutoHold();
+    /** The boost switch and levels last seen, to tell when learned fan speeds have gone stale. */
+    private String lastDriveKey;
     private final AutoStep autoStep = new AutoStep();
 
     /** Duty points AUTO STEP is adding above its curve right now. */
@@ -722,6 +724,15 @@ public class FanService extends Service {
             badReads = 0;
             failSafeLatched = false;
             append(note, "settings changed " + resync(s.fanCtrl, "settings"));
+            // New brightness levels make every learned fan speed wrong: start learning afresh.
+            String drive = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode();
+            if (lastDriveKey != null && !drive.equals(lastDriveKey)) {
+                autoHold.forgetLearned();
+                append(note, "auto forgot learned speeds (brightness changed)");
+            }
+            lastDriveKey = drive;
+        } else if (lastDriveKey == null) {
+            lastDriveKey = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode();
         }
 
         // Own the stock ladder's kill switch from here rather than leaving it to whoever last set it
@@ -882,7 +893,11 @@ public class FanService extends Service {
                 if (autoKind == Prefs.AUTO_HOLD) {
                     // AUTO 58 replaces the curve's answer but keeps its SoC guard, which only ever adds.
                     if (engineOn) {
-                        int held = autoHold.step(s.degC, target, AutoHold.minFor(s.rgblevel), mono);
+                        int held = autoHold.step(s.degC, target, AutoHold.minFor(s.rgblevel), s.rgblevel, mono);
+                        String ev = autoHold.takeEvent();
+                        if (ev != null) {
+                            append(note, "auto " + ev);
+                        }
                         desired = Math.min(cfg.socGuardMaxDuty > held ? cfg.socGuardMaxDuty : held,
                                 held + curve.guardBoost());
                     } else {
