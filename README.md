@@ -39,65 +39,96 @@ this:
 3. Press **OK** on the software version **five times**. The hidden developer menu opens.
 4. Scroll to **AppInstaller**, near the bottom.
 5. Find the APK on the USB stick, and install it.
-6. Open **FanLab**, and change **Mode** from `OFF` to `CURVE`.
+6. Open **FanLab**, press OK on **Fan mode**, and pick one of the options below.
 
-That's it. Choosing `CURVE` hands the fan over for you — there's a **Take over** button, but
-you don't need it.
-
-The fan takes about fifteen seconds to come down from wherever Philips had it, then it should
-stay put. Leave it in Presentation for ten minutes and watch the number on screen — if it's
-working, it won't move.
-
-Start on **Curve preset: Quiet**. If you want the picture brighter as well, turn **LED drive**
-on and try the **Bright Quiet** curve.
+That's it. Picking a mode hands the fan over for you.
 
 ## Using it
 
-The main screen is a list. Move up and down with the remote, change a setting with left and
-right, press OK on a button. Three things matter:
+The main screen is a short list. Move up and down with the remote, change a number with left
+and right, press OK on a button. A note about the row you are on appears beside it.
 
-| Setting | Do this |
-|---|---|
-| **Mode** | Set to `CURVE` and leave it |
-| **Curve preset** | Start on `Quiet` |
-| **Start automatically after a reboot** | Leave it on, or Philips' controller takes back over at the next power-on |
+**Fan mode** is the one choice that matters:
 
-Everything comes back as you left it after a power cycle. The one thing FanLab doesn't
-remember is the brightness mode, because that belongs to the projector — but it notices
-whichever mode you come back in within a second.
+| Fan mode | Picture | What the fan does |
+|---|---|---|
+| **Curve to 55 °C** | Philips' own brightness | A simple fan curve that keeps the LED under 55 °C |
+| **Curve to 58 °C** | Your brighter levels | The same curve, allowed to 58 °C |
+| **Smart quiet** | Your brighter levels | Stays at or under your **Fan limit** (40 % unless you change it). If the LED gets too warm at the limit, the picture dims slightly instead of the fan getting louder |
+| **Manual** | Philips' own brightness | One fixed speed that you choose |
+
+**Smart quiet** is the one to use if noise matters most. It finds the slowest fan that holds
+the LED at its target for the brightness mode you are in, and it learns your projector as it
+runs: how much more fan one mode needs than another, and what a point of fan is worth. That
+is kept in the app's own settings, with or without the log, so after a change of brightness
+mode it goes straight to about the right speed.
+
+Its targets go up with the brightness mode, so the dimmer modes run cooler:
+
+| Brightness mode | Target | Default brightness (Philips' own) |
+|---|---:|---:|
+| Super Eco | 50 °C | 65 (20) |
+| Night | 55 °C | 75 (40) |
+| Normal | 58 °C | 85 (55) |
+| Presentation | 60 °C | 90 (76) |
+
+**The fan limit has one exception, for safety.** If the LED is 3 °C over its target, or it is
+over and there is nothing left to dim, the fan goes above the limit until it cools. The
+picture is never dimmed below Philips' own brightness.
+
+Everything comes back as you left it after a power cycle. The brightness mode belongs to the
+projector, and FanLab notices whichever one you are in within a few seconds.
 
 <details>
-<summary><b>Every setting on the screen</b></summary>
+<summary><b>Every setting</b></summary>
+
+**Main screen**
 
 | Control | What it does |
 |---|---|
-| **Mode** | `OFF` watches without driving. `CURVE` is the fan curve, and the one to use. `MANUAL` holds one fixed speed. `LINEAR` holds a temperature instead of a speed — see [docs/internals.md](docs/internals.md#linear-mode) |
-| **Curve preset** | Four steps, quietest first. With the LED drive on you get the `Bright` four instead |
-| **Room temperature** | Optional, and only written to the log — nothing in the fan control reads it. Leave it at "not stated" unless you know the figure, because a stale number is worse than none |
-| **Write CSV telemetry** | Logging on or off. On by default, and it prunes itself |
-| **Start automatically after a reboot** | Leave this on |
-| **Re-assert every second** | Leave this on. The projector slams a fan speed in whenever you change brightness, and this puts it back |
-| **LED drive** | Off by default. See [A brighter picture](#a-brighter-picture-optional). It only applies while FanLab is actually driving the fan, so brightness can never outrun cooling |
-| **RELEASE CONTROL** | Hands the fan back for now |
-| **RESTORE STOCK FAN CONTROL** | The permanent undo. Press this before uninstalling |
+| **Fan mode** | The four choices above |
+| **Fan limit %** | Shown in Smart quiet. The loudest the fan may go, 30–83, or Off |
+| **Manual fan %** | Shown in Manual. The fixed speed |
+| **Start on boot** | Leave this on, or Philips' controller takes back over at the next power-on |
+
+**Advanced**
+
+| Control | What it does |
+|---|---|
+| **Smart quiet → target °C**, one per brightness mode | The LED temperature Smart quiet holds, 45–60 °C. Lower is kinder to the LEDs but needs more fan, or a dimmer picture at the limit |
+| **Smart quiet → Fan floor %** | The slowest the fan runs, 20–40, normally 30. Below 30 is untested. The curves never go below 25 |
+| **Brightness (LED drive)**, one per brightness mode | How hard the LEDs are driven, 20–97. Used by Curve to 58 °C and Smart quiet |
+| **Reset brightness and targets** | Puts both back to the tables above |
+| **Tests** | White screen (full load), colour slides (white, red, green, blue, black), a focus pattern, and an unattended test that walks through the modes by itself |
+| **Measure** | Sweep every fan speed, hold one fan speed, and a room temperature that is only written to the log |
+| **Logs** | Write the CSV log, copy it to shared storage, copy everything to a USB stick, and raw diagnostics |
+| **System → ADB over USB** | Switches the USB port so a PC can connect. Untested on this projector |
+| **System → Restore stock controller** | The permanent undo. Press this before uninstalling |
+
+The fan speed is put back every second if the projector changes it. That used to be a switch;
+it is now always on.
 
 </details>
 
+> **Coming from a version before 1.8.0?** Linear mode, the curve presets and the curve editor
+> are no longer on the screen. A setup that was using one of them moves to the built-in curve.
+> "Auto 58" is now Smart quiet, and "Eco" is called Night, as the projector's own menu does.
+
 ## Removing it
 
-**To stop it driving the fan for now** — press **RELEASE CONTROL**, or set Mode to `OFF`.
-Expect a few seconds of loud fan; the handover goes via 83 % on purpose, so nothing is ever
-left unmanaged in between.
+**To give the fan back to Philips** — press **Advanced → Restore stock controller**. Expect a
+few seconds of loud fan; the handover goes via 83 % on purpose, so nothing is ever left
+unmanaged in between. Pick a Fan mode again whenever you want FanLab back.
 
 **To uninstall it,** in this order:
 
-1. Press **RESTORE STOCK FAN CONTROL** in the app.
+1. Press **Advanced → Restore stock controller** in the app.
 2. Then uninstall FanLab from Settings, like any other app.
 
 | How you stop it | Philips' controller handed back? |
 |---|---|
-| Mode → OFF, RELEASE CONTROL, force-stop, crash, reboot | yes |
-| Uninstalling without pressing RESTORE first | **no** |
+| Restore stock controller, force-stop, crash, reboot | yes |
+| Uninstalling without pressing Restore first | **no** |
 
 Taking over the fan sets a system property telling Philips' controller to stand down, and it
 lives outside the app. FanLab puts it back on every path where it gets to run code — but an
@@ -105,7 +136,7 @@ uninstall runs none of them.
 
 **Already uninstalled without pressing it?** The 75 °C cut-out and the fan-stall watchdog are
 both still there and the fan runs at the projector's default speed, but nothing is responding
-to temperature. Reinstall FanLab, press **RESTORE STOCK FAN CONTROL**, done.
+to temperature. Reinstall FanLab, press **Advanced → Restore stock controller**, done.
 
 ## Safety
 
@@ -116,12 +147,34 @@ to temperature. Reinstall FanLab, press **RESTORE STOCK FAN CONTROL**, done.
 | Firmware, system partition, bootloader | unchanged |
 | The cost | light engine at about **52 °C** where stock holds 44–46 °C; expect a small, reversible loss of red LED output and a slightly cooler white point |
 | The 55 °C ceiling | a judgement call — the DMD's temperature can't be measured on this hardware, so the line was drawn where the stock controller itself demands maximum fan |
+| Curve to 58 °C and Smart quiet | run the LEDs harder and warmer than Philips does, up to 60 °C in Presentation. That is past Philips' 55 °C comfort point by choice, and it costs LED life by an amount nobody has measured for this projector. Above **65 °C** the brighter picture switches itself off and stays off until you change brightness mode or a setting |
 
 Worked out on one projector, by measuring it. [docs/safety.md](docs/safety.md) is the
 complete and unflattering version. Not endorsed by or affiliated with Philips or Screeneo
 Innovation SA.
 
-## The fan curves
+## What it does on a real projector
+
+One evening's log (14 November 2026, one projector, one room), with what was Auto 58 and is
+now Smart quiet holding 58 °C in every mode:
+
+| Brightness mode | Brightness | Fan it settled at | LED |
+|---|---:|---:|---:|
+| Presentation | 95 | **43 %** | 57.8 °C |
+| Normal | 80 | **31 %** | 56.9 °C, still rising slowly after 20 minutes |
+| Night | 60 | on the floor | 52.6 °C |
+
+Those were measured before the fan limit and the per-mode targets existed. With a 40 % limit,
+Presentation at 95 would sit at 40 % with the picture dimmed by an estimated two or three
+points; that estimate has not been checked on the projector.
+
+## The fan curves (versions before 1.8.0)
+
+This section and the next describe the curve presets that versions before 1.8.0 let you
+choose. From 1.8.0 the two Curve modes use one built-in curve (your fan floor up to 50 °C, 52 % at
+60 °C, 83 % by 70 °C, plus up to ten points if the LED passes its target), and the presets
+are no longer on the screen. The headline table at the top of this page was measured with
+the Quiet preset.
 
 Percent duty against the LED thermistor. Philips has five rungs and no gap between stepping
 up and stepping down; FanLab has six knees with a straight line between them, flat below the
@@ -201,28 +254,21 @@ Derivation, the measured thermal plant and the stability analysis:
 
 ## A brighter picture (optional)
 
-Philips runs the LEDs at about three-quarters of what the hardware allows. The optional
-**LED drive** setting turns all four modes up:
+Philips runs the LEDs at about three-quarters of what the hardware allows. **Curve to 58 °C**
+and **Smart quiet** turn all four modes up:
 
-| Brightness mode | Philips | FanLab | More light |
+| Brightness mode | Philips | FanLab | More LED drive |
 |---|---:|---:|---:|
 | Super Eco | 20 | **65** | +225 % |
-| Eco | 40 | **75** | +88 % |
+| Night | 40 | **75** | +88 % |
 | Normal | 55 | **85** | +55 % |
 | Presentation | 76 | **90** | +18 % |
 
 Percentages of the LED driver's own maximum. These are the defaults; each mode can be set from
-20 to 97 under **Advanced → Brightness (LED drive)**, and **Smart** (the Fan choice once called Auto 58) finds the slowest fan that holds the LED at its
-target for whatever you choose. Smart also learns the projector as it runs: how much more fan one
-mode needs than another, and what a point of fan is worth. That is kept in the app's own
-settings, with or without the CSV log, and is used to go straight to the right speed after a
-change of mode.
+20 to 97 under **Advanced → Brightness (LED drive)**. The brighter picture only applies while
+FanLab is driving the fan, so brightness can never outrun cooling.
 
-**Fan limit** (main screen) is the loudest you will let the fan go under Smart. Up to it the fan
-does the work; at it the picture dims a point at a time instead, never below Philips' own level,
-and comes back when there is room. If the LED is 3 °C over its target, or over it with nothing
-left to dim, the limit is lifted until it cools. Smart finds the fan speed for whatever you
-choose. The fan figures below were measured with Normal
+The rest of this section was measured on versions before 1.8.0, with the Bright presets, Normal
 at 75 and Presentation at 90 — **turned-up Normal at 75 sat level with Philips' Presentation
 at 76:**
 
@@ -257,9 +303,9 @@ back.
 
 | Symptom | Cause |
 |---|---|
-| Fan is loud and won't come down | Mode isn't `CURVE`, or it's been less than fifteen seconds |
+| Fan is loud and won't come down | No Fan mode is chosen (the row says Stock), or it's been less than a minute. In Smart quiet, check the status line: "limit lifted" means the LED was too warm for your fan limit |
 | Fan jumps every time I change brightness | The projector slams a fan speed in; FanLab puts it back within a second. Check **Re-assert every second** is on |
-| Picture went back to normal brightness on its own | The LED drive's 60 °C cut-out latched, and stays off until you change brightness mode or a setting. Pick a cooler preset, or turn the drive off |
+| Picture went back to normal brightness on its own | The brighter picture's 65 °C cut-out latched, and stays off until you change brightness mode or a setting. Lower that mode's brightness under Advanced, or raise the fan limit ||
 | Projector shut down | The 75 °C cut-out — something is physically wrong. Check the vents are clear |
 
 </details>

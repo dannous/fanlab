@@ -250,6 +250,7 @@ public class FanService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        Prefs.migrate(this);
         caicReadback = null;
         caicImageReadback = null;
         labbReadback = null;
@@ -465,8 +466,11 @@ public class FanService extends Service {
         for (int i = 0; i < LedDrive.TIERS; i++) {
             sb.append(i == 0 ? "" : "/").append(cfg.level[i]);
         }
-        return sb.append(" (Super Eco/Eco/Normal/Presentation), boost ")
-                .append(Prefs.ledBoostOn(this) ? "on" : "off").toString();
+        return sb.append(" (Super Eco/Night/Normal/Presentation), boost ")
+                .append(Prefs.ledBoostOn(this) ? "on" : "off")
+                .append(", targets ").append(Prefs.targetsKey(this).substring(1))
+                .append(" C, limit ").append(Prefs.fanLimit(this) == 0 ? "off" : Prefs.fanLimit(this) + "%")
+                .append(", floor ").append(Prefs.fanFloor(this)).append("%").toString();
     }
 
     /**
@@ -744,10 +748,10 @@ public class FanService extends Service {
             failSafeLatched = false;
             append(note, "settings changed " + resync(s.fanCtrl, "settings"));
             // New brightness levels make every learned fan speed wrong: start learning afresh.
-            String drive = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode();
+            String drive = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode() + Prefs.targetsKey(this);
             if (lastDriveKey != null && !drive.equals(lastDriveKey)) {
                 autoHold.forgetLearned();
-                append(note, "auto forgot learned speeds (brightness changed)");
+                append(note, "auto forgot learned speeds (brightness or targets changed)");
                 append(note, brightnessNote("brightness set"));
                 // Levels it has run at before come back with what was learned at them.
                 if (autoHold.importLearned(Prefs.smartLearned(this, drive))) {
@@ -757,7 +761,7 @@ public class FanService extends Service {
             }
             lastDriveKey = drive;
         } else if (lastDriveKey == null) {
-            lastDriveKey = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode();
+            lastDriveKey = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode() + Prefs.targetsKey(this);
             // Once at start, so every session's log says what the four modes were set to.
             append(note, brightnessNote("brightness"));
             if (autoHold.importLearned(Prefs.smartLearned(this, lastDriveKey))) {
@@ -919,7 +923,15 @@ public class FanService extends Service {
                 // socC[0] is thermal_zone0 (pll) -- the only SoC zone with cooling devices
                 // bound to it, so the only one whose temperature has a consequence.
                 desired = curve.step(cfg, s.profile, s.degC, s.socC[0], engineOn, mono);
-                autoTargetNow = autoKind == Prefs.AUTO_NONE ? 0 : target;
+                // Smart quiet holds a target per brightness mode; at Philips brightness never above Philips' 55.
+                double holdTarget = boost ? Prefs.smartTarget(this, s.rgblevel)
+                        : Math.min(AutoHold.TARGET_C, Prefs.smartTarget(this, s.rgblevel));
+                int userFloor = Prefs.fanFloor(this);
+                if (engineOn && autoKind != Prefs.AUTO_HOLD && desired < userFloor) {
+                    // The owner's floor only ever raises a curve; it cannot take one below its own lowest point.
+                    desired = userFloor;
+                }
+                autoTargetNow = autoKind == Prefs.AUTO_NONE ? 0 : autoKind == Prefs.AUTO_HOLD ? holdTarget : target;
                 if (autoKind == Prefs.AUTO_HOLD) {
                     // AUTO 58 replaces the curve's answer but keeps its SoC guard, which only ever adds.
                     if (engineOn) {
@@ -927,13 +939,16 @@ public class FanService extends Service {
                         int limit = Prefs.fanLimit(this);
                         int stockLevel = LedDrive.tierOf(s.rgblevel) < 0 ? 0 : LedDrive.STOCK_OTHER[s.rgblevel];
                         int maxTrim = boost && stockLevel > 0 ? Math.max(0, ledCfg.levelFor(s.rgblevel) - stockLevel) : 0;
-                        String ln = fanLimit.step(limit, autoHold.duty(), s.degC, target, s.rgblevel, maxTrim, mono);
+                        String ln = fanLimit.step(limit, autoHold.duty(), s.degC, holdTarget, s.rgblevel, maxTrim, mono);
                         if (ln != null) {
                             append(note, ln);
                         }
                         autoHold.setCeiling(fanLimit.ceilingFor(limit), fanLimit.trim() > 0);
-                        int held = autoHold.step(s.degC, target,
-                                fanLimit.floorFor(AutoHold.minFor(s.rgblevel), limit), s.rgblevel, mono);
+                        autoHold.setDrive(boost);
+                        // The limit wins over the floor if the two are set the wrong way round.
+                        int floorNow = limit > 0 ? Math.min(userFloor, limit) : userFloor;
+                        int held = autoHold.step(s.degC, holdTarget,
+                                fanLimit.floorFor(floorNow, limit), s.rgblevel, mono);
                         int full = ledCfg.levelFor(s.rgblevel);
                         limitLine = limit <= 0 ? "" : fanLimit.lifted() ? "limit " + limit + "% lifted, LED too warm"
                                 : fanLimit.trim() > 0 ? "fan at limit " + limit + "%, brightness "

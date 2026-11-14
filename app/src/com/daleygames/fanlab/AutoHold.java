@@ -21,6 +21,18 @@ public final class AutoHold {
      */
     public static final int MIN_DUTY = 25;
 
+    /** The lowest floor the owner may set (see Prefs.fanFloor). Below 30 the stall watchdog is the only thing known to watch the fan. */
+    public static final int ABS_MIN_DUTY = 20;
+
+    private boolean driveSet;
+    private boolean driveIs;
+
+    /** Say whether the LED drive is raised. With a target per brightness mode the target no longer tells. */
+    public void setDrive(boolean raised) {
+        driveSet = true;
+        driveIs = raised;
+    }
+
     /** The floor for a brightness mode, by {@code rgblevel}: more heat keeps more fan in reserve. Unknown levels get the highest. */
     public static int minFor(int rgblevel) {
         // 30 in every mode, the owner's choice (14 Nov 2026): it is the lowest duty the written
@@ -412,7 +424,7 @@ public final class AutoHold {
     }
 
     private static String levelName(int rgblevel) {
-        return rgblevel == 3 ? "Presentation" : rgblevel == 2 ? "Normal" : rgblevel == 1 ? "Eco" : "SuperEco";
+        return rgblevel == 3 ? "Presentation" : rgblevel == 2 ? "Normal" : rgblevel == 1 ? "Night" : "SuperEco";
     }
 
     /**
@@ -470,7 +482,8 @@ public final class AutoHold {
      * ordinary rule.
      */
     public int step(double celsius, double targetC, int minDuty, int rgblevel, long nowMs) {
-        boolean driveOn = targetC >= BOOST_TARGET_C;
+        // Told by the caller when it knows; otherwise read off the target, as before per-mode targets.
+        boolean driveOn = driveSet ? driveIs : targetC >= BOOST_TARGET_C;
         if (validLevel(rgblevel)) {
             if (rgblevel != pendingLevel) {
                 pendingLevel = rgblevel;
@@ -517,7 +530,7 @@ public final class AutoHold {
                         : " (nothing learned yet)");
             }
         }
-        floor = minDuty < MIN_DUTY ? MIN_DUTY : minDuty > MAX_DUTY ? MAX_DUTY : minDuty;
+        floor = minDuty < ABS_MIN_DUTY ? ABS_MIN_DUTY : minDuty > MAX_DUTY ? MAX_DUTY : minDuty;
         if (Double.isNaN(duty)) {
             duty = FanIo.FAIL_SAFE_DUTY;
         }

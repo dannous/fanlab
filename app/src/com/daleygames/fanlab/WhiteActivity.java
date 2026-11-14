@@ -41,6 +41,59 @@ public class WhiteActivity extends Activity {
     private TextView readout;
     private long startedMs;
 
+    /** Full-screen colours for checking each LED, and for dust and dead pixels. */
+    static final int[] SLIDE_COLOURS = {0xFFFFFFFF, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFF000000};
+    static final String[] SLIDE_NAMES = {"WHITE", "RED", "GREEN", "BLUE", "BLACK"};
+
+    private boolean slides;
+    private boolean focus;
+    private int slide;
+
+    /** A fine grid with markers in the centre and corners, and single-pixel line blocks, for setting focus. */
+    static final class FocusView extends android.view.View {
+        private final android.graphics.Paint p = new android.graphics.Paint();
+
+        FocusView(android.content.Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas g) {
+            int w = getWidth(), h = getHeight();
+            g.drawColor(0xFF000000);
+            p.setAntiAlias(false);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(1f);
+            p.setColor(0xFF606060);
+            int step = Math.max(24, h / 18);
+            for (int x = w / 2 % step; x < w; x += step) {
+                g.drawLine(x, 0, x, h, p);
+            }
+            for (int y = h / 2 % step; y < h; y += step) {
+                g.drawLine(0, y, w, y, p);
+            }
+            p.setColor(0xFFFFFFFF);
+            g.drawLine(w / 2f, 0, w / 2f, h, p);
+            g.drawLine(0, h / 2f, w, h / 2f, p);
+            g.drawRect(0.5f, 0.5f, w - 1.5f, h - 1.5f, p);
+            int r = h / 8;
+            int[][] at = {{w / 2, h / 2}, {r + step, r + step}, {w - r - step, r + step},
+                    {r + step, h - r - step}, {w - r - step, h - r - step}};
+            for (int[] c : at) {
+                p.setAntiAlias(true);
+                g.drawCircle(c[0], c[1], r, p);
+                g.drawCircle(c[0], c[1], r / 2f, p);
+                p.setAntiAlias(false);
+                // Single-pixel lines: these blur first when the focus is off.
+                int b = r / 3;
+                for (int i = -b; i < b; i += 2) {
+                    g.drawLine(c[0] + i, c[1] - b, c[0] + i, c[1], p);
+                    g.drawLine(c[0] - b, c[1] + 1 + (i + b), c[0] + b, c[1] + 1 + (i + b), p);
+                }
+            }
+        }
+    }
+
     private boolean plan;
     private boolean finished;
     private int step = -1;
@@ -82,6 +135,16 @@ public class WhiteActivity extends Activity {
         setContentView(root);
         startedMs = System.currentTimeMillis();
         plan = getIntent() != null && getIntent().getBooleanExtra("plan", false);
+        slides = !plan && getIntent() != null && getIntent().getBooleanExtra("slides", false);
+        focus = !plan && !slides && getIntent() != null && getIntent().getBooleanExtra("focus", false);
+        if (slides) {
+            root.setBackgroundColor(SLIDE_COLOURS[slide]);
+        }
+        if (focus) {
+            root.setBackgroundColor(0xFF000000);
+            root.addView(new FocusView(this), 0, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        }
         if (plan) {
             savedMode = Prefs.mode(this);
             savedAuto = Prefs.autoKind(this);
@@ -134,7 +197,7 @@ public class WhiteActivity extends Activity {
     }
 
     private static String levelName(int level) {
-        return level == 3 ? "Presentation" : level == 2 ? "Normal" : level == 1 ? "Eco" : "Super Eco";
+        return level == 3 ? "Presentation" : level == 2 ? "Normal" : level == 1 ? "Night" : "Super Eco";
     }
 
     private void tick() {
@@ -146,8 +209,13 @@ public class WhiteActivity extends Activity {
         if (finished) {
             return;
         }
+        if (slides) {
+            readout.setText(SLIDE_NAMES[slide] + "  " + (slide + 1) + "/" + SLIDE_COLOURS.length
+                    + "   left/right to change, Back or OK to exit   " + live);
+            return;
+        }
         if (!plan) {
-            readout.setText(live + "   " + totalMin + " min   any key to exit");
+            readout.setText((focus ? "Focus pattern   " : "") + live + "   " + totalMin + " min   any key to exit");
             return;
         }
         if (step < 0 || now - stepStartedMs >= PLAN[step][2] * 60000L) {
@@ -220,6 +288,18 @@ public class WhiteActivity extends Activity {
     public boolean onKeyUp(int keyCode, KeyEvent event) {
         // The OK release that opened this screen lands here too; do not let it close it.
         if (System.currentTimeMillis() - startedMs < 800L) {
+            return true;
+        }
+        if (slides) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                slide = (slide + 1) % SLIDE_COLOURS.length;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                slide = (slide + SLIDE_COLOURS.length - 1) % SLIDE_COLOURS.length;
+            } else if (isStopKey(keyCode)) {
+                finish();
+                return true;
+            }
+            root.setBackgroundColor(SLIDE_COLOURS[slide]);
             return true;
         }
         String name = KeyEvent.keyCodeToString(keyCode) + "/" + keyCode

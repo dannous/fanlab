@@ -109,6 +109,7 @@ public final class FanLabTest {
         testAutoSwitchLocks();
         testAutoFindsLowest();
         testFanLimit();
+        testSmartTargetsAndFloor();
         testAutoGuide();
         testAutoStep();
         testOffDuration();
@@ -4304,6 +4305,40 @@ public final class FanLabTest {
         }
         eq(d, 45, "SMART: the limit back, it returns to 45");
         check(maxTick <= 1, "SMART: a point at a time, never a jump");
+    }
+    private static void testSmartTargetsAndFloor() {
+        section("smart quiet: a target per mode, a floor from 20, and a cut-out clear of the switch spike");
+        // Night holds 55 with the drive raised. The target alone no longer says the drive is raised,
+        // so the caller says so, and what is learned lands with the other raised-drive modes.
+        AutoHold n = new AutoHold();
+        n.setDrive(true);
+        n.resync(31);
+        long ms = 0L;
+        for (; ms < 11L * 60000L; ms += 1000L) {
+            n.step(54.85, 55.0, 30, 1, ms);
+        }
+        eq(n.settledFor(true, 1), 31, "Night at a 55 target is learned as a raised-drive mode");
+        eq(n.settledFor(false, 1), 0, "and not as a stock-drive one");
+
+        AutoHold lo = new AutoHold();
+        lo.resync(40);
+        int d = 40;
+        for (ms = 0L; ms < 10L * 60000L; ms += 1000L) {
+            d = lo.step(30.0, 58.0, 20, 2, ms);
+        }
+        eq(d, 20, "a floor of 20 is honoured");
+        for (; ms < 11L * 60000L; ms += 1000L) {
+            d = lo.step(30.0, 58.0, 5, 2, ms);
+        }
+        eq(d, AutoHold.ABS_MIN_DUTY, "and nothing asks for less than 20");
+
+        // A switch up from Normal at 58 jumps the LED about 4 C: that must not trip the brighter picture off.
+        check(LedDrive.DEFAULT_TRIP_C >= 58.0 + 4.0 + 2.0, "the cut-out (" + (int) LedDrive.DEFAULT_TRIP_C
+                + ") is clear of a switch up from Normal");
+        check(LedDrive.DEFAULT_TRIP_C >= 60.0 + 3.0 + 1.0,
+                "and above the point where the fan limit is lifted at a 60 target");
+        check(LedDrive.DEFAULT_TRIP_C <= 70.0, "and still well under the 75 C shutdown");
+        check("Night".equals(LedDrive.TIER_NAMES[1]), "Eco is called Night");
     }
     private static void testAutoGuide() {
         section("auto: a learned speed guides a switch, and only a fresh one");

@@ -12,7 +12,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/** The main screen: four numbers and four choices. Everything else is under Advanced. */
+/** The main screen: four numbers, the fan mode and the one setting that mode has. Everything else is under Advanced. */
 public class MainActivity extends Activity implements StepRow.Listener {
 
     private static final int POLL_MS = 500;
@@ -25,7 +25,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private TextView statusView;
 
     private StepRow fanRow;
-    private StepRow brightRow;
+    private StepRow manualRow;
     private StepRow bootRow;
     private StepRow limitRow;
     private StepRow advancedRow;
@@ -47,6 +47,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        Prefs.migrate(this);
         setContentView(buildUi());
         FanService.poke(this, FanService.ACTION_START);
     }
@@ -120,19 +121,19 @@ public class MainActivity extends Activity implements StepRow.Listener {
         sl.bottomMargin = Ui.dp(c, 12);
         root.addView(statusView, sl);
 
-        fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0).hint("How the fan is controlled.\n\nSmart finds the slowest fan that holds the LED at its target, and learns your projector as it goes. Auto Step follows a fixed curve. Curve uses the preset chosen under Advanced. Stock hands the fan back to Philips."));
-        brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0).hint("Runs the LEDs harder for a brighter picture.\n\nMore heat, so more fan. Turns itself off above 62 °C."));
+        fanRow = addRow(root, new StepRow(c, "Fan mode").button().tag("fan", 0).hint("How the fan is controlled.\n\n"
+                + "Curve to 55 °C: a simple fan curve at Philips' own brightness.\n\n"
+                + "Curve to 58 °C: the same curve at your brighter levels.\n\n"
+                + "Smart quiet: keeps the fan under your limit and dims the picture slightly when it must. It learns your projector as it runs.\n\n"
+                + "Manual: one fixed speed."));
         limitRow = addRow(root, new StepRow(c, "Fan limit %").range(30, AutoHold.MAX_DUTY + 1).steps(1, 5).tag("limit", 0)
-                .hint("The fan never goes above this in Smart. If the LED gets too warm at the limit, the picture dims slightly instead.\n\nOff (all the way right): the fan runs as fast as it needs to."));
+                .hint("Smart quiet keeps the fan at or under this. At the limit the picture dims slightly instead, never below Philips' own brightness.\n\n"
+                        + "One exception, for safety: if the LED is 3 °C over its target, or there is nothing left to dim, the fan goes above the limit until it cools.\n\n"
+                        + "All the way right is Off."));
+        manualRow = addRow(root, new StepRow(c, "Manual fan %").range(Prefs.MIN_FAN_FLOOR, AutoHold.MAX_DUTY).steps(1, 5).tag("manual", 0)
+                .hint("The fan stays at this speed whatever the temperature.\n\nThe brightness stays at Philips' own. Watch the LED temperature at the top."));
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
-        addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
-                .display(">");
-        addRow(root, new StepRow(c, "Unattended test (" + WhiteActivity.planMinutes() + " min)").button()
-                .tag("plan", 0).hint("Runs by itself on a white screen: Presentation, Normal and Eco on Smart, then Presentation and Normal on Auto Step.\n\nLeave a USB stick in. Back or OK stops it and puts your settings back."))
-                .display(">");
-        addRow(root, new StepRow(c, "Restore stock fan (do this before uninstalling)").button()
-                .tag("restore", 0).hint("Gives the fan back to Philips for good.\n\nDo this before uninstalling.")).display(">");
-        advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0).hint("Manual fan, measuring, logs and system switches."));
+        advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0).hint("Temperatures and fan floor, brightness of each mode, tests, measuring, logs, and giving the fan back to Philips."));
         advancedRow.display("+");
         advanced = new AdvancedPanel(this);
         advancedView = advanced.build();
@@ -149,36 +150,55 @@ public class MainActivity extends Activity implements StepRow.Listener {
         return row;
     }
 
-    /** What the Fan row shows: Stock, Auto, a preset name, or the advanced mode in force. */
-    private String fanChoice() {
+    static final int FAN_CURVE55 = 0, FAN_CURVE58 = 1, FAN_SMART = 2, FAN_MANUAL = 3;
+
+    /** Which of the four choices is in force, or -1 for Stock or a setup from before 1.8.0. */
+    private int fanIndex() {
         int mode = Prefs.mode(this);
-        if (mode == Mode.OFF) {
-            return "Stock";
+        if (mode == Mode.MANUAL) {
+            return FAN_MANUAL;
         }
         if (mode != Mode.CURVE) {
-            return mode == Mode.MANUAL ? "Manual" : "Linear";
+            return -1;
         }
         int kind = Prefs.autoKind(this);
         if (kind == Prefs.AUTO_HOLD) {
-            // Named for the temperature it holds, which follows the brightness boost.
-            return "Smart " + (int) AutoHold.targetFor(Prefs.ledBoostOn(this));
+            return FAN_SMART;
         }
-        return kind == Prefs.AUTO_STEP ? "Auto Step"
-                : "Curve: " + CurveConfig.presetName(Prefs.preset(this));
+        return kind == Prefs.AUTO_STEP ? (Prefs.ledBoostOn(this) ? FAN_CURVE58 : FAN_CURVE55) : -1;
     }
 
+    /** What the Fan mode row shows. */
+    private String fanChoice() {
+        switch (fanIndex()) {
+            case FAN_CURVE55:
+                return "Curve to 55 °C";
+            case FAN_CURVE58:
+                return "Curve to 58 °C";
+            case FAN_SMART:
+                return "Smart quiet";
+            case FAN_MANUAL:
+                return "Manual";
+            default:
+                return Prefs.mode(this) == Mode.OFF ? "Stock (Philips)" : "Other";
+        }
+    }
     private void sync() {
         int mode = Prefs.mode(this);
         fanRow.display(fanChoice());
         fanRow.valueColour(mode == Mode.OFF ? Ui.DIM
                 : mode == Mode.CURVE ? Ui.GOOD : Ui.WARN);
-        boolean bright = Prefs.ledBoostOn(this);
-        brightRow.display(bright ? "On" : "Off");
-        brightRow.valueColour(bright ? Ui.WARN : Ui.DIM);
         int lim = Prefs.fanLimit(this);
         limitRow.set(lim == 0 ? AutoHold.MAX_DUTY + 1 : lim);
         limitRow.display(lim == 0 ? "Off" : lim + "%");
         limitRow.valueColour(lim == 0 ? Ui.DIM : Ui.ACCENT);
+        // Only the rows that mean something in the mode in force are shown.
+        limitRow.setVisibility(fanIndex() == FAN_SMART ? View.VISIBLE : View.GONE);
+        manualRow.setVisibility(fanIndex() == FAN_MANUAL ? View.VISIBLE : View.GONE);
+        int md = Prefs.manualDuty(this);
+        manualRow.set(md);
+        manualRow.display(md + "%");
+        manualRow.valueColour(Ui.WARN);
         boolean boot = Prefs.autostart(this);
         bootRow.display(boot ? "On" : "Off");
         bootRow.valueColour(boot ? Ui.GOOD : Ui.DIM);
@@ -222,10 +242,10 @@ public class MainActivity extends Activity implements StepRow.Listener {
             line = "stock fan control";
         } else if (Prefs.mode(this) == Mode.CURVE && Prefs.autoKind(this) == Prefs.AUTO_HOLD) {
             String lim = FanService.limitLine;
-            line = "smart, target " + (int) FanService.autoTargetNow + " C" + (lim.length() > 0 ? " · " + lim : "");
+            line = "smart quiet, target " + (int) FanService.autoTargetNow + " C" + (lim.length() > 0 ? " · " + lim : "");
             colour = lim.length() > 0 ? Ui.WARN : colour;
         } else if (Prefs.mode(this) == Mode.CURVE && Prefs.autoKind(this) == Prefs.AUTO_STEP) {
-            line = "auto step" + (FanService.autoTrimNow > 0
+            line = "curve to " + (int) FanService.autoTargetNow + " C" + (FanService.autoTrimNow > 0
                     ? ", +" + FanService.autoTrimNow + " to stay under "
                       + (int) FanService.autoTargetNow + " C" : "");
         } else {
@@ -238,7 +258,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     static String levelName(int level) {
         switch (level) {
             case 1:
-                return "Eco";
+                return "Night";
             case 2:
                 return "Normal";
             case 3:
@@ -255,35 +275,18 @@ public class MainActivity extends Activity implements StepRow.Listener {
         try {
             if ("fan".equals(row.tagName)) {
                 chooseFan();
-            } else if ("bright".equals(row.tagName)) {
-                // Off and on again keeps the four levels set under Advanced; only an unset (stock)
-                // table is filled with the defaults.
-                if (Prefs.ledBoostOn(this)) {
-                    Prefs.setLedDriveOn(this, false);
-                } else {
-                    if (Prefs.ledDrive(this).isStock()) {
-                        Prefs.setLedDrive(this, LedDrive.Config.bright());
-                    }
-                    Prefs.setLedDriveOn(this, true);
-                }
-                FanService.poke(this, FanService.ACTION_REFRESH);
-            } else if ("limit".equals(row.tagName)) {
+            } else if ("manual".equals(row.tagName)) {
+                Prefs.setManualDuty(this, row.get());
+                FanService.poke(this, FanService.ACTION_REFRESH);            } else if ("limit".equals(row.tagName)) {
                 int v = row.get();
                 Prefs.setFanLimit(this, v > AutoHold.MAX_DUTY ? 0 : v);
                 FanService.poke(this, FanService.ACTION_REFRESH);
             } else if ("boot".equals(row.tagName)) {
                 Prefs.setAutostart(this, !Prefs.autostart(this));
-            } else if ("white".equals(row.tagName)) {
-                startActivity(new android.content.Intent(this, WhiteActivity.class));
-            } else if ("plan".equals(row.tagName)) {
-                startActivity(new android.content.Intent(this, WhiteActivity.class)
-                        .putExtra("plan", true));
             } else if ("advanced".equals(row.tagName)) {
                 boolean open = advancedView.getVisibility() != View.VISIBLE;
                 advancedView.setVisibility(open ? View.VISIBLE : View.GONE);
                 advancedRow.display(open ? "-" : "+");
-            } else if ("restore".equals(row.tagName)) {
-                restoreStock();
             }
             sync();
         } catch (Throwable t) {
@@ -291,29 +294,21 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    /** The list behind the Fan row: up and down to move, OK to pick, BACK to leave it as it was. */
+    /** The list behind the Fan mode row: up and down to move, OK to pick, BACK to leave it as it was. */
     private void chooseFan() {
-        final int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
-        // The presets are one entry here; which preset is a choice under Advanced.
-        final String[] names = new String[4];
-        names[0] = "Stock";
-        names[1] = "Smart " + (int) AutoHold.targetFor(Prefs.ledBoostOn(this));
-        names[2] = "Auto Step";
-        names[3] = "Curve: " + CurveConfig.presetName(Prefs.preset(this));
-        int at = -1;
-        String now = fanChoice();
-        for (int i = 0; i < names.length; i++) {
-            if (names[i].equals(now)) {
-                at = i;
-            }
-        }
+        final String[] names = {
+                "Curve to 55 °C  ·  Philips brightness",
+                "Curve to 58 °C  ·  your brightness",
+                "Smart quiet  ·  your brightness, fan under the limit",
+                "Manual  ·  one fixed speed",
+        };
         new AlertDialog.Builder(this)
-                .setTitle("Fan")
-                .setSingleChoiceItems(names, at, new android.content.DialogInterface.OnClickListener() {
+                .setTitle("Fan mode")
+                .setSingleChoiceItems(names, fanIndex(), new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
                         try {
-                            applyFan(which, family);
+                            applyFan(which);
                         } catch (Throwable t) {
                             say("Failed: " + t);
                         }
@@ -324,22 +319,21 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 .show();
     }
 
-    private void applyFan(int which, int[] family) {
-        if (which == 0) {
-            release();
-            return;
+    /** The mode also decides the brightness: Philips' own for Curve to 55 and Manual, the owner's levels for the other two. */
+    private void applyFan(int which) {
+        boolean bright = which == FAN_CURVE58 || which == FAN_SMART;
+        if (bright && Prefs.ledDrive(this).isStock()) {
+            Prefs.setLedDrive(this, LedDrive.Config.bright());
         }
-        if (which == 1) {
-            Prefs.setAutoKind(this, Prefs.AUTO_HOLD);
-        } else if (which == 2) {
-            Prefs.setAutoKind(this, Prefs.AUTO_STEP);
+        Prefs.setLedDriveOn(this, bright);
+        if (which == FAN_MANUAL) {
+            Prefs.setMode(this, Mode.MANUAL);
         } else {
-            Prefs.setAutoKind(this, Prefs.AUTO_NONE);
+            Prefs.setAutoKind(this, which == FAN_SMART ? Prefs.AUTO_HOLD : Prefs.AUTO_STEP);
+            Prefs.setMode(this, Mode.CURVE);
         }
-        Prefs.setMode(this, Mode.CURVE);
         FanService.poke(this, FanService.ACTION_REFRESH);
     }
-
     private void release() {
         FanService s = FanService.instance;
         if (s != null) {
@@ -357,14 +351,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
             FanIo.writeFailSafe();
             FanService.poke(this, FanService.ACTION_RELEASE);
         }
-    }
-
-    private void restoreStock() {
-        // Stop driving FIRST: the service re-asserts this property every 30 ticks in CURVE, so setting it alone is undone within half a minute.
-        Prefs.setMode(this, Mode.OFF);
-        FanService.poke(this, FanService.ACTION_RELEASE);
-        boolean ok = SysProps.set(SysProps.PROP_FANCTRL_BY_TEMP, "1");
-        say(ok ? "Stock fan restored. Safe to uninstall." : "Failed: could not set the property.");
     }
 
     @Override

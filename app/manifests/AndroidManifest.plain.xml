@@ -12,7 +12,7 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.daleygames.fanlab"
-    android:versionCode="16"
+    android:versionCode="17"
     android:versionName="1.1.0-plain">
 
     <uses-sdk

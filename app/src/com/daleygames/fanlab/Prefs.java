@@ -87,8 +87,70 @@ public final class Prefs {
 
     /** The loudest the fan may go under Smart, percent; 0 for no limit. See {@link FanLimit}. */
     public static int fanLimit(Context c) {
-        int v = get(c).getInt("fan_limit", 0);
-        return v >= 30 && v <= AutoHold.MAX_DUTY ? v : 0;
+        // 40 unless set: the owner's loudest for any length of time. 0 is "no limit", chosen deliberately.
+        int v = get(c).getInt("fan_limit", DEFAULT_FAN_LIMIT);
+        return v == 0 ? 0 : v >= 30 && v <= AutoHold.MAX_DUTY ? v : DEFAULT_FAN_LIMIT;
+    }
+
+    public static final int DEFAULT_FAN_LIMIT = 40;
+
+    /** Lowest the fan goes under Smart quiet and the curves, percent. 30 is the lowest the written record proves against the stall watchdog. */
+    public static final int MIN_FAN_FLOOR = 20;
+    public static final int MAX_FAN_FLOOR = 40;
+    public static final int DEFAULT_FAN_FLOOR = 30;
+
+    public static int fanFloor(Context c) {
+        int v = get(c).getInt("fan_floor", DEFAULT_FAN_FLOOR);
+        return v >= MIN_FAN_FLOOR && v <= MAX_FAN_FLOOR ? v : DEFAULT_FAN_FLOOR;
+    }
+
+    public static void setFanFloor(Context c, int percent) {
+        get(c).edit().putInt("fan_floor", percent).apply();
+    }
+
+    /** Bounds on a Smart quiet target, degrees C. 60 is five under the {@link LedDrive#DEFAULT_TRIP_C} cut-out, which a switch up needs. */
+    public static final int MIN_TARGET_C = 45;
+    public static final int MAX_TARGET_C = 60;
+
+    /** The default Smart quiet target for a brightness mode ({@code rgblevel}): the brighter the mode, the warmer it may run. */
+    public static int defaultTarget(int rgblevel) {
+        switch (rgblevel) {
+            case 4:     // Super Eco
+                return 50;
+            case 1:     // Night
+                return 55;
+            case 3:     // Presentation
+                return 60;
+            default:    // Normal, or unreadable
+                return 58;
+        }
+    }
+
+    public static int smartTarget(Context c, int rgblevel) {
+        int lv = rgblevel >= 1 && rgblevel <= 4 ? rgblevel : 2;
+        int v = get(c).getInt("target_" + lv, defaultTarget(lv));
+        return v >= MIN_TARGET_C && v <= MAX_TARGET_C ? v : defaultTarget(lv);
+    }
+
+    public static void setSmartTarget(Context c, int rgblevel, int celsius) {
+        get(c).edit().putInt("target_" + rgblevel, celsius).apply();
+    }
+
+    /** The four targets as one string, part of the key what Smart learns is stored under. */
+    public static String targetsKey(Context c) {
+        return "t" + smartTarget(c, 4) + "/" + smartTarget(c, 1) + "/" + smartTarget(c, 2) + "/" + smartTarget(c, 3);
+    }
+
+    /**
+     * 1.8.0 took Linear, the curve presets and the curve editor off the screen. A setup still on
+     * one of them moves to the built-in curve; the brightness boost stays as it was.
+     */
+    public static void migrate(Context c) {
+        int m = mode(c);
+        if (m == Mode.LINEAR || (m == Mode.CURVE && autoKind(c) == AUTO_NONE)) {
+            setAutoKind(c, AUTO_STEP);
+            setMode(c, Mode.CURVE);
+        }
     }
 
     public static void setFanLimit(Context c, int percent) {
@@ -96,7 +158,8 @@ public final class Prefs {
     }
 
     public static boolean reassert(Context c) {
-        return get(c).getBoolean(K_REASSERT, true);
+        // Always on since 1.8.0: the switch was removed, and a stored "off" is ignored.
+        return true;
     }
 
     public static void setReassert(Context c, boolean v) {

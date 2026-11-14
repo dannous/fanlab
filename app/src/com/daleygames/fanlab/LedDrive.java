@@ -35,17 +35,18 @@ public final class LedDrive {
 
     public static final int TIERS = 4;
     public static final int[] TIER_RGBLEVEL = {4, 1, 2, 3};
-    public static final String[] TIER_NAMES = {"Super Eco", "Eco", "Normal", "Presentation"};
+    public static final String[] TIER_NAMES = {"Super Eco", "Night", "Normal", "Presentation"};
 
     public static final int FIELDS = 5;
 
     /**
      * LED thermistor temperature above which the override is dropped and latched off, C.
      *
-     * 62.0 is four degrees above the 58 C that Auto holds with the drive raised, seven above the 55 C at which the stock controller commands
+     * 65.0 is five degrees above the highest Smart quiet target (60 C, Presentation): a switch up from Normal at 58 C jumps the LED about
+     * 4 C within seconds, to about 62, and that must not trip it. It is ten above the 55 C at which the stock controller commands
      * maximum fan, and well below the 75 C shutdown.
      */
-    public static final double DEFAULT_TRIP_C = 62.0;
+    public static final double DEFAULT_TRIP_C = 65.0;
 
     /** Minimum gap between {@code rgblevel} rewrites, ms. Matches {@code assertRgbLevel}. */
     public static final long RESTORE_EVERY_MS = 5000L;
