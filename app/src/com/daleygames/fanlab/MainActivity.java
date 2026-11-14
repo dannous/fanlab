@@ -119,7 +119,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
         sl.bottomMargin = Ui.dp(c, 12);
         root.addView(statusView, sl);
 
-        fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0).hint("How the fan is controlled.\n\nAuto 58 holds the LED just under its target. Auto Step follows a fixed curve. Stock hands the fan back to Philips."));
+        fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0).hint("How the fan is controlled.\n\nAuto 58 holds the LED just under its target. Auto Step follows a fixed curve. Curve uses the preset chosen under Advanced. Stock hands the fan back to Philips."));
         brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0).hint("Runs the LEDs harder for a brighter picture.\n\nMore heat, so more fan. Turns itself off above 61 °C."));
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
         addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
@@ -157,7 +157,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
             // Named for the temperature it holds, which follows the brightness boost.
             return "Auto " + (int) AutoHold.targetFor(Prefs.ledBoostOn(this));
         }
-        return kind == Prefs.AUTO_STEP ? "Auto Step" : CurveConfig.presetName(Prefs.preset(this));
+        return kind == Prefs.AUTO_STEP ? "Auto Step"
+                : "Curve: " + CurveConfig.presetName(Prefs.preset(this));
     }
 
     private void sync() {
@@ -216,7 +217,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     ? ", +" + FanService.autoTrimNow + " to stay under "
                       + (int) FanService.autoTargetNow + " C" : "");
         } else {
-            line = fanChoice().toLowerCase() + " curve";
+            line = fanChoice().toLowerCase();
         }
         statusView.setText(line);
         statusView.setTextColor(colour);
@@ -270,13 +271,12 @@ public class MainActivity extends Activity implements StepRow.Listener {
     /** The list behind the Fan row: up and down to move, OK to pick, BACK to leave it as it was. */
     private void chooseFan() {
         final int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
-        final String[] names = new String[3 + family.length];
+        // The presets are one entry here; which preset is a choice under Advanced.
+        final String[] names = new String[4];
         names[0] = "Stock";
         names[1] = "Auto " + (int) AutoHold.targetFor(Prefs.ledBoostOn(this));
         names[2] = "Auto Step";
-        for (int i = 0; i < family.length; i++) {
-            names[3 + i] = CurveConfig.presetName(family[i]);
-        }
+        names[3] = "Curve: " + CurveConfig.presetName(Prefs.preset(this));
         int at = -1;
         String now = fanChoice();
         for (int i = 0; i < names.length; i++) {
@@ -312,7 +312,6 @@ public class MainActivity extends Activity implements StepRow.Listener {
             Prefs.setAutoKind(this, Prefs.AUTO_STEP);
         } else {
             Prefs.setAutoKind(this, Prefs.AUTO_NONE);
-            Prefs.setPreset(this, family[which - 3]);
         }
         Prefs.setMode(this, Mode.CURVE);
         FanService.poke(this, FanService.ACTION_REFRESH);

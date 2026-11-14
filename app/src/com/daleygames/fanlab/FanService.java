@@ -1895,8 +1895,14 @@ public class FanService extends Service {
                 files += r.filesWritten;
                 rows += r.rowsCopied;
                 failures += r.failures;
+                // The sweep and hold sessions write their own files beside the log; bring those too.
+                int extra = copySessionFiles(sources.get(0).getParentFile(), destDir);
+                files += extra;
                 if (r.failures == 0) {
                     markThisBoot(destDir);
+                }
+                if (extra > 0 && !where.contains(destDir.getAbsolutePath())) {
+                    where.add(destDir.getAbsolutePath());
                 }
                 if (r.filesWritten > 0 || r.upToDate > 0) {
                     where.add(destDir.getAbsolutePath());
@@ -1939,6 +1945,64 @@ public class FanService extends Service {
         } catch (Throwable ignored) {
         }
         return new File(root, "Android/data/" + getPackageName() + "/files/" + EXPORT_DIR);
+    }
+
+    /**
+     * Copy every sweep and hold session file ({@code trace_*}, {@code sweep_*}, {@code verify_*})
+     * that the destination does not already hold at the same length. Whole files: unlike the
+     * telemetry log they are written once and never appended to after the session ends.
+     */
+    static int copySessionFiles(File srcDir, File destDir) {
+        int copied = 0;
+        try {
+            File[] all = srcDir == null ? null : srcDir.listFiles();
+            if (all == null || !destDir.isDirectory()) {
+                return 0;
+            }
+            for (int i = 0; i < all.length; i++) {
+                String n = all[i].getName();
+                boolean session = n.startsWith("trace_") || n.startsWith("sweep_")
+                        || n.startsWith("verify_");
+                if (!session || !all[i].isFile() || all[i].length() == 0) {
+                    continue;
+                }
+                File dest = new File(destDir, n);
+                if (dest.isFile() && dest.length() == all[i].length()) {
+                    continue;
+                }
+                java.io.FileInputStream in = null;
+                java.io.FileOutputStream out = null;
+                try {
+                    in = new java.io.FileInputStream(all[i]);
+                    out = new java.io.FileOutputStream(dest);
+                    byte[] buf = new byte[16384];
+                    int got;
+                    while ((got = in.read(buf)) > 0) {
+                        out.write(buf, 0, got);
+                    }
+                    out.getFD().sync();
+                    copied++;
+                } catch (Throwable t) {
+                    Log.w(TAG, "copy " + n, t);
+                } finally {
+                    try {
+                        if (in != null) {
+                            in.close();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    try {
+                        if (out != null) {
+                            out.close();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "copySessionFiles", t);
+        }
+        return copied;
     }
 
     /** The sink to read the backlog from - one of them, not both, since the two internal sinks are identical copies. {@code /sdcard/FanLab} first, because it is the copy a person can find; a sink on a removable volume is never a source. */

@@ -22,6 +22,7 @@ public final class AdvancedPanel implements StepRow.Listener {
     private TextView sliderLabel;
     private SeekBar slider;
     private StepRow ceilingRow;
+    private StepRow presetRow;
     private StepRow reassertRow;
     private StepRow roomRow;
     private StepRow loggingRow;
@@ -92,6 +93,8 @@ public final class AdvancedPanel implements StepRow.Listener {
                 .steps(1, 5).tag("ceiling", 0).hint("The temperature Linear mode holds."));
         reassertRow = add(root, new StepRow(c, "Re-assert every second").button()
                 .tag("reassert", 0).hint("Puts the fan speed back if the projector changes it.\n\nLeave on."));
+        presetRow = add(root, new StepRow(c, "Curve preset").button().tag("preset", 0)
+                .hint("Which curve the Fan choice Curve runs. Quietest first."));
         add(root, new StepRow(c, "Edit curve").button().tag("curve", 0).hint("Change the curve's points by hand.")).display(">");
 
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
@@ -147,6 +150,8 @@ public final class AdvancedPanel implements StepRow.Listener {
         ceilingRow.set((int) Math.round(lin.ceilingC));
         ceilingRow.display(Sample.fmt1(lin.ceilingC));
         ceilingRow.valueColour(mode == Mode.LINEAR ? Ui.ACCENT : Ui.DIM);
+        presetRow.display(CurveConfig.presetName(Prefs.preset(a)));
+        presetRow.valueColour(Prefs.autoKind(a) == Prefs.AUTO_NONE && mode == Mode.CURVE ? Ui.ACCENT : Ui.DIM);
         onOff(reassertRow, Prefs.reassert(a));
         onOff(loggingRow, Prefs.logging(a));
         int r = Prefs.roomC(a);
@@ -188,6 +193,11 @@ public final class AdvancedPanel implements StepRow.Listener {
                 int mode = Prefs.mode(a);
                 Prefs.setMode(a, mode == Mode.CURVE ? Mode.LINEAR
                         : mode == Mode.LINEAR ? Mode.MANUAL : Mode.CURVE);
+                FanService.poke(a, FanService.ACTION_REFRESH);
+            } else if ("preset".equals(t)) {
+                int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(a));
+                int rung = CurveConfig.rungOf(Prefs.preset(a));
+                Prefs.setPreset(a, family[(rung < 0 ? 0 : rung + 1) % family.length]);
                 FanService.poke(a, FanService.ACTION_REFRESH);
             } else if ("ceiling".equals(t)) {
                 LinearConfig lin = Prefs.linear(a);
