@@ -39,9 +39,10 @@ this:
 3. Press **OK** on the software version **five times**. The hidden developer menu opens.
 4. Scroll to **AppInstaller**, near the bottom.
 5. Find the APK on the USB stick, and install it.
-6. Open **FanLab**, press OK on **Fan mode**, and pick one of the options below.
+6. Open **FanLab**.
 
-That's it. Picking a mode hands the fan over for you.
+That's it. The first time you open it, it starts in **Smart quiet** and takes over the fan.
+Press OK on **Fan mode** to pick something else.
 
 ## Using it
 
@@ -54,13 +55,13 @@ Two choices matter. **Fan mode:**
 |---|---|
 | **Curve to 55 °C** | A simple fan curve that keeps the LED under 55 °C |
 | **Curve to 58 °C** | The same curve, allowed to 58 °C. Offered when Brightness boost is on |
-| **Smart quiet** | Stays at or under your **Fan limit** (40 % unless you change it). If the LED gets too warm at the limit, the picture dims slightly instead of the fan getting louder |
-| **Manual** | One fixed speed that you choose |
+| **Smart quiet** (the default) | Stays at or under your **Fan limit** (40 % unless you change it). If the LED gets too warm at the limit, the picture dims slightly instead of the fan getting louder |
 
 And **Brightness boost**, which is its own switch. Off is Philips' own brightness. On runs each
 brightness mode at the level you set for it under Advanced (see
 [A brighter picture](#a-brighter-picture-optional)). It works with either curve and with Smart
-quiet, not with Manual.
+quiet. With it off, Smart quiet still holds its temperature and its limit; at Philips' brightness
+there is much less heat, so the limit is unlikely to be reached.
 **Smart quiet** is the one to use if noise matters most. It finds the slowest fan that holds
 the LED at its target for the brightness mode you are in, and it learns your projector as it
 runs: how much more fan one mode needs than another, and what a point of fan is worth. That
@@ -90,10 +91,9 @@ projector, and FanLab notices whichever one you are in within a few seconds.
 
 | Control | What it does |
 |---|---|
-| **Fan mode** | The four choices above |
+| **Fan mode** | The three choices above |
 | **Brightness boost** | On or Off. On uses your per-mode brightness levels |
 | **Fan limit %** | Shown in Smart quiet. The loudest the fan may go, 30–83, or Off |
-| **Manual fan %** | Shown in Manual. The fixed speed |
 | **Start on boot** | Leave this on, or Philips' controller takes back over at the next power-on |
 
 **Advanced**
@@ -104,7 +104,8 @@ projector, and FanLab notices whichever one you are in within a few seconds.
 | **Smart quiet → Fan floor %** | The slowest the fan runs, 20–40, normally 30. Below 30 is untested. The curves never go below 25 |
 | **Brightness (LED drive)**, one per brightness mode | How hard the LEDs are driven, 20–97. Used when Brightness boost is on |
 | **Reset brightness and targets** | Puts both back to the tables above |
-| **Tests** | White screen (full load), colour slides (white, red, green, blue, black), a focus pattern, and an unattended test that walks through the modes by itself |
+| **Tests** | White screen (full load), colour slides (white, red, green, blue, black), a focus pattern, a manual fan test, and an unattended test that walks through the modes by itself |
+| **Tests → Manual fan test %** | Holds the fan at one speed, to hear it or to cool the projector quickly. It is a test, not a way to run: it ends by itself after 30 minutes or at 62 °C, and your fan mode takes over |
 | **Measure** | Sweep every fan speed, hold one fan speed, and a room temperature that is only written to the log |
 | **Logs** | Write the CSV log, copy it to shared storage, copy everything to a USB stick, and raw diagnostics |
 | **System → ADB over USB** | Switches the USB port so a PC can connect. Untested on this projector |

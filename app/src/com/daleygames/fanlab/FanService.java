@@ -140,6 +140,10 @@ public class FanService extends Service {
     private final FanCurve curve = new FanCurve();
     private final AutoHold autoHold = new AutoHold();
     private final FanLimit fanLimit = new FanLimit();
+    /** The manual fan test ends by itself after this long, ms, or at this LED temperature. */
+    static final long MANUAL_TEST_MS = 1800000L;
+    static final double MANUAL_END_C = 62.0;
+    private long manualSinceMs;
     /** For the main screen: what the fan limit is doing, or empty. */
     public static volatile String limitLine = "";
     /** The boost switch and levels last seen, to tell when learned fan speeds have gone stale. */
@@ -886,6 +890,18 @@ public class FanService extends Service {
             desired = Prefs.manualDuty(this);
             badReads = 0;
             failSafeLatched = false;
+            // Manual is a test, not a way to run: nothing here watches the temperature. So it ends
+            // by itself, after half an hour or as soon as the LED is warm, and the fan mode takes over.
+            if (manualSinceMs == 0L) {
+                manualSinceMs = mono;
+            }
+            boolean warm = Thermistor.plausible(s.degC) && s.degC >= MANUAL_END_C;
+            if (warm || mono - manualSinceMs >= MANUAL_TEST_MS) {
+                append(note, "manual test ended: " + (warm ? "LED " + Sample.fmt1(s.degC) + " C" : "30 min"));
+                Prefs.setMode(this, Mode.CURVE);
+                prefsDirty = true;
+                manualSinceMs = 0L;
+            }
         } else if (mode == Mode.CURVE) {
             if (!Thermistor.plausible(s.degC)) {
                 badReads++;
@@ -1105,7 +1121,12 @@ public class FanService extends Service {
         // rgblevel happens to select, so every term below is required and any doubt resolves to
         // not-allowed. led_status is the one term that treats an unreadable node as "on", because the
         // hazard is the fan coupling and writing LED currents to an engine that is off is inert.
-        boolean ledControls = Mode.controls(mode);
+        // The manual fan test counts as in charge of the fan: it holds the duty every second, the 65 C
+        // trip below still drops the brighter picture, and the test ends itself at MANUAL_END_C.
+        boolean ledControls = Mode.controls(mode) || mode == Mode.MANUAL;
+        if (mode != Mode.MANUAL) {
+            manualSinceMs = 0L;
+        }
         // A session normally forfeits the override. A VERIFY steady phase is the exception, and it
         // satisfies the rule rather than bending it: there the real curve is closing the real loop on
         // the real thermistor, which is precisely the coupling being required.

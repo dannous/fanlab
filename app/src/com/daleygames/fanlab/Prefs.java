@@ -154,6 +154,20 @@ public final class Prefs {
      * 1.8.0 took Linear, the curve presets and the curve editor off the screen. A setup still on
      * one of them moves to the built-in curve; the brightness boost stays as it was.
      */
+    /**
+     * On a fresh install, the first time the app is opened: start in Smart quiet. Opening the app is
+     * the asking; nothing drives the fan before that. Never again afterwards, so Restore stock
+     * controller stays restored.
+     */
+    public static boolean firstRun(Context c) {
+        if (get(c).contains(K_MODE)) {
+            return false;
+        }
+        setAutoKind(c, AUTO_HOLD);
+        setMode(c, Mode.CURVE);
+        return true;
+    }
+
     public static void migrate(Context c) {
         int m = mode(c);
         if (m == Mode.LINEAR || (m == Mode.CURVE && autoKind(c) == AUTO_NONE)) {
