@@ -746,12 +746,20 @@ public class FanService extends Service {
                 autoHold.forgetLearned();
                 append(note, "auto forgot learned speeds (brightness changed)");
                 append(note, brightnessNote("brightness set"));
+                // Levels it has run at before come back with what was learned at them.
+                if (autoHold.importLearned(Prefs.smartLearned(this, drive))) {
+                    append(note, "smart restored " + autoHold.exportLearned());
+                }
+                autoHold.takeLearnedDirty();
             }
             lastDriveKey = drive;
         } else if (lastDriveKey == null) {
             lastDriveKey = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode();
             // Once at start, so every session's log says what the four modes were set to.
             append(note, brightnessNote("brightness"));
+            if (autoHold.importLearned(Prefs.smartLearned(this, lastDriveKey))) {
+                append(note, "smart restored " + autoHold.exportLearned());
+            }
         }
 
         // Own the stock ladder's kill switch from here rather than leaving it to whoever last set it
@@ -916,6 +924,11 @@ public class FanService extends Service {
                         String ev = autoHold.takeEvent();
                         if (ev != null) {
                             append(note, "auto " + ev);
+                        }
+                        if (autoHold.takeLearnedDirty() && lastDriveKey != null) {
+                            // Kept in the app's own settings: it does not depend on the CSV log.
+                            Prefs.setSmartLearned(this, lastDriveKey, autoHold.exportLearned());
+                            append(note, "smart saved " + autoHold.exportLearned());
                         }
                         desired = Math.min(cfg.socGuardMaxDuty > held ? cfg.socGuardMaxDuty : held,
                                 held + curve.guardBoost());

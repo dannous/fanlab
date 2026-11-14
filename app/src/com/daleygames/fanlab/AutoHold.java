@@ -237,8 +237,11 @@ public final class AutoHold {
             for (int l = 0; l < 5; l++) {
                 settled[i][l] = 0;
                 settledAtMs[i][l] = 0L;
+                rel[i][l] = Double.NaN;
+                worthBy[i][l] = Double.NaN;
             }
         }
+        learnedDirty = true;
         guideDuty = 0;
         guideUntilMs = 0L;
         probeAtMs = 0L;
@@ -248,6 +251,136 @@ public final class AutoHold {
         recheckRefC = Double.NaN;
         chainReady = false;
         upToDuty = 0;
+    }
+
+    /**
+     * What Smart keeps for good, by [drive raised ? 1 : 0][rgblevel 1..4]; NaN where unknown.
+     *
+     * rel: only the differences mean anything. Two modes that both settled within MEMORY_MS of
+     * each other were in the same room, so the difference of their speeds is a property of the
+     * projector and the brightness levels, not of the day: Presentation needed 12 points more
+     * than Normal on 14 Nov 2026. A speed itself goes stale with the room (about 2 points a
+     * degree); the gap does not.
+     *
+     * worthBy: what a fan point is worth in LED degrees in that mode, as probes measured it.
+     */
+    private final double[][] rel = new double[2][5];
+    private final double[][] worthBy = new double[2][5];
+    {
+        for (int i = 0; i < 2; i++) {
+            for (int l = 0; l < 5; l++) {
+                rel[i][l] = Double.NaN;
+                worthBy[i][l] = Double.NaN;
+            }
+        }
+    }
+
+    /** How much of a newly seen gap is taken in: a quarter, so one odd evening does not rewrite it. */
+    static final double GAP_LEARN = 0.25;
+
+    /** True once after something worth saving changed; the caller then stores {@link #exportLearned()}. */
+    private boolean learnedDirty;
+
+    public boolean takeLearnedDirty() {
+        boolean d = learnedDirty;
+        learnedDirty = false;
+        return d;
+    }
+
+    private void rememberWorth(boolean driveOn, double per) {
+        if (validLevel(level) && per > 0.0) {
+            double[] w = worthBy[driveOn ? 1 : 0];
+            w[level] = Double.isNaN(w[level]) ? per : w[level] + (per - w[level]) * 0.5;
+            learnedDirty = true;
+        }
+    }
+
+    /** Mode {@code lv} has just settled: fold its gap to every other mode that settled recently into rel. */
+    private void learnGaps(boolean driveOn, int lv, long nowMs) {
+        double[] r = rel[driveOn ? 1 : 0];
+        int mine = settledFor(driveOn, lv);
+        if (mine <= 0) {
+            return;
+        }
+        boolean any = false;
+        for (int o = 1; o <= 4; o++) {
+            int theirs = o == lv ? 0 : freshFor(driveOn, o, nowMs);
+            if (theirs <= 0) {
+                continue;
+            }
+            double seen = mine - theirs;
+            if (Double.isNaN(r[lv]) && Double.isNaN(r[o])) {
+                r[lv] = mine;
+                r[o] = theirs;
+            } else if (Double.isNaN(r[lv])) {
+                r[lv] = r[o] + seen;
+            } else if (Double.isNaN(r[o])) {
+                r[o] = r[lv] - seen;
+            } else {
+                double move = (seen - (r[lv] - r[o])) * GAP_LEARN * 0.5;
+                r[lv] += move;
+                r[o] -= move;
+            }
+            any = true;
+        }
+        if (any) {
+            learnedDirty = true;
+        }
+    }
+
+    /** The learned gap, in points, by which {@code a} needs more fan than {@code b}; NaN if not known. */
+    public double gap(boolean driveOn, int a, int b) {
+        return validLevel(a) && validLevel(b) ? rel[driveOn ? 1 : 0][a] - rel[driveOn ? 1 : 0][b] : Double.NaN;
+    }
+
+    /** Everything kept for good, as one line for storage. */
+    public String exportLearned() {
+        StringBuilder sb = new StringBuilder("s1");
+        for (int i = 0; i < 2; i++) {
+            for (int l = 1; l <= 4; l++) {
+                sb.append(',').append(Double.isNaN(rel[i][l]) ? "x" : Sample.fmt1(rel[i][l]));
+                sb.append(',').append(Double.isNaN(worthBy[i][l]) ? "x"
+                        : Double.toString(Math.round(worthBy[i][l] * 1000.0) / 1000.0));
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Take back a line from {@link #exportLearned()}. Anything unreadable is ignored whole; never throws. */
+    public boolean importLearned(String s) {
+        try {
+            if (s == null) {
+                return false;
+            }
+            String[] p = s.split(",");
+            if (p.length != 17 || !"s1".equals(p[0])) {
+                return false;
+            }
+            double[][] nr = new double[2][5], nw = new double[2][5];
+            int at = 1;
+            for (int i = 0; i < 2; i++) {
+                for (int l = 1; l <= 4; l++) {
+                    nr[i][l] = "x".equals(p[at]) ? Double.NaN : Double.parseDouble(p[at]);
+                    at++;
+                    nw[i][l] = "x".equals(p[at]) ? Double.NaN : Double.parseDouble(p[at]);
+                    at++;
+                    boolean okR = Double.isNaN(nr[i][l]) || (nr[i][l] > -200.0 && nr[i][l] < 200.0);
+                    boolean okW = Double.isNaN(nw[i][l]) || (nw[i][l] > 0.0 && nw[i][l] < 5.0);
+                    if (!okR || !okW) {
+                        return false;
+                    }
+                }
+            }
+            for (int i = 0; i < 2; i++) {
+                for (int l = 1; l <= 4; l++) {
+                    rel[i][l] = nr[i][l];
+                    worthBy[i][l] = nw[i][l];
+                }
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     static boolean validLevel(int rgblevel) {
@@ -352,6 +485,7 @@ public final class AutoHold {
             }
             if (!validLevel(level)) {
                 level = rgblevel;
+                measuredWorthC = worthBy[driveOn ? 1 : 0][level];
             } else if (rgblevel != level && nowMs - pendingSinceMs >= FLICK_MS) {
                 int from = level;
                 level = rgblevel;
@@ -363,15 +497,29 @@ public final class AutoHold {
                 probeAtMs = 0L;
                 noProbeAtOrBelow = 0;
                 lowSinceMs = 0L;
-                measuredWorthC = Double.NaN;
+                // What a point is worth in this mode, if a probe has measured it before.
+                measuredWorthC = worthBy[driveOn ? 1 : 0][level];
                 failWorthC = Double.NaN;
                 recheckRefC = Double.NaN;
                 chainReady = false;
                 upToDuty = 0;
+                // Where to: this mode's own speed if it settled recently; otherwise the speed the
+                // mode being left settled at, plus the learned gap between the two. The gap holds
+                // whatever the room is doing, so it works on a day this mode has not run yet.
                 guideDuty = freshFor(driveOn, level, nowMs);
+                String how = "";
+                if (guideDuty == 0) {
+                    int fromFresh = freshFor(driveOn, from, nowMs);
+                    double a = rel[driveOn ? 1 : 0][level], b = rel[driveOn ? 1 : 0][from];
+                    if (fromFresh > 0 && !Double.isNaN(a) && !Double.isNaN(b)) {
+                        int gap = (int) Math.round(a - b);
+                        guideDuty = Math.max(MIN_DUTY, Math.min(MAX_DUTY, fromFresh + gap));
+                        how = " (" + levelName(from) + " " + fromFresh + (gap >= 0 ? " +" : " ") + gap + ")";
+                    }
+                }
                 guideUntilMs = guideDuty > 0 ? nowMs + GUIDE_MS : 0L;
                 event = "guide " + levelName(from) + "->" + levelName(level)
-                        + (guideDuty > 0 ? " to " + guideDuty
+                        + (guideDuty > 0 ? " to " + guideDuty + how
                         : settledFor(driveOn, level) > 0 ? " (learned " + settledFor(driveOn, level) + " is over 3 h old)"
                         : " (nothing learned yet)");
             }
@@ -523,6 +671,7 @@ public final class AutoHold {
                     event = "probe " + (int) duty + " showed no warming; back to " + probeFrom + ", probing off in this mode";
                 } else if (pred > targetC) {
                     measuredWorthC = per;
+                    rememberWorth(driveOn, per);
                     // Would end over: back up the points it is over by, before the LED gets there.
                     int u = Math.max(1, Math.min(k, (int) Math.ceil((pred - targetC) / Math.max(0.01, per))));
                     upToDuty = (int) duty + u;
@@ -536,6 +685,7 @@ public final class AutoHold {
                 } else {
                     // Holds. If one more point still fits under the target, take it now.
                     measuredWorthC = per;
+                    rememberWorth(driveOn, per);
                     chainBaseC = pred;
                     chainReady = (int) duty - 1 >= floor && (int) duty - 1 > noProbeAtOrBelow
                             && pred + per <= targetC - PROBE_MARGIN_C;
@@ -558,7 +708,11 @@ public final class AutoHold {
                 // Until a point has been measured here, leave one in hand and take at most
                 // PROBE_FIRST_MAX: where a point is worth far more than the rough figure, a bigger
                 // first jump overshot to 58.4 in simulation before its check could back it out.
-                int k = Double.isNaN(measuredWorthC) ? Math.min(room - 1, PROBE_FIRST_MAX) : room;
+                // A follow-up probe takes one point only: on 14 Nov 2026 the first probe held
+                // (44 to 43, predicted 57.4, read 57.43) and the follow-up took two, ran warm at
+                // 58.13 and came back up both. And the first always leaves one in hand, measured
+                // worth or not.
+                int k = chainReady ? 1 : Math.min(room - 1, PROBE_FIRST_MAX);
                 k = Math.min(k, PROBE_MAX_POINTS);
                 k = Math.min(k, (int) duty - Math.max(floor, noProbeAtOrBelow + 1));
                 if (room >= 1 && k < 1) {
@@ -637,6 +791,7 @@ public final class AutoHold {
             // Re-stamped every ten steady minutes even when unchanged, so a mode in use stays fresh.
             boolean changed = settledFor(driveOn, level) != (int) duty;
             setSettled(driveOn, level, (int) duty, nowMs);
+            learnGaps(driveOn, level, nowMs);
             if (changed) {
                 event = "settled " + levelName(level) + "@" + (int) duty;
             }

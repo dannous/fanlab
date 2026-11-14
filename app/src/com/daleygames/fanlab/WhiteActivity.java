@@ -168,7 +168,7 @@ public class WhiteActivity extends Activity {
             writeLevel(PLAN[step][0]);
         }
         readout.setText("STEP " + (step + 1) + "/" + PLAN.length + "  " + levelName(PLAN[step][0])
-                + ", " + (PLAN[step][1] == Prefs.AUTO_HOLD ? "Auto 58" : "Auto Step") + "  "
+                + ", " + (PLAN[step][1] == Prefs.AUTO_HOLD ? "Smart" : "Auto Step") + "  "
                 + (now - stepStartedMs) / 60000L + "/" + PLAN[step][2] + " min   " + live
                 + "   total " + totalMin + "/" + planMinutes() + " min   Back or OK stops");
     }

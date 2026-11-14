@@ -4268,6 +4268,49 @@ public final class FanLabTest {
         }
         check(learnedNormal == null, "AUTO: a switch does not hand the old mode's speed to the new one (saw "
                 + learnedNormal + ")");
+
+        // Smart: the gap between two modes is learned, kept, and used on a day the room differs.
+        final double TB = AutoHold.BOOST_TARGET_C;
+        AutoHold g1 = new AutoHold();
+        g1.resync(31);
+        long gm = 0L;
+        for (; gm < 11L * 60000L; gm += 1000L) {
+            g1.step(57.6, TB, AutoHold.minFor(2), 2, gm);
+        }
+        eq(g1.settledFor(true, 2), 31, "SMART: Normal settles at 31");
+        for (int i = 0; i < 10; i++, gm += 1000L) {
+            g1.step(57.85, TB, AutoHold.minFor(3), 3, gm);
+        }
+        g1.resync(43);
+        for (long end = gm + 11L * 60000L; gm < end; gm += 1000L) {
+            g1.step(57.85, TB, AutoHold.minFor(3), 3, gm);
+        }
+        eq(g1.settledFor(true, 3), 43, "SMART: Presentation settles at 43 the same evening");
+        eq((int) Math.round(g1.gap(true, 3, 2)), 12, "SMART: so Presentation needs 12 more than Normal");
+        check(g1.takeLearnedDirty(), "SMART: and that is flagged for saving");
+        String kept = g1.exportLearned();
+
+        AutoHold g2 = new AutoHold();
+        check(g2.importLearned(kept), "SMART: what was saved loads into a fresh start (" + kept + ")");
+        eq((int) Math.round(g2.gap(true, 3, 2)), 12, "SMART: with the gap intact");
+        g2.resync(34);
+        gm = 0L;
+        for (; gm < 11L * 60000L; gm += 1000L) {
+            g2.step(57.85, TB, AutoHold.minFor(2), 2, gm);   // too close to 58 for a probe to start
+        }
+        eq(g2.settledFor(true, 2), 34, "SMART: a warmer evening, Normal settles at 34");
+        String guide = null;
+        for (int i = 0; i < 10; i++, gm += 1000L) {
+            g2.step(57.85, TB, AutoHold.minFor(3), 3, gm);
+            String e = g2.takeEvent();
+            guide = e != null && e.startsWith("guide") ? e : guide;
+        }
+        check(guide != null && guide.contains("to 46"), "SMART: a switch to Presentation, not yet run that day, "
+                + "is guided to 34 + 12 = 46 (saw " + guide + ")");
+        check(!new AutoHold().importLearned("s1,rubbish"), "SMART: a damaged save is ignored, not half-read");
+        check(!new AutoHold().importLearned(null), "SMART: and so is none at all");
+        g2.forgetLearned();
+        check(Double.isNaN(g2.gap(true, 3, 2)), "SMART: new brightness levels forget the gaps too");
     }
     private static void testAutoStep() {
         section("auto step: its own curve, a 25 floor, and a trim that only adds");

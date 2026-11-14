@@ -212,7 +212,11 @@ Philips runs the LEDs at about three-quarters of what the hardware allows. The o
 | Presentation | 76 | **90** | +18 % |
 
 Percentages of the LED driver's own maximum. These are the defaults; each mode can be set from
-20 to 97 under **Advanced → Brightness (LED drive)**, and Auto finds the fan speed for whatever you
+20 to 97 under **Advanced → Brightness (LED drive)**, and **Smart** (the Fan choice once called Auto 58) finds the slowest fan that holds the LED at its
+target for whatever you choose. Smart also learns the projector as it runs: how much more fan one
+mode needs than another, and what a point of fan is worth. That is kept in the app's own
+settings, with or without the CSV log, and is used to go straight to the right speed after a
+change of mode. Smart finds the fan speed for whatever you
 choose. The fan figures below were measured with Normal
 at 75 and Presentation at 90 — **turned-up Normal at 75 sat level with Philips' Presentation
 at 76:**

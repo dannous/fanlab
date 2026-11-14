@@ -52,7 +52,7 @@ public final class Prefs {
 
     /** Re-check fan_ctrl every second and rewrite it whenever something else has changed it. Default true. */
     public static final int AUTO_NONE = 0;
-    /** {@link AutoHold}: steer on temperature, no curve. Shown as "Auto 58" (or 55 at stock drive). */
+    /** {@link AutoHold}: steer on temperature, no curve. Shown as "Smart 58" (or 55 at stock drive); "Auto 58" before 1.7.3. */
     public static final int AUTO_HOLD = 1;
     /** {@link AutoStep}: its own curve with a 25 floor, plus an add-only trim. Shown as "Auto Step". */
     public static final int AUTO_STEP = 2;
@@ -65,6 +65,24 @@ public final class Prefs {
 
     public static void setAutoKind(Context c, int kind) {
         get(c).edit().putInt("auto_kind", kind).apply();
+    }
+
+    /**
+     * What Smart has learned about this projector ({@link AutoHold#exportLearned()}), stored with the
+     * brightness levels it was learned at. Kept here, not in the CSV log, so it survives with logging off.
+     * Null when nothing is stored or the levels have changed since.
+     */
+    public static String smartLearned(Context c, String driveKey) {
+        return get(c).getString("smart_" + driveKey, null);
+    }
+
+    /**
+     * One entry per set of brightness levels, so going back to levels used before brings their
+     * learning back. Written from the service loop only; it raises no {@code onPrefsChanged}, so it
+     * causes no resync.
+     */
+    public static void setSmartLearned(Context c, String driveKey, String learned) {
+        get(c).edit().putString("smart_" + driveKey, learned).apply();
     }
 
     public static boolean reassert(Context c) {
