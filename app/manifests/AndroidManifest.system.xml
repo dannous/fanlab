@@ -84,9 +84,9 @@
         </activity>
 
         <activity
-            android:name="com.daleygames.fanlab.AdvancedActivity"
+            android:name="com.daleygames.fanlab.WhiteActivity"
             android:exported="false"
-            android:label="Advanced" />
+            android:label="White screen" />
         <activity
             android:name="com.daleygames.fanlab.CurveActivity"
             android:exported="false"

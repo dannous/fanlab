@@ -6,21 +6,16 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.Process;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
-/** Everything the main screen leaves out: the other modes, measurement, logging and the system switches. */
-public class AdvancedActivity extends Activity implements StepRow.Listener {
+/** The rows the main screen keeps folded away: the other modes, measurement, logging and the system switches. */
+public final class AdvancedPanel implements StepRow.Listener {
 
-    private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Activity a;
 
     private TextView statusView;
     private StepRow modeRow;
@@ -34,45 +29,14 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
     private StepRow exportRow;
     private StepRow takeoverRow;
 
-    private final Runnable poll = new Runnable() {
-        @Override
-        public void run() {
-            refresh();
-            ui.postDelayed(this, 1000);
-        }
-    };
-
-    @Override
-    protected void onCreate(Bundle saved) {
-        super.onCreate(saved);
-        setContentView(buildUi());
+    public AdvancedPanel(Activity activity) {
+        a = activity;
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        sync();
-        ui.removeCallbacks(poll);
-        ui.post(poll);
-    }
-
-    @Override
-    protected void onPause() {
-        ui.removeCallbacks(poll);
-        super.onPause();
-    }
-
-    private View buildUi() {
-        Context c = this;
-        ScrollView scroll = new ScrollView(c);
-        scroll.setBackgroundColor(Ui.BG);
+    public View build() {
+        Context c = a;
         LinearLayout root = Ui.column(c);
-        int p = Ui.dp(c, 32);
-        root.setPadding(p, p, p, p);
-        scroll.addView(root, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        root.addView(Ui.text(c, "FanLab / Advanced", 18f, Ui.DIM), Ui.wrap());
         statusView = Ui.mono(c, "", 16f, Ui.DIM);
         root.addView(statusView, Ui.wrap());
 
@@ -95,9 +59,9 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
                 int duty = progress + FanIo.MIN_DUTY;
                 sliderLabel.setText("Manual fan  " + duty + "%");
                 if (fromUser) {
-                    Prefs.setManualDuty(AdvancedActivity.this, duty);
-                    Prefs.setMode(AdvancedActivity.this, Mode.MANUAL);
-                    FanService.poke(AdvancedActivity.this, FanService.ACTION_REFRESH);
+                    Prefs.setManualDuty(a, duty);
+                    Prefs.setMode(a, Mode.MANUAL);
+                    FanService.poke(a, FanService.ACTION_REFRESH);
                     sync();
                 }
             }
@@ -143,13 +107,13 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
                     .tag("takeover", 0));
             add(root, new StepRow(c, "ADB over network").button().tag("adb", 0)).display(">");
         }
-        return scroll;
+        return root;
     }
 
     private StepRow add(LinearLayout parent, StepRow row) {
         row.listen(this);
         LinearLayout.LayoutParams lp = Ui.wrap();
-        lp.topMargin = Ui.dp(this, 1);
+        lp.topMargin = Ui.dp(a, 1);
         parent.addView(row, lp);
         return row;
     }
@@ -159,22 +123,25 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
         row.valueColour(on ? Ui.GOOD : Ui.DIM);
     }
 
-    private void sync() {
-        int mode = Prefs.mode(this);
+    public void sync() {
+        if (modeRow == null) {
+            return;
+        }
+        int mode = Prefs.mode(a);
         modeRow.display(mode == Mode.OFF ? "Off" : mode == Mode.CURVE ? "Curve"
                 : mode == Mode.LINEAR ? "Linear" : "Manual");
         modeRow.valueColour(mode == Mode.OFF ? Ui.DIM : mode == Mode.MANUAL ? Ui.WARN : Ui.GOOD);
-        int duty = Prefs.manualDuty(this);
+        int duty = Prefs.manualDuty(a);
         slider.setProgress(duty - FanIo.MIN_DUTY);
         sliderLabel.setText("Manual fan  " + duty + "%");
-        LinearConfig lin = Prefs.linear(this);
-        LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(this));
+        LinearConfig lin = Prefs.linear(a);
+        LinearConfig.promoteForBoost(lin, Prefs.ledBoostOn(a));
         ceilingRow.set((int) Math.round(lin.ceilingC));
         ceilingRow.display(Sample.fmt1(lin.ceilingC));
         ceilingRow.valueColour(mode == Mode.LINEAR ? Ui.ACCENT : Ui.DIM);
-        onOff(reassertRow, Prefs.reassert(this));
-        onOff(loggingRow, Prefs.logging(this));
-        int r = Prefs.roomC(this);
+        onOff(reassertRow, Prefs.reassert(a));
+        onOff(loggingRow, Prefs.logging(a));
+        int r = Prefs.roomC(a);
         roomRow.set(r);
         roomRow.display(r == 0 ? "Not set" : Integer.toString(r));
         roomRow.valueColour(r == 0 ? Ui.DIM : Ui.ACCENT);
@@ -187,9 +154,12 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    private void refresh() {
+    public void refresh() {
+        if (statusView == null) {
+            return;
+        }
         StringBuilder sb = new StringBuilder(FanService.statusLine);
-        if (Prefs.mode(this) == Mode.LINEAR && FanService.linearSaturated) {
+        if (Prefs.mode(a) == Mode.LINEAR && FanService.linearSaturated) {
             sb.append(" · cannot reach the target in this room");
         }
         if (FanService.guardBoost > 0) {
@@ -207,21 +177,21 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
         try {
             String t = row.tagName;
             if ("mode".equals(t)) {
-                int mode = Prefs.mode(this);
-                Prefs.setMode(this, mode == Mode.CURVE ? Mode.LINEAR
+                int mode = Prefs.mode(a);
+                Prefs.setMode(a, mode == Mode.CURVE ? Mode.LINEAR
                         : mode == Mode.LINEAR ? Mode.MANUAL : Mode.CURVE);
-                FanService.poke(this, FanService.ACTION_REFRESH);
+                FanService.poke(a, FanService.ACTION_REFRESH);
             } else if ("ceiling".equals(t)) {
-                LinearConfig lin = Prefs.linear(this);
+                LinearConfig lin = Prefs.linear(a);
                 lin.ceilingC = row.get();
-                Prefs.setLinear(this, lin);
-                FanService.poke(this, FanService.ACTION_REFRESH);
+                Prefs.setLinear(a, lin);
+                FanService.poke(a, FanService.ACTION_REFRESH);
             } else if ("reassert".equals(t)) {
-                Prefs.setReassert(this, !Prefs.reassert(this));
+                Prefs.setReassert(a, !Prefs.reassert(a));
             } else if ("logging".equals(t)) {
-                Prefs.setLogging(this, !Prefs.logging(this));
+                Prefs.setLogging(a, !Prefs.logging(a));
             } else if ("room".equals(t)) {
-                Prefs.setRoomC(this, row.get());
+                Prefs.setRoomC(a, row.get());
             } else if ("storage".equals(t)) {
                 askStorage();
             } else if ("export".equals(t)) {
@@ -232,15 +202,15 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
                     s.exportBacklogAsync(true);
                 }
             } else if ("curve".equals(t)) {
-                startActivity(new Intent(this, CurveActivity.class));
+                a.startActivity(new Intent(a, CurveActivity.class));
             } else if ("sweep".equals(t)) {
-                startActivity(new Intent(this, AutoActivity.class));
+                a.startActivity(new Intent(a, AutoActivity.class));
             } else if ("verify".equals(t)) {
-                startActivity(new Intent(this, VerifyActivity.class));
+                a.startActivity(new Intent(a, VerifyActivity.class));
             } else if ("diag".equals(t)) {
-                startActivity(new Intent(this, DiagActivity.class));
+                a.startActivity(new Intent(a, DiagActivity.class));
             } else if ("adb".equals(t)) {
-                startActivity(new Intent(this, AdbActivity.class));
+                a.startActivity(new Intent(a, AdbActivity.class));
             } else if ("takeover".equals(t)) {
                 confirmTakeover();
             }
@@ -251,7 +221,7 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
     }
 
     private void confirmTakeover() {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(a)
                 .setTitle("Stop the stock fan controller?")
                 .setMessage("FanLab becomes the only thing controlling the fan. This survives "
                         + "a reboot and an uninstall. Use Restore stock fan to undo it.\n\n"
@@ -262,9 +232,9 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
                         boolean ok = SysProps.set(SysProps.PROP_FANCTRL_BY_TEMP, "0");
                         if (!ok) {
                             say("Failed: could not set the property.");
-                        } else if (Prefs.mode(AdvancedActivity.this) == Mode.OFF) {
-                            Prefs.setMode(AdvancedActivity.this, Mode.CURVE);
-                            FanService.poke(AdvancedActivity.this, FanService.ACTION_REFRESH);
+                        } else if (Prefs.mode(a) == Mode.OFF) {
+                            Prefs.setMode(a, Mode.CURVE);
+                            FanService.poke(a, FanService.ACTION_REFRESH);
                         }
                         sync();
                     }
@@ -274,12 +244,12 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
     }
 
     private void say(String msg) {
-        new AlertDialog.Builder(this).setMessage(msg).setPositiveButton("OK", null).show();
+        new AlertDialog.Builder(a).setMessage(msg).setPositiveButton("OK", null).show();
     }
 
     private boolean storageGranted() {
         try {
-            return checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE")
+            return a.checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE")
                     == android.content.pm.PackageManager.PERMISSION_GRANTED;
         } catch (Throwable t) {
             return false;
@@ -291,15 +261,9 @@ public class AdvancedActivity extends Activity implements StepRow.Listener {
             return;
         }
         try {
-            requestPermissions(new String[]{"android.permission.WRITE_EXTERNAL_STORAGE"}, 1);
+            a.requestPermissions(new String[]{"android.permission.WRITE_EXTERNAL_STORAGE"}, 1);
         } catch (Throwable t) {
             say("Could not ask: " + t);
         }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        super.onRequestPermissionsResult(code, perms, results);
-        sync();
     }
 }

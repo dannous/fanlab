@@ -3,7 +3,6 @@ package com.daleygames.fanlab;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
-import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -26,6 +25,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow fanRow;
     private StepRow brightRow;
     private StepRow bootRow;
+    private StepRow advancedRow;
+    private AdvancedPanel advanced;
+    private View advancedView;
 
     private final Runnable poll = new Runnable() {
         @Override
@@ -68,11 +70,17 @@ public class MainActivity extends Activity implements StepRow.Listener {
         LinearLayout root = Ui.column(c);
         int p = Ui.dp(c, 32);
         root.setPadding(p, p, p, p);
-        scroll.addView(root, new ViewGroup.LayoutParams(
+        // A fixed-width column in the middle of the screen, so a value sits beside its label
+        // instead of at the far edge of a wide picture.
+        android.widget.FrameLayout frame = new android.widget.FrameLayout(c);
+        int wide = Math.min(getResources().getDisplayMetrics().widthPixels, Ui.dp(c, 640));
+        frame.addView(root, new android.widget.FrameLayout.LayoutParams(wide,
+                ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER_HORIZONTAL));
+        scroll.addView(frame, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         root.addView(Ui.text(c, "FanLab", 18f, Ui.DIM), Ui.wrap());
-        readout = Ui.mono(c, "", 26f, Ui.FG);
+        readout = Ui.mono(c, "", 19f, Ui.FG);
         root.addView(readout, Ui.wrap());
         statusView = Ui.mono(c, "", 16f, Ui.DIM);
         LinearLayout.LayoutParams sl = Ui.wrap();
@@ -82,9 +90,16 @@ public class MainActivity extends Activity implements StepRow.Listener {
         fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0));
         brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0));
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0));
-        addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0)).display(">");
+        addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0))
+                .display(">");
         addRow(root, new StepRow(c, "Restore stock fan (do this before uninstalling)").button()
                 .tag("restore", 0)).display(">");
+        advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0));
+        advancedRow.display("+");
+        advanced = new AdvancedPanel(this);
+        advancedView = advanced.build();
+        advancedView.setVisibility(View.GONE);
+        root.addView(advancedView, Ui.wrap());
         return scroll;
     }
 
@@ -124,9 +139,13 @@ public class MainActivity extends Activity implements StepRow.Listener {
         boolean boot = Prefs.autostart(this);
         bootRow.display(boot ? "On" : "Off");
         bootRow.valueColour(boot ? Ui.GOOD : Ui.DIM);
+        advanced.sync();
     }
 
     private void refresh() {
+        if (advancedView.getVisibility() == View.VISIBLE) {
+            advanced.refresh();
+        }
         Sample s = FanService.lastSample;
         if (s == null) {
             statusView.setText("Starting…");
@@ -190,7 +209,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     public void onStepRow(StepRow row) {
         try {
             if ("fan".equals(row.tagName)) {
-                cycleFan();
+                chooseFan();
             } else if ("bright".equals(row.tagName)) {
                 if (Prefs.ledBoostOn(this)) {
                     Prefs.resetLedDrive(this);
@@ -201,8 +220,12 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 FanService.poke(this, FanService.ACTION_REFRESH);
             } else if ("boot".equals(row.tagName)) {
                 Prefs.setAutostart(this, !Prefs.autostart(this));
+            } else if ("white".equals(row.tagName)) {
+                startActivity(new android.content.Intent(this, WhiteActivity.class));
             } else if ("advanced".equals(row.tagName)) {
-                startActivity(new Intent(this, AdvancedActivity.class));
+                boolean open = advancedView.getVisibility() != View.VISIBLE;
+                advancedView.setVisibility(open ? View.VISIBLE : View.GONE);
+                advancedRow.display(open ? "-" : "+");
             } else if ("restore".equals(row.tagName)) {
                 restoreStock();
             }
@@ -212,27 +235,54 @@ public class MainActivity extends Activity implements StepRow.Listener {
         }
     }
 
-    /** Stock, Auto 58, Auto Step, then the four presets of the family the LED drive allows, and round again. */
-    private void cycleFan() {
-        int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
-        int mode = Prefs.mode(this);
-        int kind = Prefs.autoKind(this);
-        if (mode != Mode.CURVE) {
-            Prefs.setAutoKind(this, Prefs.AUTO_HOLD);
-            Prefs.setMode(this, Mode.CURVE);
-        } else if (kind == Prefs.AUTO_HOLD) {
-            Prefs.setAutoKind(this, Prefs.AUTO_STEP);
-        } else if (kind == Prefs.AUTO_STEP) {
-            Prefs.setAutoKind(this, Prefs.AUTO_NONE);
-            Prefs.setPreset(this, family[0]);
-        } else {
-            int rung = CurveConfig.rungOf(Prefs.preset(this));
-            if (rung < 0 || rung >= family.length - 1) {
-                release();
-                return;
-            }
-            Prefs.setPreset(this, family[rung + 1]);
+    /** The list behind the Fan row: up and down to move, OK to pick, BACK to leave it as it was. */
+    private void chooseFan() {
+        final int[] family = CurveConfig.presetsFor(Prefs.ledBoostOn(this));
+        final String[] names = new String[3 + family.length];
+        names[0] = "Stock";
+        names[1] = "Auto " + (int) AutoHold.targetFor(Prefs.ledBoostOn(this));
+        names[2] = "Auto Step";
+        for (int i = 0; i < family.length; i++) {
+            names[3 + i] = CurveConfig.presetName(family[i]);
         }
+        int at = -1;
+        String now = fanChoice();
+        for (int i = 0; i < names.length; i++) {
+            if (names[i].equals(now)) {
+                at = i;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Fan")
+                .setSingleChoiceItems(names, at, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        try {
+                            applyFan(which, family);
+                        } catch (Throwable t) {
+                            say("Failed: " + t);
+                        }
+                        dialog.dismiss();
+                        sync();
+                    }
+                })
+                .show();
+    }
+
+    private void applyFan(int which, int[] family) {
+        if (which == 0) {
+            release();
+            return;
+        }
+        if (which == 1) {
+            Prefs.setAutoKind(this, Prefs.AUTO_HOLD);
+        } else if (which == 2) {
+            Prefs.setAutoKind(this, Prefs.AUTO_STEP);
+        } else {
+            Prefs.setAutoKind(this, Prefs.AUTO_NONE);
+            Prefs.setPreset(this, family[which - 3]);
+        }
+        Prefs.setMode(this, Mode.CURVE);
         FanService.poke(this, FanService.ACTION_REFRESH);
     }
 
@@ -261,6 +311,12 @@ public class MainActivity extends Activity implements StepRow.Listener {
         FanService.poke(this, FanService.ACTION_RELEASE);
         boolean ok = SysProps.set(SysProps.PROP_FANCTRL_BY_TEMP, "1");
         say(ok ? "Stock fan restored. Safe to uninstall." : "Failed: could not set the property.");
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        sync();
     }
 
     private void say(String msg) {
