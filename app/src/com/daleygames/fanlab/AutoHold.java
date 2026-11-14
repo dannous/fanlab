@@ -9,7 +9,7 @@ public final class AutoHold {
     /** Stock drive target, degrees C: where the stock ladder itself commands maximum fan. */
     public static final double TARGET_C = 55.0;
 
-    /** Target with the LED drive raised, degrees C. The owner's choice; 3 C under {@link LedDrive#DEFAULT_TRIP_C}. */
+    /** Target with the LED drive raised, degrees C. The owner's choice; 4 C under {@link LedDrive#DEFAULT_TRIP_C}. */
     public static final double BOOST_TARGET_C = 58.0;
 
     /** Width of the band under the target in which the fan is left alone, degrees C. Wider than one duty point is worth anywhere on the measured plant. */

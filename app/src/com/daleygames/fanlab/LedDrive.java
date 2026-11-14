@@ -42,10 +42,10 @@ public final class LedDrive {
     /**
      * LED thermistor temperature above which the override is dropped and latched off, C.
      *
-     * 60.0 is five degrees above the 55 C at which the stock controller already commands
+     * 62.0 is four degrees above the 58 C that Auto holds with the drive raised, seven above the 55 C at which the stock controller commands
      * maximum fan, and well below the 75 C shutdown.
      */
-    public static final double DEFAULT_TRIP_C = 61.0;
+    public static final double DEFAULT_TRIP_C = 62.0;
 
     /** Minimum gap between {@code rgblevel} rewrites, ms. Matches {@code assertRgbLevel}. */
     public static final long RESTORE_EVERY_MS = 5000L;

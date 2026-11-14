@@ -120,7 +120,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
         root.addView(statusView, sl);
 
         fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0).hint("How the fan is controlled.\n\nAuto 58 holds the LED just under its target. Auto Step follows a fixed curve. Curve uses the preset chosen under Advanced. Stock hands the fan back to Philips."));
-        brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0).hint("Runs the LEDs harder for a brighter picture.\n\nMore heat, so more fan. Turns itself off above 61 °C."));
+        brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0).hint("Runs the LEDs harder for a brighter picture.\n\nMore heat, so more fan. Turns itself off above 62 °C."));
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
         addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
                 .display(">");
