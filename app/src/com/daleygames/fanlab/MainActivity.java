@@ -128,7 +128,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 + "Smart quiet: keeps the fan under your limit and dims the picture slightly when it must. It learns your projector as it runs. This is the one to use."));
         brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0)
                 .hint("Runs the LEDs harder for a brighter picture, at the level you set for each mode under Advanced.\n\n"
-                        + "More heat, so more fan. Off is Philips' own brightness. Above "
+                        + "More heat, so more fan. For an even quieter fan, set the levels to " + LedDrive.Config.QUIETER
+                        + " there. Off is Philips' own brightness. Above "
                         + (int) LedDrive.DEFAULT_TRIP_C + " °C it switches itself off."));
         limitRow = addRow(root, new StepRow(c, "Fan limit %").range(30, AutoHold.MAX_DUTY + 1).steps(1, 5).tag("limit", 0)
                 .hint("Smart quiet keeps the fan at or under this. At the limit the picture dims slightly instead, never below Philips' own brightness.\n\n"

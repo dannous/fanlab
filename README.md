@@ -72,10 +72,10 @@ Its targets go up with the brightness mode, so the dimmer modes run cooler:
 
 | Brightness mode | Target | Default brightness (Philips' own) |
 |---|---:|---:|
-| Super Eco | 50 °C | 30 (20) |
-| Night | 55 °C | 50 (40) |
-| Normal | 58 °C | 65 (55) |
-| Presentation | 60 °C | 86 (76) |
+| Super Eco | 50 °C | 45 (20) |
+| Night | 55 °C | 65 (40) |
+| Normal | 58 °C | 85 (55) |
+| Presentation | 60 °C | 95 (76) |
 
 **The fan limit has one exception, for safety.** If the LED is 3 °C over its target, or it is
 over and there is nothing left to dim, the fan goes above the limit until it cools. The
@@ -265,13 +265,13 @@ turns all four modes up:
 
 | Brightness mode | Philips | FanLab | More LED drive |
 |---|---:|---:|---:|
-| Super Eco | 20 | **30** | +50 % |
-| Night | 40 | **50** | +25 % |
-| Normal | 55 | **65** | +18 % |
-| Presentation | 76 | **86** | +13 % |
+| Super Eco | 20 | **45** | +125 % |
+| Night | 40 | **65** | +63 % |
+| Normal | 55 | **85** | +55 % |
+| Presentation | 76 | **95** | +25 % |
 
-Percentages of the LED driver's own maximum. The defaults are ten points over Philips' level in
-every mode; each mode can be set from
+Percentages of the LED driver's own maximum. **For an even quieter fan, set them to
+30 / 50 / 65 / 85**, about ten over Philips' level in each mode. Each mode can be set from
 20 to 97 under **Advanced → Brightness (LED drive)**. The brighter picture only applies while
 FanLab is driving the fan, so brightness can never outrun cooling.
 

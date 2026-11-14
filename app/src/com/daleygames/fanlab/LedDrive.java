@@ -71,17 +71,21 @@ public final class LedDrive {
         }
 
         /**
-         * The defaults the Brightness boost starts from: ten points over Philips' own level in every
-         * mode (20/40/55/76 becomes 30/50/65/86). A modest step that anyone can turn on; each level
-         * can be raised or lowered under Advanced.
+         * The defaults the Brightness boost starts from, Super Eco to Presentation: 45/65/85/95
+         * against Philips' 20/40/55/76. The owner's choice: every mode bright enough to watch. Each
+         * level can be changed under Advanced, and the app suggests {@link #QUIETER} for less fan.
          */
         public static Config bright() {
             Config c = new Config();
-            for (int i = 0; i < TIERS; i++) {
-                c.level[i] = STOCK_OTHER[TIER_RGBLEVEL[i]] + 10;
-            }
+            c.level[0] = 45;
+            c.level[1] = 65;
+            c.level[2] = 85;
+            c.level[3] = 95;
             return c;
         }
+
+        /** What the app tells the owner to set for a quieter fan: about ten over Philips in each mode. */
+        public static final String QUIETER = "30 / 50 / 65 / 85";
         public boolean isStock() {
             for (int i = 0; i < TIERS; i++) {
                 if (level[i] != STOCK_OTHER[TIER_RGBLEVEL[i]]) {

@@ -55,6 +55,8 @@ public final class AdvancedPanel implements StepRow.Listener {
                         + ".\n\nBelow 30 is untested: if the fan stalls, the projector's own watchdog steps in. "
                         + "The curves never go below 25, and the fan limit wins if it is set lower than this."));
         root.addView(Ui.heading(c, "Brightness (LED drive)"), Ui.wrap());
+        root.addView(Ui.text(c, "Used when Brightness boost is on. For an even quieter fan, try " + LedDrive.Config.QUIETER
+                + " (Super Eco to Presentation).", 14f, Ui.DIM), Ui.wrap());
         for (int i = 0; i < LedDrive.TIERS; i++) {
             int stock = LedDrive.STOCK_OTHER[LedDrive.TIER_RGBLEVEL[i]];
             driveRows[i] = add(root, new StepRow(c, LedDrive.TIER_NAMES[i] + " %")
@@ -65,7 +67,8 @@ public final class AdvancedPanel implements StepRow.Listener {
         }
         add(root, new StepRow(c, "Reset brightness and targets to the defaults").button().tag("drivereset", 0)
                 .hint("Puts the four modes back to " + LedDrive.Config.bright().encode().substring(3).replace(",", " / ")
-                        + " (Super Eco to Presentation)."));
+                        + " (Super Eco to Presentation), and the targets back to theirs.\n\nFor an even quieter fan, set them to "
+                        + LedDrive.Config.QUIETER + " instead."));
 
         root.addView(Ui.heading(c, "Tests"), Ui.wrap());
         add(root, new StepRow(c, "White screen (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits.")).display(">");
