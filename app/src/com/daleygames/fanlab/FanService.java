@@ -1850,7 +1850,7 @@ public class FanService extends Service {
                 synchronized (exportedVolumes) {
                     exportedVolumes.add(root.getAbsolutePath());
                 }
-                File destDir = new File(root, EXPORT_DIR);
+                File destDir = exportDirOn(root);
                 if (!force && markedThisBoot(destDir)) {
                     continue;
                 }
@@ -1878,13 +1878,30 @@ public class FanService extends Service {
                         + (where.size() > 1 ? " (+" + (where.size() - 1) + " more)" : "")
                         + (failures > 0 ? "   " + failures + " FAILED" : "");
             }
-            note("export->" + files + "f/" + rows + "r");
+            note("export->" + files + "f/" + rows + "r" + (failures > 0 ? "/" + failures + "FAILED" : ""));
         } catch (Throwable t) {
             Log.w(TAG, "runExport", t);
             exportStatus = "export failed: " + t;
         } finally {
             exporting = false;
         }
+    }
+
+    /**
+     * Where the backlog goes on a volume: the top level if the platform lets us create a folder
+     * there, otherwise beside the live log in this app's own folder, which is always writable.
+     * Android 9 refuses the top level of a removable volume to an app without media-storage
+     * rights, and that refusal used to end the export with nothing copied.
+     */
+    private File exportDirOn(File root) {
+        File top = new File(root, EXPORT_DIR);
+        try {
+            if (top.isDirectory() || top.mkdirs()) {
+                return top;
+            }
+        } catch (Throwable ignored) {
+        }
+        return new File(root, "Android/data/" + getPackageName() + "/files/" + EXPORT_DIR);
     }
 
     /** The sink to read the backlog from - one of them, not both, since the two internal sinks are identical copies. {@code /sdcard/FanLab} first, because it is the copy a person can find; a sink on a removable volume is never a source. */
