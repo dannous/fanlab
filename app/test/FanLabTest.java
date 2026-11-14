@@ -1,4 +1,5 @@
 import com.daleygames.fanlab.AutoHold;
+import com.daleygames.fanlab.FanLimit;
 import com.daleygames.fanlab.AutoStep;
 import com.daleygames.fanlab.CsvLogger;
 import com.daleygames.fanlab.CurveConfig;
@@ -107,6 +108,7 @@ public final class FanLabTest {
         testAutoTrim();
         testAutoSwitchLocks();
         testAutoFindsLowest();
+        testFanLimit();
         testAutoGuide();
         testAutoStep();
         testOffDuration();
@@ -3947,9 +3949,9 @@ public final class FanLabTest {
             hbd = hn.step(57.5, AutoHold.BOOST_TARGET_C, AutoHold.minFor(3), hbm);
         }
         eq(hbd, 83, "but handed 83 inside the band, it stays: there is nothing in hand to spend");
-        eq(AutoHold.minFor(4), 25, "Super Eco floor is 25");
-        eq(AutoHold.minFor(1), 25, "Eco floor is 25");
-        eq(AutoHold.minFor(2), 27, "Normal floor is 27");
+        eq(AutoHold.minFor(4), 30, "Super Eco floor is 30");
+        eq(AutoHold.minFor(1), 30, "Eco floor is 30");
+        eq(AutoHold.minFor(2), 30, "Normal floor is 30");
         eq(AutoHold.minFor(3), 30, "Presentation floor is 30");
         eq(AutoHold.minFor(-1), 30, "an unreadable brightness mode gets the highest floor");
         AutoHold fl = new AutoHold();
@@ -4210,6 +4212,99 @@ public final class FanLabTest {
         }
     }
 
+    private static void testFanLimit() {
+        section("fan limit: fan first up to the limit, then the picture dims; safety lifts it");
+        final double T = AutoHold.BOOST_TARGET_C;
+        FanLimit off = new FanLimit();
+        check(off.step(0, 60, 59.0, T, 3, 19, 1000L) == null && off.trim() == 0, "no limit: nothing dims");
+        eq(off.ceilingFor(0), AutoHold.MAX_DUTY, "no limit: the fan may go to 83");
+
+        FanLimit f = new FanLimit();
+        long ms = 0L;
+        for (; ms < 80000L; ms += 1000L) {
+            f.step(45, 45, 60.0, T, 3, 19, ms);
+        }
+        eq(f.trim(), 0, "at the limit and 2 C over, but inside 90 s of the mode appearing: no dimming (the switch spike)");
+        for (; ms < 90000L + 31000L; ms += 1000L) {
+            f.step(45, 45, 60.0, T, 3, 19, ms);
+        }
+        check(f.trim() >= 9 && f.trim() <= 11, "after that, 2 C over dims about a point every 3 s (" + f.trim() + " in 30 s)");
+        eq(f.ceilingFor(45), 45, "and the fan stays at the limit");
+        eq(f.floorFor(30, 45), 45, "and does not come down while the picture is dimmed");
+
+        FanLimit g = new FanLimit();
+        ms = 0L;
+        for (; ms < 100000L; ms += 1000L) {
+            g.step(45, 44, 58.3, T, 3, 19, ms);
+        }
+        eq(g.trim(), 0, "under the limit the fan does the work: no dimming at 44 of 45");
+        for (long end = ms + 5L * 60000L; ms < end; ms += 1000L) {
+            g.step(45, 45, 58.3, T, 3, 19, ms);
+        }
+        check(g.trim() >= 4 && g.trim() <= 6, "at the limit and 0.3 C over: about a point a minute (" + g.trim() + " in 5 min)");
+        // Let the smoothed reading follow the fall first; it lags a few seconds.
+        for (long end = ms + 60000L; ms < end; ms += 1000L) {
+            g.step(45, 45, 57.8, T, 3, 19, ms);
+        }
+        int had = g.trim();
+        for (long end = ms + 3L * 60000L; ms < end; ms += 1000L) {
+            g.step(45, 45, 57.8, T, 3, 19, ms);
+        }
+        eq(g.trim(), had, "just under the target it holds: neither dimmer nor brighter");
+        for (long end = ms + 3L * 60000L + 30000L; ms < end; ms += 1000L) {
+            g.step(45, 45, 57.0, T, 3, 19, ms);
+        }
+        check(g.trim() >= had - 4 && g.trim() <= had - 2, "1 C under, brightness comes back a point a minute (" + had
+                + " to " + g.trim() + ")");
+        String back = g.step(45, 45, 57.0, T, 2, 19, ms);
+        eq(g.trim(), 0, "a new brightness mode starts at its full brightness");
+        check(back != null, "and the log says so");
+
+        FanLimit hot = new FanLimit();
+        ms = 0L;
+        for (; ms < 5000L; ms += 1000L) {
+            hot.step(45, 45, 61.2, T, 3, 19, ms);
+        }
+        check(hot.lifted(), "3 C over lifts the limit, even inside the grace");
+        eq(hot.ceilingFor(45), AutoHold.MAX_DUTY, "so the fan may go above it");
+        for (; ms < 60000L; ms += 1000L) {
+            hot.step(45, 60, 58.5, T, 3, 19, ms);
+        }
+        check(!hot.lifted(), "and it comes back once the LED is within a degree of the target");
+
+        FanLimit spent = new FanLimit();
+        ms = 0L;
+        for (; ms < 10L * 60000L; ms += 1000L) {
+            spent.step(45, 45, 59.3, T, 3, 2, ms);
+        }
+        eq(spent.trim(), 2, "it dims no further than the stock level");
+        check(spent.lifted(), "and with nothing left to dim and still 1 C over, the limit is lifted");
+
+        AutoHold a = new AutoHold();
+        a.resync(40);
+        a.setCeiling(45, false);
+        ms = 0L;
+        int d = 40, prev = 40, maxTick = 0;
+        for (; ms < 5L * 60000L; ms += 1000L) {
+            a.setCeiling(45, false);
+            d = a.step(60.0, T, AutoHold.minFor(3), 3, ms);
+        }
+        eq(d, 45, "SMART: with a 45 limit and the LED 2 C over, the fan stops at 45");
+        for (long end = ms + 60000L; ms < end; ms += 1000L) {
+            a.setCeiling(AutoHold.MAX_DUTY, false);
+            d = a.step(61.5, T, AutoHold.minFor(3), 3, ms);
+        }
+        check(d > 45, "SMART: lifted, it goes on up (" + d + ")");
+        prev = d;
+        for (long end = ms + 60000L; ms < end; ms += 1000L) {
+            a.setCeiling(45, false);
+            d = a.step(57.9, T, AutoHold.minFor(3), 3, ms);
+            maxTick = Math.max(maxTick, Math.abs(d - prev));
+            prev = d;
+        }
+        eq(d, 45, "SMART: the limit back, it returns to 45");
+        check(maxTick <= 1, "SMART: a point at a time, never a jump");
+    }
     private static void testAutoGuide() {
         section("auto: a learned speed guides a switch, and only a fresh one");
         for (int ambient = 22; ambient <= 30; ambient += 4) {

@@ -257,6 +257,9 @@ public final class LedDrive {
 
     public double tripC = DEFAULT_TRIP_C;
 
+    /** Points taken off the configured level by the fan limit ({@link FanLimit}); 0 for none. */
+    public volatile int trim;
+
     private boolean overriding;
     private int appliedRgblevel = -1;
     private int appliedOther = -1;
@@ -327,6 +330,12 @@ public final class LedDrive {
         }
 
         int other = cfg.levelFor(rgblevel);
+        int cut = trim;
+        if (cut > 0) {
+            // The fan limit dims the picture, never below the stock level for the mode. The trip above still
+            // compares the configured table, so dimming cannot release it.
+            other = Math.max(Math.min(other, STOCK_OTHER[rgblevel]), other - cut);
+        }
         int red = redFor(rgblevel, other);
         if (nowMs < retryAfterMs) {
             return p;

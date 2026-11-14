@@ -85,6 +85,16 @@ public final class Prefs {
         get(c).edit().putString("smart_" + driveKey, learned).apply();
     }
 
+    /** The loudest the fan may go under Smart, percent; 0 for no limit. See {@link FanLimit}. */
+    public static int fanLimit(Context c) {
+        int v = get(c).getInt("fan_limit", 0);
+        return v >= 30 && v <= AutoHold.MAX_DUTY ? v : 0;
+    }
+
+    public static void setFanLimit(Context c, int percent) {
+        get(c).edit().putInt("fan_limit", percent).apply();
+    }
+
     public static boolean reassert(Context c) {
         return get(c).getBoolean(K_REASSERT, true);
     }

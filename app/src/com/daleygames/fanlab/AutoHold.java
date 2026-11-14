@@ -23,17 +23,10 @@ public final class AutoHold {
 
     /** The floor for a brightness mode, by {@code rgblevel}: more heat keeps more fan in reserve. Unknown levels get the highest. */
     public static int minFor(int rgblevel) {
-        switch (rgblevel) {
-            case 4:     // Super Eco
-            case 1:     // Eco
-                return 25;
-            case 2:     // Normal
-                return 27;
-            default:    // Presentation, or unreadable
-                return 30;
-        }
+        // 30 in every mode, the owner's choice (14 Nov 2026): it is the lowest duty the written
+        // record proves against the stall watchdog, and they hear nothing below 35 anyway.
+        return 30;
     }
-
     /** Below this duty the plant is unmeasured and steeper, so the hold band is widened by {@link #LOW_BAND_EXTRA_C}. */
     public static final int MEASURED_FLOOR = 30;
 
@@ -693,7 +686,7 @@ public final class AutoHold {
                             + " (" + Sample.fmt1(per) + " C a point)";
                 }
             }
-        } else if (!guided && !catchingUp && wait == 0L && (int) duty - 1 >= floor
+        } else if (!guided && !catchingUp && !holdLearning && wait == 0L && (int) duty - 1 >= floor
                 && (int) duty - 1 > noProbeAtOrBelow) {
             boolean calm = nowMs - changedMs >= PROBE_CALM_MS
                     && (lastUpMs == 0L || nowMs - lastUpMs >= PROBE_AFTER_UP_MS)
@@ -747,6 +740,15 @@ public final class AutoHold {
             lowSinceMs = 0L;
         }
 
+        if ((int) duty > ceiling) {
+            // Over the fan limit (it was just set, or just came back): down to it, a point every two seconds.
+            dir = -1;
+            wait = 2000L;
+            probeStep = false;
+        } else if ((int) duty == ceiling && dir > 0) {
+            wait = 0L;
+            upToDuty = 0;
+        }
         if (wait > 0L && nowMs - steppedMs >= wait) {
             double before = duty;
             duty = clamp(duty + dir);
@@ -784,7 +786,7 @@ public final class AutoHold {
         }
         // Learn: unchanged ten minutes, unguided, and in the band or resting on the floor.
         // err already carries the wider band under the measured floor.
-        if (!guided && validLevel(level) && nowMs - changedMs >= SETTLED_AFTER_MS
+        if (!guided && !holdLearning && validLevel(level) && nowMs - changedMs >= SETTLED_AFTER_MS
                 && (err > -BAND_C || (int) duty <= floor) && err < 0.5
                 && (settledFor(driveOn, level) != (int) duty
                         || nowMs - settledAtMs[driveOn ? 1 : 0][level] > SETTLED_AFTER_MS)) {
@@ -797,6 +799,25 @@ public final class AutoHold {
             }
         }
         return (int) duty;
+    }
+
+    /** The most the fan may go (the owner's fan limit, or MAX_DUTY), and whether the picture is being dimmed to stay there. */
+    private int ceiling = MAX_DUTY;
+    private boolean holdLearning;
+
+    /**
+     * Set the fan limit for the coming ticks. Above it the fan comes down a point every two
+     * seconds rather than at once. While {@code dimmed}, nothing is learned and no probe starts:
+     * a speed held by dimming the picture is not what the mode needs.
+     */
+    public void setCeiling(int max, boolean dimmed) {
+        ceiling = max < MIN_DUTY ? MIN_DUTY : max > MAX_DUTY ? MAX_DUTY : max;
+        holdLearning = dimmed || ceiling < MAX_DUTY && !Double.isNaN(duty) && (int) duty >= ceiling;
+    }
+
+    /** The duty this controller is asking for, or -1 before its first step. */
+    public int duty() {
+        return Double.isNaN(duty) ? -1 : (int) duty;
     }
 
     private double clamp(double d) {

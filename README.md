@@ -216,7 +216,12 @@ Percentages of the LED driver's own maximum. These are the defaults; each mode c
 target for whatever you choose. Smart also learns the projector as it runs: how much more fan one
 mode needs than another, and what a point of fan is worth. That is kept in the app's own
 settings, with or without the CSV log, and is used to go straight to the right speed after a
-change of mode. Smart finds the fan speed for whatever you
+change of mode.
+
+**Fan limit** (main screen) is the loudest you will let the fan go under Smart. Up to it the fan
+does the work; at it the picture dims a point at a time instead, never below Philips' own level,
+and comes back when there is room. If the LED is 3 °C over its target, or over it with nothing
+left to dim, the limit is lifted until it cools. Smart finds the fan speed for whatever you
 choose. The fan figures below were measured with Normal
 at 75 and Presentation at 90 — **turned-up Normal at 75 sat level with Philips' Presentation
 at 76:**

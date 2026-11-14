@@ -139,6 +139,9 @@ public class FanService extends Service {
     private CsvLogger csv;
     private final FanCurve curve = new FanCurve();
     private final AutoHold autoHold = new AutoHold();
+    private final FanLimit fanLimit = new FanLimit();
+    /** For the main screen: what the fan limit is doing, or empty. */
+    public static volatile String limitLine = "";
     /** The boost switch and levels last seen, to tell when learned fan speeds have gone stale. */
     private String lastDriveKey;
     private final AutoStep autoStep = new AutoStep();
@@ -920,7 +923,22 @@ public class FanService extends Service {
                 if (autoKind == Prefs.AUTO_HOLD) {
                     // AUTO 58 replaces the curve's answer but keeps its SoC guard, which only ever adds.
                     if (engineOn) {
-                        int held = autoHold.step(s.degC, target, AutoHold.minFor(s.rgblevel), s.rgblevel, mono);
+                        // The owner's fan limit: fan first up to it, then the picture dims instead.
+                        int limit = Prefs.fanLimit(this);
+                        int stockLevel = LedDrive.tierOf(s.rgblevel) < 0 ? 0 : LedDrive.STOCK_OTHER[s.rgblevel];
+                        int maxTrim = boost && stockLevel > 0 ? Math.max(0, ledCfg.levelFor(s.rgblevel) - stockLevel) : 0;
+                        String ln = fanLimit.step(limit, autoHold.duty(), s.degC, target, s.rgblevel, maxTrim, mono);
+                        if (ln != null) {
+                            append(note, ln);
+                        }
+                        autoHold.setCeiling(fanLimit.ceilingFor(limit), fanLimit.trim() > 0);
+                        int held = autoHold.step(s.degC, target,
+                                fanLimit.floorFor(AutoHold.minFor(s.rgblevel), limit), s.rgblevel, mono);
+                        int full = ledCfg.levelFor(s.rgblevel);
+                        limitLine = limit <= 0 ? "" : fanLimit.lifted() ? "limit " + limit + "% lifted, LED too warm"
+                                : fanLimit.trim() > 0 ? "fan at limit " + limit + "%, brightness "
+                                        + Math.max(stockLevel, full - fanLimit.trim()) + " of " + full
+                                : "";
                         String ev = autoHold.takeEvent();
                         if (ev != null) {
                             append(note, "auto " + ev);
@@ -1097,6 +1115,13 @@ public class FanService extends Service {
         }
         boolean ledAllowed = ledInCharge && ledDriveArmed && interactive && s.ledStatus != 0;
         try {
+            // Dimming for the fan limit applies only while Smart is the controller.
+            boolean smartNow = mode == Mode.CURVE && Prefs.autoKind(this) == Prefs.AUTO_HOLD;
+            if (!smartNow) {
+                fanLimit.reset();
+                limitLine = "";
+            }
+            ledDrive.trim = smartNow ? fanLimit.trim() : 0;
             String rgbCurrent = ledFeatureOn ? Sysfs.read(Sysfs.RGBCURRENT) : null;
             LedDrive.Plan plan = ledDrive.decide(ledFeatureOn ? ledCfg : null, s.rgblevel,
                     ledAllowed, Thermistor.plausible(s.degC) ? s.degC : Double.NaN,

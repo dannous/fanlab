@@ -27,6 +27,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private StepRow fanRow;
     private StepRow brightRow;
     private StepRow bootRow;
+    private StepRow limitRow;
     private StepRow advancedRow;
     private AdvancedPanel advanced;
     private View advancedView;
@@ -121,6 +122,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
 
         fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0).hint("How the fan is controlled.\n\nSmart finds the slowest fan that holds the LED at its target, and learns your projector as it goes. Auto Step follows a fixed curve. Curve uses the preset chosen under Advanced. Stock hands the fan back to Philips."));
         brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0).hint("Runs the LEDs harder for a brighter picture.\n\nMore heat, so more fan. Turns itself off above 62 °C."));
+        limitRow = addRow(root, new StepRow(c, "Fan limit %").range(30, AutoHold.MAX_DUTY + 1).steps(1, 5).tag("limit", 0)
+                .hint("The fan never goes above this in Smart. If the LED gets too warm at the limit, the picture dims slightly instead.\n\nOff (all the way right): the fan runs as fast as it needs to."));
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
         addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
                 .display(">");
@@ -172,6 +175,10 @@ public class MainActivity extends Activity implements StepRow.Listener {
         boolean bright = Prefs.ledBoostOn(this);
         brightRow.display(bright ? "On" : "Off");
         brightRow.valueColour(bright ? Ui.WARN : Ui.DIM);
+        int lim = Prefs.fanLimit(this);
+        limitRow.set(lim == 0 ? AutoHold.MAX_DUTY + 1 : lim);
+        limitRow.display(lim == 0 ? "Off" : lim + "%");
+        limitRow.valueColour(lim == 0 ? Ui.DIM : Ui.ACCENT);
         boolean boot = Prefs.autostart(this);
         bootRow.display(boot ? "On" : "Off");
         bootRow.valueColour(boot ? Ui.GOOD : Ui.DIM);
@@ -214,7 +221,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
         } else if (Prefs.mode(this) == Mode.OFF) {
             line = "stock fan control";
         } else if (Prefs.mode(this) == Mode.CURVE && Prefs.autoKind(this) == Prefs.AUTO_HOLD) {
-            line = "auto, target " + (int) FanService.autoTargetNow + " C";
+            String lim = FanService.limitLine;
+            line = "smart, target " + (int) FanService.autoTargetNow + " C" + (lim.length() > 0 ? " · " + lim : "");
+            colour = lim.length() > 0 ? Ui.WARN : colour;
         } else if (Prefs.mode(this) == Mode.CURVE && Prefs.autoKind(this) == Prefs.AUTO_STEP) {
             line = "auto step" + (FanService.autoTrimNow > 0
                     ? ", +" + FanService.autoTrimNow + " to stay under "
@@ -257,6 +266,10 @@ public class MainActivity extends Activity implements StepRow.Listener {
                     }
                     Prefs.setLedDriveOn(this, true);
                 }
+                FanService.poke(this, FanService.ACTION_REFRESH);
+            } else if ("limit".equals(row.tagName)) {
+                int v = row.get();
+                Prefs.setFanLimit(this, v > AutoHold.MAX_DUTY ? 0 : v);
                 FanService.poke(this, FanService.ACTION_REFRESH);
             } else if ("boot".equals(row.tagName)) {
                 Prefs.setAutostart(this, !Prefs.autostart(this));
