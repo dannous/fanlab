@@ -14,6 +14,16 @@ public class StepRow extends LinearLayout {
         void onStepRow(StepRow row);
     }
 
+    /** Told which row has focus, so a screen can explain it beside the list. Null text means nothing to say. */
+    public interface HintSink {
+        void onHint(View row, String text);
+    }
+
+    /** The screen currently showing hints, or null. Set in onResume, cleared in onPause. */
+    public static HintSink hintSink;
+
+    private String hintText;
+
     private final TextView labelView;
     private final TextView valueView;
 
@@ -54,8 +64,17 @@ public class StepRow extends LinearLayout {
             @Override
             public void onFocusChange(View v, boolean has) {
                 v.setBackground(Ui.panel(v.getContext(), has ? Ui.FOCUS : baseColour));
+                if (has && hintSink != null) {
+                    hintSink.onHint(v, hintText);
+                }
             }
         });
+    }
+
+    /** One or two short sentences shown beside the list while this row has focus. */
+    public StepRow hint(String text) {
+        hintText = text;
+        return this;
     }
 
     public StepRow tint(int colour) {

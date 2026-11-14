@@ -20,6 +20,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     private TextView readout;
+    private TextView hintView;
+    private LinearLayout pairView;
     private TextView statusView;
 
     private StepRow fanRow;
@@ -51,7 +53,19 @@ public class MainActivity extends Activity implements StepRow.Listener {
     @Override
     protected void onResume() {
         super.onResume();
+        StepRow.hintSink = new StepRow.HintSink() {
+            @Override
+            public void onHint(View row, String text) {
+                hintView.setText(text == null ? "" : text);
+                // Level with the row it describes, wherever the list has scrolled to.
+                android.graphics.Rect r = new android.graphics.Rect();
+                row.getDrawingRect(r);
+                pairView.offsetDescendantRectToMyCoords(row, r);
+                hintView.setTranslationY(r.top);
+            }
+        };
         sync();
+        fanRow.clearFocus();
         fanRow.requestFocus();
         ui.removeCallbacks(poll);
         ui.post(poll);
@@ -59,6 +73,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
 
     @Override
     protected void onPause() {
+        StepRow.hintSink = null;
         ui.removeCallbacks(poll);
         super.onPause();
     }
@@ -71,11 +86,28 @@ public class MainActivity extends Activity implements StepRow.Listener {
         int p = Ui.dp(c, 32);
         root.setPadding(p, p, p, p);
         // A fixed-width column in the middle of the screen, so a value sits beside its label
-        // instead of at the far edge of a wide picture.
+        // instead of at the far edge of a wide picture, with a note about the focused row
+        // to its right when there is room for one.
         android.widget.FrameLayout frame = new android.widget.FrameLayout(c);
-        int wide = Math.min(getResources().getDisplayMetrics().widthPixels, Ui.dp(c, 640));
-        frame.addView(root, new android.widget.FrameLayout.LayoutParams(wide,
-                ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER_HORIZONTAL));
+        int screen = getResources().getDisplayMetrics().widthPixels;
+        int side = Ui.dp(c, 260);
+        boolean beside = screen >= Ui.dp(c, 640) + side;
+        int wide = Math.min(screen - (beside ? side : 0), Ui.dp(c, 640));
+        LinearLayout pair = Ui.row(c);
+        pair.setClipChildren(false);
+        frame.setClipChildren(false);
+        pairView = pair;
+        pair.addView(root, new LinearLayout.LayoutParams(wide,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        hintView = Ui.text(c, "", 15f, Ui.DIM);
+        hintView.setPadding(Ui.dp(c, 16), Ui.dp(c, 8), Ui.dp(c, 16), 0);
+        if (beside) {
+            pair.addView(hintView, new LinearLayout.LayoutParams(side,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        frame.addView(pair, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.CENTER_HORIZONTAL));
         scroll.addView(frame, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -87,14 +119,14 @@ public class MainActivity extends Activity implements StepRow.Listener {
         sl.bottomMargin = Ui.dp(c, 12);
         root.addView(statusView, sl);
 
-        fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0));
-        brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0));
-        bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0));
-        addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0))
+        fanRow = addRow(root, new StepRow(c, "Fan").button().tag("fan", 0).hint("How the fan is controlled.\n\nAuto 58 holds the LED just under its target. Auto Step follows a fixed curve. Stock hands the fan back to Philips."));
+        brightRow = addRow(root, new StepRow(c, "Brightness boost").button().tag("bright", 0).hint("Runs the LEDs harder for a brighter picture.\n\nMore heat, so more fan. Turns itself off above 61 °C."));
+        bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
+        addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
                 .display(">");
         addRow(root, new StepRow(c, "Restore stock fan (do this before uninstalling)").button()
-                .tag("restore", 0)).display(">");
-        advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0));
+                .tag("restore", 0).hint("Gives the fan back to Philips for good.\n\nDo this before uninstalling.")).display(">");
+        advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0).hint("Manual fan, measuring, logs and system switches."));
         advancedRow.display("+");
         advanced = new AdvancedPanel(this);
         advancedView = advanced.build();

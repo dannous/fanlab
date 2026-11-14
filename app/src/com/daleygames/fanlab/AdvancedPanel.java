@@ -41,7 +41,7 @@ public final class AdvancedPanel implements StepRow.Listener {
         root.addView(statusView, Ui.wrap());
 
         root.addView(Ui.heading(c, "Control"), Ui.wrap());
-        modeRow = add(root, new StepRow(c, "Mode").button().tag("mode", 0));
+        modeRow = add(root, new StepRow(c, "Mode").button().tag("mode", 0).hint("Curve runs the Fan choice above. Linear holds a temperature. Manual holds one speed."));
 
         LinearLayout box = Ui.column(c);
         box.setBackground(Ui.panel(c, Ui.PANEL));
@@ -53,6 +53,14 @@ public final class AdvancedPanel implements StepRow.Listener {
         slider.setMax(FanIo.MAX_DUTY - FanIo.MIN_DUTY);
         slider.setKeyProgressIncrement(1);
         slider.setFocusable(true);
+        slider.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean has) {
+                if (has && StepRow.hintSink != null) {
+                    StepRow.hintSink.onHint(v, "Left and right set a fixed fan speed and switch to Manual.");
+                }
+            }
+        });
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
@@ -81,31 +89,31 @@ public final class AdvancedPanel implements StepRow.Listener {
 
         ceilingRow = add(root, new StepRow(c, "Linear target °C")
                 .range((int) LinearConfig.MIN_CEILING_C, (int) LinearConfig.MAX_CEILING_C)
-                .steps(1, 5).tag("ceiling", 0));
+                .steps(1, 5).tag("ceiling", 0).hint("The temperature Linear mode holds."));
         reassertRow = add(root, new StepRow(c, "Re-assert every second").button()
-                .tag("reassert", 0));
-        add(root, new StepRow(c, "Edit curve").button().tag("curve", 0)).display(">");
+                .tag("reassert", 0).hint("Puts the fan speed back if the projector changes it.\n\nLeave on."));
+        add(root, new StepRow(c, "Edit curve").button().tag("curve", 0).hint("Change the curve's points by hand.")).display(">");
 
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
-        add(root, new StepRow(c, "Sweep every fan speed").button().tag("sweep", 0))
+        add(root, new StepRow(c, "Sweep every fan speed").button().tag("sweep", 0).hint("Measures the LED temperature at every fan speed.\n\nTakes over an hour."))
                 .display(">");
-        add(root, new StepRow(c, "Hold one fan speed").button().tag("verify", 0)).display(">");
+        add(root, new StepRow(c, "Hold one fan speed").button().tag("verify", 0).hint("Holds one fan speed so you can watch the picture and the temperature.")).display(">");
         roomRow = add(root, new StepRow(c, "Room °C (for the log)").range(0, 40)
-                .steps(1, 5).tag("room", 0));
+                .steps(1, 5).tag("room", 0).hint("Your room temperature, saved with the log.\n\nNot used to control anything."));
 
         root.addView(Ui.heading(c, "Logs"), Ui.wrap());
-        loggingRow = add(root, new StepRow(c, "Write CSV log").button().tag("logging", 0));
+        loggingRow = add(root, new StepRow(c, "Write CSV log").button().tag("logging", 0).hint("Record temperature and fan speed every few seconds."));
         storageRow = add(root, new StepRow(c, "Also copy to shared storage").button()
-                .tag("storage", 0));
+                .tag("storage", 0).hint("Also save the log to shared storage.\n\nAsks for permission."));
         exportRow = add(root, new StepRow(c, "Copy all logs to USB").button()
-                .tag("export", 0));
-        add(root, new StepRow(c, "Diagnostics").button().tag("diag", 0)).display(">");
+                .tag("export", 0).hint("Copy the whole log history to a plugged-in USB stick."));
+        add(root, new StepRow(c, "Diagnostics").button().tag("diag", 0).hint("Raw sensor and system readings.")).display(">");
 
         if (Process.myUid() == Process.SYSTEM_UID) {
             root.addView(Ui.heading(c, "System"), Ui.wrap());
             takeoverRow = add(root, new StepRow(c, "Stock fan controller").button()
-                    .tag("takeover", 0));
-            add(root, new StepRow(c, "ADB over network").button().tag("adb", 0)).display(">");
+                    .tag("takeover", 0).hint("Stops Philips' own fan control.\n\nStays stopped after a restart until you restore it."));
+            add(root, new StepRow(c, "ADB over network").button().tag("adb", 0).hint("Turn on network debugging for a PC.")).display(">");
         }
         return root;
     }
