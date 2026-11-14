@@ -45,9 +45,19 @@ public final class AutoHold {
     /** Smoothing time constant on the input, seconds; sensor noise must not look like a trend. */
     private static final double SMOOTH_S = 20.0;
 
+    /** Second, slower average; with {@link #SMOOTH_S} it gives the slope of the reading. */
+    private static final double SLOW_S = 60.0;
+
+    /** How far ahead the catch-up looks, seconds. Longer than the fast thermal time constant, because the chassis keeps warming after it. */
+    private static final double LOOKAHEAD_S = 320.0;
+
     private int floor = MIN_DUTY;
     private double duty = Double.NaN;
     private double smoothC = Double.NaN;
+    private double slowC = Double.NaN;
+
+    /** Set when handed a duty this controller did not choose; cleared once the fan has come down to where the temperature is heading. */
+    private boolean catchingUp;
     private long lastMs;
     private long steppedMs;
 
@@ -59,13 +69,16 @@ public final class AutoHold {
     public void resync(int currentDuty) {
         duty = FanIo.valid(currentDuty) ? clamp(currentDuty) : FanIo.FAIL_SAFE_DUTY;
         steppedMs = 0L;
+        catchingUp = true;
     }
 
     public void reset() {
         duty = Double.NaN;
         smoothC = Double.NaN;
+        slowC = Double.NaN;
         lastMs = 0L;
         steppedMs = 0L;
+        catchingUp = false;
     }
 
     /**
@@ -115,9 +128,11 @@ public final class AutoHold {
         duty = clamp(duty);
         if (Double.isNaN(smoothC) || lastMs == 0L) {
             smoothC = celsius;
+            slowC = celsius;
         } else {
             double dt = Math.max(0.0, Math.min(5.0, (nowMs - lastMs) / 1000.0));
             smoothC += (celsius - smoothC) * (1.0 - Math.exp(-dt / SMOOTH_S));
+            slowC += (celsius - slowC) * (1.0 - Math.exp(-dt / SLOW_S));
         }
         lastMs = nowMs;
         if (steppedMs == 0L) {
@@ -130,6 +145,18 @@ public final class AutoHold {
             err = Math.min(0.0 - 1e-9, err + LOW_BAND_EXTRA_C);
         }
         long wait = intervalFor(err);
+        if (catchingUp) {
+            // Where the reading is heading, not where it is: the two averages lag a ramp by
+            // different amounts, and that difference is the slope. Coming down on the
+            // prediction is what lets this be quick without running past the target.
+            double slope = (smoothC - slowC) / (SLOW_S - SMOOTH_S);
+            double ahead = smoothC + Math.max(0.0, slope) * LOOKAHEAD_S - targetC;
+            if (err >= 0.0 || ahead >= -BAND_C || duty <= floor) {
+                catchingUp = false;
+            } else {
+                wait = ahead < -6.0 ? 3000L : ahead < -3.0 ? 6000L : 12000L;
+            }
+        }
         if (wait > 0L && nowMs - steppedMs >= wait) {
             duty = clamp(duty + (err >= 0.0 ? 1 : -1));
             steppedMs = nowMs;

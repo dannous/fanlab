@@ -3926,6 +3926,24 @@ public final class FanLabTest {
         bad.resync(-1);
         eq(bad.step(40.0, AutoHold.TARGET_C, 1000L), FanIo.FAIL_SAFE_DUTY,
                 "and an unreadable fan node is treated the same way");
+        // Handed the fan at 83 with the light engine well under the target: the wait that
+        // stops hunting near the target must not apply to coming down from a duty it never chose.
+        AutoHold hb = new AutoHold();
+        hb.resync(83);
+        long hbm = 1000L;
+        int hbd = 83;
+        for (int i = 0; i < 180; i++, hbm += 1000L) {
+            hbd = hb.step(47.0, AutoHold.BOOST_TARGET_C, AutoHold.minFor(3), hbm);
+        }
+        check(hbd <= 45, "handed 83 with 11 C in hand, it is under 45 within three minutes (was "
+                + hbd + ")");
+        AutoHold hn = new AutoHold();
+        hn.resync(83);
+        hbm = 1000L;
+        for (int i = 0; i < 600; i++, hbm += 1000L) {
+            hbd = hn.step(57.5, AutoHold.BOOST_TARGET_C, AutoHold.minFor(3), hbm);
+        }
+        eq(hbd, 83, "but handed 83 inside the band, it stays: there is nothing in hand to spend");
         eq(AutoHold.minFor(4), 25, "Super Eco floor is 25");
         eq(AutoHold.minFor(1), 25, "Eco floor is 25");
         eq(AutoHold.minFor(2), 27, "Normal floor is 27");
