@@ -52,10 +52,7 @@ public class CurveActivity extends Activity implements StepRow.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         root.addView(Ui.text(c, "Fan curve", 26f, Ui.FG), Ui.wrap());
-        root.addView(Ui.body(c,
-                "Duty is interpolated between the knee points, so there is never a step to "
-                        + "hear. Hysteresis stops the curve chasing noise; the slew limit "
-                        + "stops any change being fast enough to notice."), Ui.wrap());
+        root.addView(Ui.body(c, "Fan speed is interpolated between the knees."), Ui.wrap());
 
         root.addView(Ui.heading(c, "Brightness tier being edited"), Ui.wrap());
         profileRow = add(root, new StepRow(c, "Tier").button().tag("profile", 0));
@@ -102,11 +99,7 @@ public class CurveActivity extends Activity implements StepRow.Listener {
         preview.setPadding(q, q, q, q);
         root.addView(preview, Ui.wrap());
 
-        root.addView(Ui.body(c,
-                "The \"stock\" column is the projector's own ladder, reproduced exactly, "
-                        + "using this tier's speed.min for the bottom rung. It writes "
-                        + "nothing at all at 53 and 54 °C — that gap is a bug in the "
-                        + "original, shown here as \"--\"."), Ui.wrap());
+        root.addView(Ui.body(c, "Stock writes nothing at 53 and 54 °C, shown as --."), Ui.wrap());
         return scroll;
     }
 

@@ -45,7 +45,7 @@ public final class LedDrive {
      * 60.0 is five degrees above the 55 C at which the stock controller already commands
      * maximum fan, and well below the 75 C shutdown.
      */
-    public static final double DEFAULT_TRIP_C = 60.0;
+    public static final double DEFAULT_TRIP_C = 61.0;
 
     /** Minimum gap between {@code rgblevel} rewrites, ms. Matches {@code assertRgbLevel}. */
     public static final long RESTORE_EVERY_MS = 5000L;
@@ -69,13 +69,13 @@ public final class LedDrive {
             }
         }
 
-        /** The one-press preset the main screen offers; Presentation 90 is the drive the Bright curve family was solved at. */
+        /** The one-press preset the main screen offers; Presentation 95 is the owner's choice; the Bright curve family was solved at 90. */
         public static Config bright() {
             Config c = new Config();
             c.level[0] = 35;
             c.level[1] = 55;
             c.level[2] = 75;
-            c.level[3] = 90;
+            c.level[3] = 95;
             return c;
         }
 

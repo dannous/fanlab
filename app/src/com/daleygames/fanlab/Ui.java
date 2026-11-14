@@ -13,15 +13,15 @@ import android.widget.TextView;
 /** The whole look of the app: plain framework views, sized for a projector and reachable by D-pad. */
 public final class Ui {
 
-    public static final int BG = 0xFF101014;
-    public static final int PANEL = 0xFF1B1B22;
+    public static final int BG = 0xFF000000;
+    public static final int PANEL = 0xFF161616;
     public static final int FG = 0xFFF2F2F5;
     public static final int DIM = 0xFF9A9AA6;
-    public static final int ACCENT = 0xFF4FC3F7;
+    public static final int ACCENT = 0xFFF2F2F5;
     public static final int WARN = 0xFFFFB300;
     public static final int DANGER = 0xFFEF5350;
-    public static final int GOOD = 0xFF81C784;
-    public static final int FOCUS = 0xFF2F5D82;
+    public static final int GOOD = 0xFFF2F2F5;
+    public static final int FOCUS = 0xFF3A3A3A;
 
     private Ui() {
     }
@@ -52,6 +52,13 @@ public final class Ui {
         return t;
     }
 
+    /** A fixed-width readout line. */
+    public static TextView mono(Context c, String s, float sp, int colour) {
+        TextView t = text(c, s, sp, colour);
+        t.setTypeface(android.graphics.Typeface.MONOSPACE);
+        return t;
+    }
+
     public static LinearLayout column(Context c) {
         LinearLayout l = new LinearLayout(c);
         l.setOrientation(LinearLayout.VERTICAL);
@@ -78,7 +85,7 @@ public final class Ui {
     public static GradientDrawable panel(Context c, int fill) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(fill);
-        g.setCornerRadius(dp(c, 6));
+        g.setCornerRadius(0);
         return g;
     }
 

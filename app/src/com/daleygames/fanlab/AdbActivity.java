@@ -36,17 +36,7 @@ public class AdbActivity extends Activity implements StepRow.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         root.addView(Ui.text(c, "ADB over the network", 26f, Ui.FG), Ui.wrap());
-        root.addView(Ui.body(c,
-                "This has nothing to do with the fan. It is here only because this build "
-                        + "happens to be able to set sys.usb.config, and a shell is "
-                        + "otherwise unreachable on this projector.\n\n"
-                        + "It sets sys.usb.config to \"" + CONFIG_ADB + "\", which starts "
-                        + "adbd while leaving the USB socket in host mode, so a USB stick "
-                        + "still works. You then need an ASIX USB-Ethernet adapter (not "
-                        + "Realtek — that driver is not built into this kernel) and "
-                        + "\"adb connect\" from a PC.\n\n"
-                        + "sys.usb.config is NOT persistent — a reboot puts it back. The "
-                        + "revert below does it immediately."), Ui.wrap());
+        root.addView(Ui.body(c, "Starts adbd with the USB socket still in host mode. Needs an ASIX USB-Ethernet adapter. Reverts on reboot."), Ui.wrap());
 
         state = Ui.text(c, "", 18f, Ui.ACCENT);
         LinearLayout.LayoutParams lp = Ui.wrap();
@@ -61,9 +51,7 @@ public class AdbActivity extends Activity implements StepRow.Listener {
         revertRow.tint(0xFF1F4A2A).valueColour(Ui.GOOD);
 
         if (Process.myUid() != Process.SYSTEM_UID) {
-            root.addView(Ui.body(c,
-                    "This build is not running as the system user, so both buttons will "
-                            + "fail. Only the platform-signed build can set this."),
+            root.addView(Ui.body(c, "Needs the system build."),
                     Ui.wrap());
         }
         setContentView(scroll);

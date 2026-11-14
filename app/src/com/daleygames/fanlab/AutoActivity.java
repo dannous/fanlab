@@ -127,13 +127,9 @@ public class AutoActivity extends Activity implements StepRow.Listener {
 
         col.addView(Ui.text(c, "AUTO — measure the steady-state temperature", 26f, Ui.FG),
                 Ui.wrap());
-        col.addView(Ui.body(c,
-                "This is the measurement the whole fan project is waiting on: the "
-                        + "temperature the LED actually settles at, at each fan duty, in "
-                        + "each brightness mode. Until it exists the fan floor is a guess "
-                        + "between fourteen candidates."), Ui.wrap());
+        col.addView(Ui.body(c, "Measures where the LED settles at each fan speed, in each brightness mode."), Ui.wrap());
 
-        col.addView(Ui.heading(c, "Before you press start, read this"), Ui.wrap());
+        col.addView(Ui.heading(c, "Before you start"), Ui.wrap());
         long best = SweepPlan.estimateBestSeconds();
         long typical = SweepPlan.estimateTypicalSeconds();
         col.addView(bullet(c, "It takes about " + (best / 60) + " minutes if the "
@@ -163,15 +159,9 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                 + "optional — a run with no keypresses is still a good run."), Ui.wrap());
 
         col.addView(Ui.heading(c, "What it writes"), Ui.wrap());
-        col.addView(Ui.body(c,
-                "Two files, to this app's folder on internal storage and on any USB stick "
-                        + "that is plugged in: sweep_<time>.json and trace_<time>.csv. "
-                        + "Pull the stick out when it has finished; the files are complete "
-                        + "to the second before. They are meant to be read on a computer, "
-                        + "not here."), Ui.wrap());
+        col.addView(Ui.body(c, "Writes sweep_<time>.json and trace_<time>.csv to internal storage and any USB stick."), Ui.wrap());
 
-        col.addView(Ui.heading(c, "Room temperature — optional, but it is the biggest "
-                + "thing we cannot measure"), Ui.wrap());
+        col.addView(Ui.heading(c, "Room temperature (optional)"), Ui.wrap());
         ambientRow = new StepRow(c, "Room temperature").range(0, 40).steps(1, 5)
                 .tag("ambient", 0);
         int amb = Prefs.roomC(c);
@@ -187,7 +177,7 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         startRow.tint(0xFF1F4A2A).valueColour(Ui.GOOD).display("▶");
         addRow(col, startRow);
 
-        StepRow back = new StepRow(c, "Go back — change nothing").button().tag("back", 0);
+        StepRow back = new StepRow(c, "Back").button().tag("back", 0);
         addRow(col, back);
 
         return scroll;

@@ -51,6 +51,22 @@ public final class Prefs {
     }
 
     /** Re-check fan_ctrl every second and rewrite it whenever something else has changed it. Default true. */
+    public static final int AUTO_NONE = 0;
+    /** {@link AutoHold}: steer on temperature, no curve. Shown as "Auto 58" (or 55 at stock drive). */
+    public static final int AUTO_HOLD = 1;
+    /** {@link AutoStep}: its own curve with a 25 floor, plus an add-only trim. Shown as "Auto Step". */
+    public static final int AUTO_STEP = 2;
+
+    /** Which AUTO runs in CURVE mode, or {@link #AUTO_NONE} for the stored curve. */
+    public static int autoKind(Context c) {
+        int k = get(c).getInt("auto_kind", AUTO_NONE);
+        return (k == AUTO_HOLD || k == AUTO_STEP) ? k : AUTO_NONE;
+    }
+
+    public static void setAutoKind(Context c, int kind) {
+        get(c).edit().putInt("auto_kind", kind).apply();
+    }
+
     public static boolean reassert(Context c) {
         return get(c).getBoolean(K_REASSERT, true);
     }

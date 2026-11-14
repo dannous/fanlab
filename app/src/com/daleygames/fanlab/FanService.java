@@ -138,6 +138,14 @@ public class FanService extends Service {
     private Handler house;
     private CsvLogger csv;
     private final FanCurve curve = new FanCurve();
+    private final AutoHold autoHold = new AutoHold();
+    private final AutoStep autoStep = new AutoStep();
+
+    /** Duty points AUTO STEP is adding above its curve right now. */
+    public static volatile int autoTrimNow;
+
+    /** The target AUTO is holding, degrees C; 0 when AUTO is off. */
+    public static volatile double autoTargetNow;
     private final FanLinear linear = new FanLinear();
     private PowerManager power;
     private NotificationManager notifications;
@@ -462,6 +470,8 @@ public class FanService extends Service {
             boolean ok = FanIo.writeFailSafe();
             lastWritten = ok ? FanIo.FAIL_SAFE_DUTY : -1;
             curve.reset();
+            autoHold.reset();
+            autoStep.reset();
             linear.reset();
             note("release->" + FanIo.FAIL_SAFE_DUTY + (ok ? "" : " FAILED"));
             statusLine = ok
@@ -554,6 +564,7 @@ public class FanService extends Service {
     private String resync(int duty, String path) {
         curve.resync(duty);
         linear.resync(duty);
+        autoHold.resync(duty);
         return "resync@" + duty + ":" + path;
     }
 
@@ -840,10 +851,36 @@ public class FanService extends Service {
                 // An unreadable led_status counts as "engine on": assuming the light
                 // engine is running is the conservative assumption.
                 boolean engineOn = s.ledStatus != 0;
-                CurveConfig cfg = Prefs.curve(this);
+                int autoKind = Prefs.autoKind(this);
+                boolean boost = Prefs.ledBoostOn(this);
+                double target = AutoHold.targetFor(boost);
+                CurveConfig cfg = autoKind == Prefs.AUTO_STEP ? AutoStep.curve() : Prefs.curve(this);
+                if (autoKind == Prefs.AUTO_STEP) {
+                    int was = autoStep.trim();
+                    int trim = engineOn ? autoStep.step(s.degC, target, mono) : was;
+                    if (trim != was) {
+                        append(note, "autotrim +" + trim);
+                    }
+                    cfg = AutoStep.apply(cfg, trim);
+                    autoTrimNow = trim;
+                } else {
+                    autoStep.reset();
+                    autoTrimNow = 0;
+                }
                 // socC[0] is thermal_zone0 (pll) -- the only SoC zone with cooling devices
                 // bound to it, so the only one whose temperature has a consequence.
                 desired = curve.step(cfg, s.profile, s.degC, s.socC[0], engineOn, mono);
+                autoTargetNow = autoKind == Prefs.AUTO_NONE ? 0 : target;
+                if (autoKind == Prefs.AUTO_HOLD) {
+                    // AUTO 58 replaces the curve's answer but keeps its SoC guard, which only ever adds.
+                    if (engineOn) {
+                        int held = autoHold.step(s.degC, target, mono);
+                        desired = Math.min(cfg.socGuardMaxDuty > held ? cfg.socGuardMaxDuty : held,
+                                held + curve.guardBoost());
+                    } else {
+                        autoHold.resync(desired);
+                    }
+                }
                 guardBoost = curve.guardBoost();
                 boolean biting = guardBoost > 0;
                 if (biting != guardWasBiting) {

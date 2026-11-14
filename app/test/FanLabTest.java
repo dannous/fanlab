@@ -1,3 +1,5 @@
+import com.daleygames.fanlab.AutoHold;
+import com.daleygames.fanlab.AutoStep;
 import com.daleygames.fanlab.CsvLogger;
 import com.daleygames.fanlab.CurveConfig;
 import com.daleygames.fanlab.ExpFit;
@@ -102,6 +104,8 @@ public final class FanLabTest {
         testLedDriveReadback();
         testLedDriveDecide();
         testCurvePresetsDoNotHunt();
+        testAutoTrim();
+        testAutoStep();
         testOffDuration();
         testExclusiveControl();
         testCsvLogger();
@@ -2630,14 +2634,14 @@ public final class FanLabTest {
 
         LedDrive.Config bright = LedDrive.Config.bright();
         check(!bright.isStock(), "the Bright preset is not");
-        check(bright.encode().equals("d1,35,55,75,90"),
-                "and is 35/55/75/90  (got " + bright.encode() + ")");
-        eq(bright.levelFor(3), 90, "Presentation reads 90 - 76 stock, so 18 % more drive");
+        check(bright.encode().equals("d1,35,55,75,95"),
+                "and is 35/55/75/95  (got " + bright.encode() + ")");
+        eq(bright.levelFor(3), 95, "Presentation reads 95 - 76 stock, so 25 % more drive");
         eq(bright.levelFor(2), 75, "Normal reads 75");
         eq(bright.levelFor(1), 55, "Eco reads 55");
         eq(bright.levelFor(4), 35, "Super Eco reads 35");
         bright.sanitise();
-        check(bright.encode().equals("d1,35,55,75,90"),
+        check(bright.encode().equals("d1,35,55,75,95"),
                 "and every one of them is inside MAX_LEVEL, so sanitise leaves it alone");
         eq(bright.levelFor(7), -1, "and a brightness mode this class does not know reads -1");
 
@@ -3881,6 +3885,187 @@ public final class FanLabTest {
         }
         eq(checked, CurveConfig.PRESET_NAMES.length,
                 "and every curve on offer went through it, not a list of them kept here");
+    }
+
+    /** The plant AUTO is tested on: measured from 30 up, and below it the steepest measured slope made half as steep again, since nothing under 30 has been measured. */
+    private static double autoRise(int duty) {
+        if (duty >= RISE_DUTY[0]) {
+            return presentationRise(duty);
+        }
+        double slope = (RISE_PRES[0] - RISE_PRES[1]) / (double) (RISE_DUTY[1] - RISE_DUTY[0]);
+        return RISE_PRES[0] + slope * 1.5 * (RISE_DUTY[0] - duty);
+    }
+
+    private static void testAutoTrim() {
+        section("auto: hold just under the target at the lowest fan that does it");
+        AutoHold a = new AutoHold();
+        a.resync(55);
+        long ms = 1000L;
+        for (int i = 0; i < 600; i++, ms += 1000L) {
+            a.step(30.0, AutoHold.TARGET_C, ms);
+        }
+        eq(a.step(30.0, AutoHold.TARGET_C, ms), AutoHold.MIN_DUTY,
+                "a cold light engine gets the floor within ten minutes");
+        for (int i = 0; i < 7200; i++, ms += 1000L) {
+            a.step(54.0, AutoHold.TARGET_C, ms);
+        }
+        eq(a.step(54.0, AutoHold.TARGET_C, ms), AutoHold.MIN_DUTY,
+                "inside the band it does not move, for two hours");
+        int before = a.step(54.0, AutoHold.TARGET_C, ms);
+        a.step(Double.NaN, AutoHold.TARGET_C, ms);
+        eq(a.step(54.0, AutoHold.TARGET_C, ms), before, "an unreadable temperature changes nothing");
+        for (int i = 0; i < 7200; i++, ms += 1000L) {
+            a.step(70.0, AutoHold.TARGET_C, ms);
+        }
+        eq(a.step(70.0, AutoHold.TARGET_C, ms), AutoHold.MAX_DUTY,
+                "held far over the target it stops at 83, not above");
+        AutoHold fresh = new AutoHold();
+        eq(fresh.step(40.0, AutoHold.TARGET_C, 1000L), FanIo.FAIL_SAFE_DUTY,
+                "with no duty adopted it starts from the fail-safe, never lower");
+        AutoHold bad = new AutoHold();
+        bad.resync(-1);
+        eq(bad.step(40.0, AutoHold.TARGET_C, 1000L), FanIo.FAIL_SAFE_DUTY,
+                "and an unreadable fan node is treated the same way");
+        check(AutoHold.targetFor(true) < LedDrive.DEFAULT_TRIP_C,
+                "the raised-drive target sits under the drive's own cut-out");
+        check(AutoHold.targetFor(false) == 55.0 && AutoHold.targetFor(true) == 58.0,
+                "55 C at stock drive, 58 C with it raised");
+
+        final double tauFast = 230.0;
+        final double[] tauSlow = {0.0, 900.0, 3000.0};
+        final double[] scale = {1.0, 1.2404, 1.306};
+        final String[] what = {"stock", "drive 90", "drive 95"};
+        for (int v = 0; v < scale.length; v++) {
+            double target = AutoHold.targetFor(v > 0);
+            for (int ambient = 14; ambient <= 34; ambient += 2) {
+                for (int k = 0; k < tauSlow.length; k++) {
+                    java.util.Random rng = new java.util.Random(1);
+                    double fast = 0.0, slow = 0.0, peak = 0.0, hot = 0.0;
+                    AutoHold h = new AutoHold();
+                    h.resync(55);
+                    int lo = 200, hi = 0, prev = -1, maxTick = 0, n = 0, moves = 0;
+                    for (int t = 0; t <= 36000; t++) {
+                        double measured = ambient + fast + slow + rng.nextGaussian() * 0.03;
+                        int d = h.step(measured, target, t * 1000L);
+                        double total = autoRise(d) * scale[v];
+                        double as = tauSlow[k] == 0.0 ? 1.0 : (1.0 - Math.exp(-1.0 / tauSlow[k]));
+                        fast += (total * 0.70 - fast) * (1.0 - Math.exp(-1.0 / tauFast));
+                        slow += (total * 0.30 - slow) * as;
+                        if (prev >= 0) {
+                            maxTick = Math.max(maxTick, Math.abs(d - prev));
+                        }
+                        if (t > 28800) {
+                            lo = Math.min(lo, d);
+                            hi = Math.max(hi, d);
+                            if (prev >= 0 && d != prev) {
+                                moves++;
+                            }
+                            hot += ambient + fast + slow;
+                            n++;
+                        }
+                        if (t > 3600) {
+                            peak = Math.max(peak, ambient + fast + slow);
+                        }
+                        prev = d;
+                    }
+                    String where = "AUTO " + what[v] + " at " + ambient + " C, slow pole "
+                            + (tauSlow[k] == 0.0 ? "none" : ((int) tauSlow[k] + " s"));
+                    check(maxTick <= 1, where + ": never more than one point per tick");
+                    check(hi - lo <= 2, where + ": settled within two duty points (was "
+                            + lo + ".." + hi + ")");
+                    check(moves <= 4, where + ": at most four moves in the last two hours (was "
+                            + moves + ")");
+                    double floorTemp = ambient + autoRise(AutoHold.MIN_DUTY) * scale[v];
+                    double topTemp = ambient + autoRise(AutoHold.MAX_DUTY) * scale[v];
+                    if (topTemp <= target - 0.5) {
+                        check(hot / n <= target + 0.3, where + ": held at or under the target (was "
+                                + Sample.fmt1(hot / n) + ")");
+                        check(peak <= target + 2.0, where + ": never more than 2 C over it after "
+                                + "the first hour (peak " + Sample.fmt1(peak) + ")");
+                    } else {
+                        eq(hi, AutoHold.MAX_DUTY, where + ": out of authority, so it sits at 83");
+                    }
+                    if (floorTemp <= target - AutoHold.BAND_C) {
+                        eq(hi, AutoHold.MIN_DUTY, where + ": the floor is enough, so it rests on it");
+                    } else if (topTemp <= target - 0.5) {
+                        check(hot / n >= target - AutoHold.BAND_C - 0.7,
+                                where + ": and not colder than it needs to be (was "
+                                        + Sample.fmt1(hot / n) + ")");
+                    }
+                }
+            }
+        }
+    }
+
+    private static void testAutoStep() {
+        section("auto step: its own curve, a 25 floor, and a trim that only adds");
+        CurveConfig c = AutoStep.curve();
+        check(c.encode().equals(AutoStep.CURVE), "the curve survives decode unrepaired  (got "
+                + c.encode() + ")");
+        for (int p = 0; p < CurveConfig.PROFILES; p++) {
+            eq(c.dutyAt(p, 40.0), 25, CurveConfig.PROFILE_NAMES[p] + ": 25 at 40 C");
+            eq(c.dutyAt(p, 50.0), 25, CurveConfig.PROFILE_NAMES[p] + ": still 25 at 50 C");
+            eq(c.dutyAt(p, 60.0), 52, CurveConfig.PROFILE_NAMES[p] + ": 52 at 60 C");
+            eq(c.dutyAt(p, 70.0), 83, CurveConfig.PROFILE_NAMES[p] + ": 83 by 70 C");
+            int prev = 0;
+            boolean mono = true;
+            for (int t = 20; t <= 90; t++) {
+                int dd = c.dutyAt(p, t);
+                mono &= dd >= prev && dd >= 25 && dd <= 83;
+                prev = dd;
+            }
+            check(mono, CurveConfig.PROFILE_NAMES[p] + ": monotone, and between 25 and 83");
+        }
+        CurveConfig top = AutoStep.apply(c, AutoStep.MAX_TRIM);
+        eq(top.duty[CurveConfig.PROFILE_HIGH][0], 25, "the trim never raises the floor");
+        eq(top.duty[CurveConfig.PROFILE_HIGH][1], 48, "and adds its ten points above it");
+
+        final double tauFast = 230.0;
+        final double[] tauSlow = {0.0, 900.0, 3000.0};
+        final double[] scale = {1.0, 1.2404, 1.306};
+        final String[] what = {"stock", "drive 90", "drive 95"};
+        for (int v = 0; v < scale.length; v++) {
+            double ceiling = AutoHold.targetFor(v > 0);
+            for (int ambient = 14; ambient <= 34; ambient += 2) {
+                for (int k = 0; k < tauSlow.length; k++) {
+                    java.util.Random rng = new java.util.Random(1);
+                    double fast = 0.0, slow = 0.0, hot = 0.0;
+                    FanCurve f = new FanCurve();
+                    AutoStep st = new AutoStep();
+                    f.resync(55);
+                    int lo = 200, hi = 0, prev = -1, maxTick = 0, n = 0;
+                    for (int t = 0; t <= 30000; t++) {
+                        double measured = ambient + fast + slow + rng.nextGaussian() * 0.03;
+                        int trim = st.step(measured, ceiling, t * 1000L);
+                        int d = f.step(AutoStep.apply(c, trim), CurveConfig.PROFILE_HIGH, measured,
+                                true, t * 1000L);
+                        double total = autoRise(d) * scale[v];
+                        double as = tauSlow[k] == 0.0 ? 1.0 : (1.0 - Math.exp(-1.0 / tauSlow[k]));
+                        fast += (total * 0.70 - fast) * (1.0 - Math.exp(-1.0 / tauFast));
+                        slow += (total * 0.30 - slow) * as;
+                        if (t > 24000) {
+                            lo = Math.min(lo, d);
+                            hi = Math.max(hi, d);
+                            if (prev >= 0) {
+                                maxTick = Math.max(maxTick, Math.abs(d - prev));
+                            }
+                            prev = d;
+                            hot += ambient + fast + slow;
+                            n++;
+                        }
+                    }
+                    String where = "AUTO STEP " + what[v] + " at " + ambient + " C, slow pole "
+                            + (tauSlow[k] == 0.0 ? "none" : ((int) tauSlow[k] + " s"));
+                    check(hi - lo <= 2, where + ": settled within two duty points (was "
+                            + lo + ".." + hi + ")");
+                    check(maxTick <= 1, where + ": one point per tick once settled");
+                    if (ambient + autoRise(83) * scale[v] <= ceiling - 1.0 && ambient <= 30) {
+                        check(hot / n <= ceiling + 0.6, where + ": at or under the ceiling (was "
+                                + Sample.fmt1(hot / n) + ", fan " + hi + ")");
+                    }
+                }
+            }
+        }
     }
 
     private static void testLinearConvergence() {

@@ -61,8 +61,20 @@ public class ConfigReceiver extends BroadcastReceiver {
                 did.append(" preset(REFUSED: ").append(refusal).append(")");
             } else {
                 Prefs.setPreset(context, i);
+                Prefs.setAutoKind(context, Prefs.AUTO_NONE);
                 did.append(" preset");
             }
+        }
+        if (intent.hasExtra("auto")) {
+            String kind = String.valueOf(intent.getStringExtra("auto")).trim().toLowerCase();
+            int k = "step".equals(kind) ? Prefs.AUTO_STEP
+                    : ("hold".equals(kind) || "58".equals(kind)) ? Prefs.AUTO_HOLD
+                    : "off".equals(kind) ? Prefs.AUTO_NONE : -1;
+            if (k < 0) {
+                return "ERROR auto must be hold, step or off, got " + kind;
+            }
+            Prefs.setAutoKind(context, k);
+            did.append(" auto=" + kind);
         }
         if (intent.hasExtra("curve")) {
             String s = intent.getStringExtra("curve");
@@ -323,6 +335,8 @@ public class ConfigReceiver extends BroadcastReceiver {
                 + " session=" + Prefs.session(context)
                 + " fan_ctrl=" + FanIo.readDuty()
                 + " export=" + (FanService.exporting ? "running" : FanService.exportStatus)
+                + " auto=" + Prefs.autoKind(context) + " autotarget=" + FanService.autoTargetNow
+                + " autotrim=" + FanService.autoTrimNow
                 + " preset=" + CurveConfig.presetName(Prefs.preset(context))
                 + " presetfamily=" + (boost ? "Bright Curve" : "Curve")
                 + " presetsallowed=" + CurveConfig.familyWords(boost)

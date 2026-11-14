@@ -131,12 +131,7 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
 
         col.addView(Ui.text(c, "VERIFY — hold one duty and watch the picture", 26f, Ui.FG),
                 Ui.wrap());
-        col.addView(Ui.body(c,
-                "AUTO tells you what temperature a duty reaches. This tells you whether "
-                        + "that is acceptable, which is the question that actually matters. "
-                        + "Run it at the floor you are thinking of, in Presentation, in the "
-                        + "warmest room you use, for forty-five minutes or more, and check "
-                        + "the picture a few times."), Ui.wrap());
+        col.addView(Ui.body(c, "Holds one fan speed so you can check the picture stays sharp."), Ui.wrap());
 
         col.addView(Ui.heading(c, "What to hold"), Ui.wrap());
         dutyRow = new StepRow(c, "Fan duty").range(SweepPlan.DUTY_FLOOR,
@@ -146,14 +141,7 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
         modeRow = new StepRow(c, "Brightness mode").button().tag("mode", 0);
         modeRow.display(SweepPlan.modeName(MODES[modeIdx]));
         addRow(col, modeRow);
-        col.addView(Ui.body(c,
-                "62 % in Presentation is the default because that is what the curve "
-                        + "commands at the temperature this machine actually parks at, and "
-                        + "it sits inside the 56–69 band the firmware bisection had already "
-                        + "narrowed the equilibrium to. Changing the brightness mode here "
-                        + "writes rgblevel directly, which also changes the LED current — "
-                        + "set the mode once from the remote afterwards so the projector's "
-                        + "own app agrees with the hardware again."), Ui.wrap());
+        col.addView(Ui.body(c, "Changing brightness here writes the hardware directly. Set it again from the remote afterwards."), Ui.wrap());
 
         col.addView(Ui.heading(c, "While it runs"), Ui.wrap());
         col.addView(bullet(c, "OK cycles the picture: white field → one-pixel "
@@ -179,7 +167,7 @@ public class VerifyActivity extends Activity implements StepRow.Listener {
         startRow = new StepRow(c, "START HOLDING").button().tag("start", 0);
         startRow.tint(0xFF1F4A2A).valueColour(Ui.GOOD).display("▶");
         addRow(col, startRow);
-        addRow(col, new StepRow(c, "Go back — change nothing").button().tag("back", 0));
+        addRow(col, new StepRow(c, "Back").button().tag("back", 0));
         return scroll;
     }
 
