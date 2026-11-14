@@ -33,6 +33,8 @@ public final class FanLimit {
     static final long RESTORE_EVERY_MS = 60000L;
 
     private static final double SMOOTH_S = 8.0;
+    private static final double SLOW_S = 40.0;
+    private double slowC = Double.NaN;
 
     private int trim;
     private boolean lifted;
@@ -62,6 +64,7 @@ public final class FanLimit {
         changedMs = 0L;
         lastMs = 0L;
         smoothC = Double.NaN;
+        slowC = Double.NaN;
         lastTargetC = Double.NaN;
         graceTargetC = Double.NaN;
     }
@@ -120,7 +123,15 @@ public final class FanLimit {
         } else {
             double dt = Math.max(0.0, Math.min(5.0, (nowMs - lastMs) / 1000.0));
             smoothC += (degC - smoothC) * (1.0 - Math.exp(-dt / SMOOTH_S));
+            slowC += (degC - slowC) * (1.0 - Math.exp(-dt / SLOW_S));
         }
+        if (Double.isNaN(slowC)) {
+            slowC = degC;
+        }
+        // Falling, and under the temperature any mode may sit at: a switch down to a dimmer mode,
+        // cooling by itself. Neither the limit nor the brightness needs to give way for that.
+        double slope = (smoothC - slowC) / (SLOW_S - SMOOTH_S);
+        boolean coolingFine = slope < -AutoHold.TREND_C_PER_S && degC < AutoHold.COOLING_OK_C;
         lastMs = nowMs;
         double over = smoothC - targetC;
         if (maxTrim < 0) {
@@ -131,7 +142,7 @@ public final class FanLimit {
         }
 
         boolean wasLifted = lifted;
-        if (degC - targetC >= LIFT_OVER_C || (trim >= maxTrim && over >= LIFT_SPENT_OVER_C)) {
+        if (!coolingFine && (degC - targetC >= LIFT_OVER_C || (trim >= maxTrim && over >= LIFT_SPENT_OVER_C))) {
             lifted = true;
         } else if (lifted && over < RELEASE_OVER_C && (trim < maxTrim || over < 0.0)) {
             lifted = false;
@@ -142,7 +153,7 @@ public final class FanLimit {
         }
 
         boolean atLimit = fanDuty >= limit;
-        long every = dimEveryMs(over);
+        long every = coolingFine ? 0L : dimEveryMs(over);
         if (atLimit && nowMs >= graceUntilMs && trim < maxTrim && every > 0L && nowMs - changedMs >= every) {
             trim++;
             changedMs = nowMs;

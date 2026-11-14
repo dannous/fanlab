@@ -4370,6 +4370,39 @@ public final class FanLabTest {
             top = Math.max(top, dn.step(59.9 - Math.min(5.5, i * 0.09), 55.0, 30, 1, sm));
         }
         eq(top, atSwitch, "down to Night, the fan does not rise for the lower target");
+
+        // The owner, 15 Nov 2026: Smart "went above 43% to cool it below 50, but is taking minutes
+        // to lower from 43". A switch from Presentation to Super Eco: the LED falls from 59.9 to 47
+        // over five minutes. Past the 90 s grace it is still well over Super Eco's 50, but it is
+        // falling and under 58: no more fan, no lifted limit, no dimming; then down quickly.
+        AutoHold se = new AutoHold();
+        se.setDrive(true);
+        se.resync(43);
+        FanLimit sl = new FanLimit();
+        for (sm = 0L; sm < 12L * 60000L; sm += 1000L) {
+            sl.step(43, se.duty(), 59.9, 60.0, 3, 19, sm);
+            se.setCeiling(sl.ceilingFor(43), sl.trim() > 0);
+            se.step(59.9, 60.0, sl.floorFor(30, 43), 3, sm);
+        }
+        int seTop = se.duty(), seAt8 = -1, seTrim = 0;
+        boolean seLifted = false;
+        for (int i = 0; i < 12 * 60; i++, sm += 1000L) {
+            double c = 47.0 + 12.9 * Math.exp(-i / 100.0);
+            sl.step(43, se.duty(), c, 50.0, 4, 25, sm);
+            seLifted |= sl.lifted();
+            seTrim = Math.max(seTrim, sl.trim());
+            se.setCeiling(sl.ceilingFor(43), sl.trim() > 0);
+            int d2 = se.step(c, 50.0, sl.floorFor(30, 43), 4, sm);
+            seTop = Math.max(seTop, d2);
+            if (i == 8 * 60) {
+                seAt8 = d2;
+            }
+        }
+        eq(seTop, 43, "Presentation to Super Eco: the fan never goes above where it was");
+        check(!seLifted, "the limit is not lifted while the LED is cooling by itself");
+        eq(seTrim, 0, "and the picture is not dimmed for it");
+        check(seAt8 <= 33, "and the fan is down near the floor within 8 minutes, not a point a minute (was "
+                + seAt8 + ")");
     }
     private static void testAutoGuide() {
         section("auto: a learned speed guides a switch, and only a fresh one");

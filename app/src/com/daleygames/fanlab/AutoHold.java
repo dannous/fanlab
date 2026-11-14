@@ -32,6 +32,20 @@ public final class AutoHold {
      * minute of the drive coming down; raising the fan for it is noise for nothing.
      */
     static final long SWITCH_GRACE_MS = 90000L;
+
+    /**
+     * Any mode may sit at this without harm (it is Normal's target). Under it, a falling LED never
+     * calls for more fan, however far over a dimmer mode's lower target it still is.
+     */
+    static final double COOLING_OK_C = 58.0;
+
+    /**
+     * For this long after a change of mode, or after the fan was above its limit, the fan comes
+     * down on the look-ahead (a point every 3 to 12 s) as soon as the LED is under its band, in
+     * place of a point a minute. The owner, 15 Nov 2026: "taking minutes to lower from 43".
+     */
+    static final long QUICK_DOWN_MS = 900000L;
+    private long quickDownUntilMs;
     private long graceUntilMs;
     private double graceTargetC = Double.NaN;
     private double lastTargetC = Double.NaN;
@@ -511,6 +525,7 @@ public final class AutoHold {
                 // A lower target must not make a warm LED look hot: see SWITCH_GRACE_MS.
                 graceTargetC = Double.isNaN(lastTargetC) ? setTargetC : Math.max(lastTargetC, setTargetC);
                 graceUntilMs = nowMs + SWITCH_GRACE_MS;
+                quickDownUntilMs = nowMs + QUICK_DOWN_MS;
                 // Steady time counts from the switch. Without this, the first tick in a new mode
                 // still saw ten unchanged minutes and a smoothed reading in the band, both left
                 // over from the old one: on 14 Nov 2026 it logged "settled Normal@42" the moment
@@ -593,7 +608,9 @@ public final class AutoHold {
         // Step only when the error and the trend agree. Over the target but already cooling: the
         // last raise is still arriving, so wait (unless it is far over). Under the band but already
         // warming: the last cut is still arriving, so wait.
-        if (err >= 0.0 && err < 3.0 && slope < -TREND_C_PER_S) {
+        if (err >= 0.0 && slope < -TREND_C_PER_S && (err < 3.0 || celsius < COOLING_OK_C)) {
+            // Also when far over a low target but under COOLING_OK_C and falling: that is a switch
+            // down to a dimmer mode, cooling by itself, and more fan is noise for nothing.
             wait = 0L;
         } else if (err >= 0.0 && err < 3.0 && slope < 0.0
                 && smoothC + slope * LOOKAHEAD_S <= targetC + OVER_C) {
@@ -606,12 +623,14 @@ public final class AutoHold {
             // holding a point early would only leave it a point louder than it need be.
             wait = 0L;
         }
-        if (catchingUp) {
+        boolean quickDown = nowMs < quickDownUntilMs;
+        if (catchingUp || quickDown) {
             // Where the reading is heading, not where it is. Coming down on the prediction is what
             // lets this be quick without running past the target; it has its own look-ahead, so the
             // trend rule above does not hold it.
             double ahead = smoothC + Math.max(0.0, slope) * LOOKAHEAD_S - targetC;
             if (err >= 0.0 || ahead >= -BAND_C || duty <= floor) {
+                // Not now. After a switch the chance stays open (quickDown) until the LED has come under.
                 catchingUp = false;
             } else {
                 wait = ahead < -6.0 ? 3000L : ahead < -3.0 ? 6000L : 12000L;
@@ -785,6 +804,8 @@ public final class AutoHold {
             dir = -1;
             wait = 2000L;
             probeStep = false;
+            // And on down from the limit quickly once the LED allows, not a point a minute.
+            quickDownUntilMs = nowMs + QUICK_DOWN_MS;
         } else if ((int) duty == ceiling && dir > 0) {
             wait = 0L;
             upToDuty = 0;
