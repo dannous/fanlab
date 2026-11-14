@@ -451,6 +451,22 @@ public class FanService extends Service {
     }
 
     /**
+     * The whole brightness table for the log, Super Eco to Presentation, e.g.
+     * "brightness set 65/75/85/90 (Super Eco/Eco/Normal/Presentation), boost on". The per-row
+     * led_drive column only ever shows the mode on screen, so without this a mode never used
+     * in a session never appears.
+     */
+    private String brightnessNote(String what) {
+        LedDrive.Config cfg = Prefs.ledDrive(this);
+        StringBuilder sb = new StringBuilder(what).append(' ');
+        for (int i = 0; i < LedDrive.TIERS; i++) {
+            sb.append(i == 0 ? "" : "/").append(cfg.level[i]);
+        }
+        return sb.append(" (Super Eco/Eco/Normal/Presentation), boost ")
+                .append(Prefs.ledBoostOn(this) ? "on" : "off").toString();
+    }
+
+    /**
      * Stop driving the fan and hand it back at the fail-safe duty.
      *
      * 83 is loud, but it is the stock controller's own maximum and the only value that is
@@ -729,10 +745,13 @@ public class FanService extends Service {
             if (lastDriveKey != null && !drive.equals(lastDriveKey)) {
                 autoHold.forgetLearned();
                 append(note, "auto forgot learned speeds (brightness changed)");
+                append(note, brightnessNote("brightness set"));
             }
             lastDriveKey = drive;
         } else if (lastDriveKey == null) {
             lastDriveKey = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode();
+            // Once at start, so every session's log says what the four modes were set to.
+            append(note, brightnessNote("brightness"));
         }
 
         // Own the stock ladder's kill switch from here rather than leaving it to whoever last set it
