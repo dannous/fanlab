@@ -3926,6 +3926,21 @@ public final class FanLabTest {
         bad.resync(-1);
         eq(bad.step(40.0, AutoHold.TARGET_C, 1000L), FanIo.FAIL_SAFE_DUTY,
                 "and an unreadable fan node is treated the same way");
+        eq(AutoHold.minFor(4), 25, "Super Eco floor is 25");
+        eq(AutoHold.minFor(1), 25, "Eco floor is 25");
+        eq(AutoHold.minFor(2), 27, "Normal floor is 27");
+        eq(AutoHold.minFor(3), 30, "Presentation floor is 30");
+        eq(AutoHold.minFor(-1), 30, "an unreadable brightness mode gets the highest floor");
+        AutoHold fl = new AutoHold();
+        fl.resync(55);
+        long fm = 1000L;
+        for (int i = 0; i < 900; i++, fm += 1000L) {
+            fl.step(30.0, AutoHold.TARGET_C, AutoHold.minFor(3), fm);
+        }
+        eq(fl.step(30.0, AutoHold.TARGET_C, AutoHold.minFor(3), fm), 30,
+                "a cold Presentation stops at 30, not 25");
+        eq(fl.step(30.0, AutoHold.TARGET_C, 5, fm + 1000L) >= AutoHold.MIN_DUTY ? 1 : 0, 1,
+                "and no caller can ask for less than 25");
         check(AutoHold.targetFor(true) < LedDrive.DEFAULT_TRIP_C,
                 "the raised-drive target sits under the drive's own cut-out");
         check(AutoHold.targetFor(false) == 55.0 && AutoHold.targetFor(true) == 58.0,

@@ -874,7 +874,7 @@ public class FanService extends Service {
                 if (autoKind == Prefs.AUTO_HOLD) {
                     // AUTO 58 replaces the curve's answer but keeps its SoC guard, which only ever adds.
                     if (engineOn) {
-                        int held = autoHold.step(s.degC, target, mono);
+                        int held = autoHold.step(s.degC, target, AutoHold.minFor(s.rgblevel), mono);
                         desired = Math.min(cfg.socGuardMaxDuty > held ? cfg.socGuardMaxDuty : held,
                                 held + curve.guardBoost());
                     } else {

@@ -16,11 +16,23 @@ public final class AutoHold {
     public static final double BAND_C = 1.5;
 
     /**
-     * Lowest duty with the light engine on. 20 is the owner's tested minimum. The written
-     * record only proves 30 against the stall watchdog (twelve minutes under full load), and
-     * the stock firmware itself commands 10 with the light engine off.
+     * Lowest duty in any mode. The owner hears no difference between 20 and 25, so nothing
+     * runs below 25. The written record only proves 30 against the stall watchdog.
      */
-    public static final int MIN_DUTY = 20;
+    public static final int MIN_DUTY = 25;
+
+    /** The floor for a brightness mode, by {@code rgblevel}: more heat keeps more fan in reserve. Unknown levels get the highest. */
+    public static int minFor(int rgblevel) {
+        switch (rgblevel) {
+            case 4:     // Super Eco
+            case 1:     // Eco
+                return 25;
+            case 2:     // Normal
+                return 27;
+            default:    // Presentation, or unreadable
+                return 30;
+        }
+    }
 
     /** Below this duty the plant is unmeasured and steeper, so the hold band is widened by {@link #LOW_BAND_EXTRA_C}. */
     public static final int MEASURED_FLOOR = 30;
@@ -33,6 +45,7 @@ public final class AutoHold {
     /** Smoothing time constant on the input, seconds; sensor noise must not look like a trend. */
     private static final double SMOOTH_S = 20.0;
 
+    private int floor = MIN_DUTY;
     private double duty = Double.NaN;
     private double smoothC = Double.NaN;
     private long lastMs;
@@ -87,12 +100,19 @@ public final class AutoHold {
 
     /** Advance one tick and return the duty. {@code celsius} must already be plausible; the caller's fail-safe owns the rest. */
     public int step(double celsius, double targetC, long nowMs) {
+        return step(celsius, targetC, MIN_DUTY, nowMs);
+    }
+
+    /** As above, with the floor for the current brightness mode; see {@link #minFor}. */
+    public int step(double celsius, double targetC, int minDuty, long nowMs) {
+        floor = minDuty < MIN_DUTY ? MIN_DUTY : minDuty > MAX_DUTY ? MAX_DUTY : minDuty;
         if (Double.isNaN(duty)) {
             duty = FanIo.FAIL_SAFE_DUTY;
         }
         if (Double.isNaN(celsius) || Double.isInfinite(celsius)) {
             return (int) duty;
         }
+        duty = clamp(duty);
         if (Double.isNaN(smoothC) || lastMs == 0L) {
             smoothC = celsius;
         } else {
@@ -117,7 +137,7 @@ public final class AutoHold {
         return (int) duty;
     }
 
-    private static double clamp(double d) {
-        return d < MIN_DUTY ? MIN_DUTY : d > MAX_DUTY ? MAX_DUTY : d;
+    private double clamp(double d) {
+        return d < floor ? floor : d > MAX_DUTY ? MAX_DUTY : d;
     }
 }
