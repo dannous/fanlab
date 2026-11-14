@@ -215,7 +215,8 @@ public class WhiteActivity extends Activity {
             return;
         }
         if (!plan) {
-            readout.setText((focus ? "Focus pattern   " : "") + live + "   " + totalMin + " min   any key to exit");
+            readout.setText(focus ? "Focus pattern   Back or OK to exit   " + live
+                    : live + "   " + totalMin + " min   any key to exit");
             return;
         }
         if (step < 0 || now - stepStartedMs >= PLAN[step][2] * 60000L) {
@@ -290,6 +291,15 @@ public class WhiteActivity extends Activity {
         if (System.currentTimeMillis() - startedMs < 800L) {
             return true;
         }
+        if (focus) {
+            // Only Back or OK leaves. Everything else goes on to the projector untouched: the focus
+            // buttons on the remote are what this pattern is for, and they used to close it.
+            if (isStopKey(keyCode)) {
+                finish();
+                return true;
+            }
+            return super.onKeyUp(keyCode, event);
+        }
         if (slides) {
             if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                 slide = (slide + 1) % SLIDE_COLOURS.length;
@@ -298,6 +308,9 @@ public class WhiteActivity extends Activity {
             } else if (isStopKey(keyCode)) {
                 finish();
                 return true;
+            } else {
+                // Not ours: let the projector have it (focus, volume) and stay on the slide.
+                return super.onKeyUp(keyCode, event);
             }
             root.setBackgroundColor(SLIDE_COLOURS[slide]);
             return true;
