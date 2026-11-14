@@ -124,6 +124,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
         addRow(root, new StepRow(c, "White screen test (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits."))
                 .display(">");
+        addRow(root, new StepRow(c, "Unattended test (" + WhiteActivity.planMinutes() + " min)").button()
+                .tag("plan", 0).hint("Runs by itself on a white screen: Presentation, Normal and Eco on Auto 58, then Presentation and Normal on Auto Step.\n\nLeave a USB stick in. Any key stops it and puts your settings back."))
+                .display(">");
         addRow(root, new StepRow(c, "Restore stock fan (do this before uninstalling)").button()
                 .tag("restore", 0).hint("Gives the fan back to Philips for good.\n\nDo this before uninstalling.")).display(">");
         advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0).hint("Manual fan, measuring, logs and system switches."));
@@ -255,6 +258,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
                 Prefs.setAutostart(this, !Prefs.autostart(this));
             } else if ("white".equals(row.tagName)) {
                 startActivity(new android.content.Intent(this, WhiteActivity.class));
+            } else if ("plan".equals(row.tagName)) {
+                startActivity(new android.content.Intent(this, WhiteActivity.class)
+                        .putExtra("plan", true));
             } else if ("advanced".equals(row.tagName)) {
                 boolean open = advancedView.getVisibility() != View.VISIBLE;
                 advancedView.setVisibility(open ? View.VISIBLE : View.GONE);

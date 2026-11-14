@@ -554,6 +554,14 @@ public class FanService extends Service {
         return Mode.controls(mode) || sweepEngine != null || holdSession != null;
     }
 
+    /** Put a marker on the next log row from outside the loop; a no-op while the service is not running. */
+    public static void mark(String s) {
+        FanService f = instance;
+        if (f != null) {
+            f.note(s);
+        }
+    }
+
     private void note(String s) {
         synchronized (this) {
             pendingNote = pendingNote.length() == 0 ? s : pendingNote + " " + s;
