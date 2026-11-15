@@ -86,7 +86,7 @@ happens, reinstall FanLab and press Restore.
 - Smart quiet and Curve to 58 °C run the LEDs warmer than Philips does, and the boost drives
   them harder. Both cost some LED life, by an amount nobody has measured for this projector.
 
-Worked out on one projector. The full account is in [docs/safety.md](docs/safety.md). Not
+Try it, but take care: keep an eye on the LED temperature at the top of the screen, and use it at your own risk. The full account is in [docs/safety.md](docs/safety.md). Not
 endorsed by or affiliated with Philips or Screeneo Innovation SA.
 
 ## More
