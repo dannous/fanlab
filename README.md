@@ -47,6 +47,12 @@ Off is Philips' own brightness. On runs each brightness mode harder:
 Each level can be set from 20 to 97 under Advanced. More brightness means more heat, so more
 fan. Above 65 °C the boost switches itself off until you change brightness mode or a setting.
 
+### Manual fan
+
+A slider. Moving it holds the fan at one speed, 20–100 %, to hear it or to cool the projector
+quickly. Nothing watches the temperature while it is on, so it ends by itself after 30 minutes
+or at 62 °C. Picking a Fan mode ends it and puts that mode back in charge.
+
 ### Start on boot
 
 Leave it on, or Philips' controller takes the fan back at the next power-on.
@@ -58,7 +64,7 @@ Leave it on, or Philips' controller takes the fan back at the next power-on.
 | **Smart quiet targets** | The LED temperature Smart quiet holds in each brightness mode: Super Eco 50 °C, Night 55 °C, Normal 58 °C, Presentation 60 °C. Each can be set from 45 to 60. Lower is kinder to the LEDs but needs more fan, or a dimmer picture at the limit |
 | **Fan floor** | The slowest the fan runs: 30 % unless you change it, 20–40. Below 30 is untested. The curves never go below 25 |
 | **Brightness (LED drive)** | The boost level for each brightness mode, and a reset for brightness and targets |
-| **Tests** | White screen (full load), colour slides, a focus pattern, a manual fan test (20–100 %, ends by itself after 30 minutes or at 62 °C), and an unattended test |
+| **Tests** | White screen (full load), colour slides, a focus pattern, and an unattended test |
 | **Measure** | Sweep every fan speed, hold one fan speed, and a room temperature for the log |
 | **Logs** | Write the CSV log, copy it to shared storage or a USB stick, delete the logs on the projector (it asks first), and raw diagnostics |
 | **ADB over USB** | Untested on this projector |

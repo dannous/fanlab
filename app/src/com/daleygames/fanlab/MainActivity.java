@@ -26,6 +26,8 @@ public class MainActivity extends Activity implements StepRow.Listener {
 
     private StepRow fanRow;
     private StepRow brightRow;
+    private TextView manualLabel;
+    private android.widget.SeekBar manualSlider;
     private StepRow bootRow;
     private StepRow limitRow;
     private StepRow advancedRow;
@@ -136,6 +138,52 @@ public class MainActivity extends Activity implements StepRow.Listener {
                         + "One exception, for safety: if the LED is 3 °C over its target, or there is nothing left to dim, the fan goes above the limit until it cools.\n\n"
                         + "All the way right is Off."));
         bootRow = addRow(root, new StepRow(c, "Start on boot").button().tag("boot", 0).hint("Start FanLab when the projector powers on.\n\nOff means Philips controls the fan after a restart."));
+        // Manual fan: a slider, as it was. Moving it holds the fan at that speed; picking a Fan mode
+        // above ends it and goes back to that mode.
+        LinearLayout box = Ui.column(c);
+        box.setBackground(Ui.panel(c, Ui.PANEL));
+        int bp = Ui.dp(c, 10);
+        box.setPadding(bp, bp, bp, bp);
+        manualLabel = Ui.text(c, "Manual fan", 18f, Ui.FG);
+        box.addView(manualLabel, Ui.wrap());
+        manualSlider = new android.widget.SeekBar(c);
+        manualSlider.setMax(FanIo.MAX_DUTY - Prefs.MIN_FAN_FLOOR);
+        manualSlider.setKeyProgressIncrement(1);
+        manualSlider.setFocusable(true);
+        manualSlider.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean has) {
+                if (has && StepRow.hintSink != null) {
+                    StepRow.hintSink.onHint(v, "Left and right hold the fan at one speed, 20 to 100 %, to hear it or to cool the projector quickly.\n\n"
+                            + "Nothing watches the temperature while it is on, so it ends by itself after 30 minutes or at "
+                            + (int) FanService.MANUAL_END_C + " °C. Pick a Fan mode to end it sooner; that mode takes over again.");
+                }
+            }
+        });
+        manualSlider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(android.widget.SeekBar bar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    Prefs.setManualDuty(MainActivity.this, progress + Prefs.MIN_FAN_FLOOR);
+                    Prefs.setMode(MainActivity.this, Mode.MANUAL);
+                    FanService.poke(MainActivity.this, FanService.ACTION_REFRESH);
+                    sync();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(android.widget.SeekBar bar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(android.widget.SeekBar bar) {
+            }
+        });
+        box.addView(manualSlider, Ui.wrap());
+        LinearLayout.LayoutParams blp = Ui.wrap();
+        blp.topMargin = Ui.dp(c, 1);
+        root.addView(box, blp);
+
         advancedRow = addRow(root, new StepRow(c, "Advanced").button().tag("advanced", 0).hint("Temperatures and fan floor, brightness of each mode, tests, measuring, logs, and giving the fan back to Philips."));
         advancedRow.display("+");
         advanced = new AdvancedPanel(this);
@@ -182,7 +230,7 @@ public class MainActivity extends Activity implements StepRow.Listener {
             case FAN_SMART:
                 return "Smart quiet";
             case FAN_MANUAL:
-                return "Manual fan test · " + Prefs.manualDuty(this) + "%";
+                return "Manual · " + Prefs.manualDuty(this) + "%";
             default:
                 return Prefs.mode(this) == Mode.OFF ? "Stock (Philips)" : "Other";
         }
@@ -202,6 +250,11 @@ public class MainActivity extends Activity implements StepRow.Listener {
         limitRow.valueColour(lim == 0 ? Ui.DIM : Ui.ACCENT);
         // Only the rows that mean something in the mode in force are shown.
         limitRow.setVisibility(fanIndex() == FAN_SMART ? View.VISIBLE : View.GONE);
+        boolean manual = mode == Mode.MANUAL;
+        int md = Math.max(Prefs.MIN_FAN_FLOOR, Prefs.manualDuty(this));
+        manualSlider.setProgress(md - Prefs.MIN_FAN_FLOOR);
+        manualLabel.setText(manual ? "Manual fan  " + md + "%  (on)" : "Manual fan  off");
+        manualLabel.setTextColor(manual ? Ui.WARN : Ui.FG);
         boolean boot = Prefs.autostart(this);
         bootRow.display(boot ? "On" : "Off");
         bootRow.valueColour(boot ? Ui.GOOD : Ui.DIM);

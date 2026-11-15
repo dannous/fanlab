@@ -19,7 +19,6 @@ public final class AdvancedPanel implements StepRow.Listener {
 
     private TextView statusView;
     private StepRow floorRow;
-    private StepRow manualRow;
     private final StepRow[] targetRows = new StepRow[LedDrive.TIERS];
     private StepRow roomRow;
     private StepRow loggingRow;
@@ -74,10 +73,6 @@ public final class AdvancedPanel implements StepRow.Listener {
         add(root, new StepRow(c, "White screen (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits.")).display(">");
         add(root, new StepRow(c, "Colour slides").button().tag("slides", 0).hint("Full-screen white, red, green, blue and black, one at a time, to check each LED and look for dust or dead pixels.\n\nLeft and right change the slide. Back or OK exits.")).display(">");
         add(root, new StepRow(c, "Focus pattern").button().tag("focus", 0).hint("A fine grid with markers in the centre and corners, for setting focus and checking it is even across the picture.\n\nThe remote's focus buttons work while it is up. Back or OK exits.")).display(">");
-        manualRow = add(root, new StepRow(c, "Manual fan test %").range(Prefs.MIN_FAN_FLOOR, FanIo.MAX_DUTY).steps(1, 5).tag("manual", 0)
-                .hint("Left and right hold the fan at one speed, from 20 to 100 %, to hear it or to cool the projector quickly. Philips itself never goes above 83. Brightness boost keeps working.\n\n"
-                        + "Nothing watches the temperature during the test, so it ends by itself after 30 minutes, or at "
-                        + (int) FanService.MANUAL_END_C + " °C, and your fan mode takes over. Pick a Fan mode to end it sooner."));
         add(root, new StepRow(c, "Unattended test (" + WhiteActivity.planMinutes() + " min)").button().tag("plan", 0)
                 .hint("Runs by itself on a white screen: Presentation, Normal and Night on Smart quiet, then Presentation and Normal on the curve.\n\nLeave a USB stick in. Back or OK stops it and puts your settings back.")).display(">");
 
@@ -135,10 +130,7 @@ public final class AdvancedPanel implements StepRow.Listener {
         floorRow.set(fl);
         floorRow.display(fl + "%");
         floorRow.valueColour(fl < Prefs.DEFAULT_FAN_FLOOR ? Ui.WARN : Ui.ACCENT);
-        boolean testing = Prefs.mode(a) == Mode.MANUAL;
-        manualRow.set(Prefs.manualDuty(a));
-        manualRow.display(testing ? Prefs.manualDuty(a) + "% (running)" : "Off");
-        manualRow.valueColour(testing ? Ui.WARN : Ui.DIM);        onOff(loggingRow, Prefs.logging(a));
+        onOff(loggingRow, Prefs.logging(a));
         int r = Prefs.roomC(a);
         roomRow.set(r);
         roomRow.display(r == 0 ? "Not set" : Integer.toString(r));
@@ -186,10 +178,6 @@ public final class AdvancedPanel implements StepRow.Listener {
             String t = row.tagName;
             if ("target".equals(t)) {
                 Prefs.setSmartTarget(a, LedDrive.TIER_RGBLEVEL[row.tagIndex], row.get());
-                FanService.poke(a, FanService.ACTION_REFRESH);
-            } else if ("manual".equals(t)) {
-                Prefs.setManualDuty(a, row.get());
-                Prefs.setMode(a, Mode.MANUAL);
                 FanService.poke(a, FanService.ACTION_REFRESH);
             } else if ("floor".equals(t)) {
                 Prefs.setFanFloor(a, row.get());
