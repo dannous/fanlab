@@ -159,7 +159,11 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                 + "optional — a run with no keypresses is still a good run."), Ui.wrap());
 
         col.addView(Ui.heading(c, "What it writes"), Ui.wrap());
-        col.addView(Ui.body(c, "Writes sweep_<time>.json and trace_<time>.csv to internal storage and any USB stick."), Ui.wrap());
+        col.addView(Ui.body(c, "Shows a results table when it finishes, and writes it as sweep_<time>.txt, with sweep_<time>.json and trace_<time>.csv, to internal storage and any USB stick."), Ui.wrap());
+        if (FanService.lastSweepSummary.length() > 0) {
+            col.addView(Ui.heading(c, "Last results"), Ui.wrap());
+            col.addView(Ui.mono(c, FanService.lastSweepSummary, 14f, Ui.FG), Ui.wrap());
+        }
 
         col.addView(Ui.heading(c, "Room temperature (optional)"), Ui.wrap());
         ambientRow = new StepRow(c, "Room temperature").range(0, 40).steps(1, 5)
@@ -401,7 +405,9 @@ public class AutoActivity extends Activity implements StepRow.Listener {
             if (startRow != null) {
                 startRow.requestFocus();
             }
-            say(FanService.statusLine);
+            // The results first, in words; then where the files went.
+            String sum = FanService.lastSweepSummary;
+            say((sum.length() > 0 ? sum + "\n" : "") + FanService.statusLine);
             return;
         }
         double c = s == null ? Double.NaN : s.degC;

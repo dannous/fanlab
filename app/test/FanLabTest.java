@@ -1,5 +1,7 @@
 import com.daleygames.fanlab.AutoHold;
 import com.daleygames.fanlab.FanLimit;
+import com.daleygames.fanlab.LogGuide;
+import com.daleygames.fanlab.SweepSummary;
 import com.daleygames.fanlab.AutoStep;
 import com.daleygames.fanlab.CsvLogger;
 import com.daleygames.fanlab.CurveConfig;
@@ -109,6 +111,7 @@ public final class FanLabTest {
         testAutoSwitchLocks();
         testAutoFindsLowest();
         testFanLimit();
+        testSweepSummaryAndGuide();
         testSmartTargetsAndFloor();
         testAutoGuide();
         testAutoStep();
@@ -1701,7 +1704,7 @@ public final class FanLabTest {
         section("sweep plan: the schedule and the limits that are not negotiable");
         eq(SweepPlan.CEILING_C, 58.0, 0.0001,
                 "the hard ceiling is 58 C (revised down from 62 on review)");
-        eq(SweepPlan.DUTY_FLOOR, 35, "the duty floor is 35, above the FANSTOP risk");
+        eq(SweepPlan.DUTY_FLOOR, 30, "the duty floor is 30: held for hours in the field, and no lower");
         eq(FanIo.FAIL_SAFE_DUTY, 83, "fail safe is still 83");
         eq(SweepPlan.RATE_GUARD_C, 0.5, 0.0001, "rate guard is 0.5 C per 10 s");
         eq((int) SweepPlan.RATE_WINDOW_MS, 10000, "  over a 10 s window");
@@ -1733,13 +1736,13 @@ public final class FanLabTest {
                             && FanIo.valid(SweepPlan.SHORT[i]),
                     "short schedule entry " + SweepPlan.SHORT[i] + " is writable and above the floor");
         }
-        eq(SweepPlan.totalSteps(), 28, "28 duty steps in the whole run");
+        eq(SweepPlan.totalSteps(), 34, "34 duty steps in the whole run, now that it goes down to 30");
         long best = SweepPlan.estimateBestSeconds();
         long typical = SweepPlan.estimateTypicalSeconds();
         System.out.println("  best case " + (best / 60) + " min, typical "
                 + (typical / 60) + " min, hard cap " + (SweepPlan.capSeconds() / 60) + " min");
-        check(best >= 80 * 60 && best <= 100 * 60,
-                "the confirmation screen's \"about 90 minutes\" is what the schedule "
+        check(best >= 100 * 60 && best <= 115 * 60,
+                "the confirmation screen's \"about 106 minutes\" is what the schedule "
                         + "actually implies (" + (best / 60) + " min)");
         check(typical > best && typical < SweepPlan.capSeconds(),
                 "and the slower figure it also quotes sits between the two ("
@@ -1861,8 +1864,8 @@ public final class FanLabTest {
             }
         }
         check(allHeld, "all " + want + " scheduled (mode, duty) conditions were held");
-        eq(held.size(), 28, "and no duplicates or extras");
-        eq(e.steps().size(), 32, "32 records: 28 duty steps plus 4 mode baselines");
+        eq(held.size(), 34, "and no duplicates or extras");
+        eq(e.steps().size(), 38, "38 records: 34 duty steps plus 4 mode baselines");
         check(fits == e.steps().size(),
                 "every record carries a fit (" + fits + "/" + e.steps().size() + ")");
         check(settled >= 28,
@@ -4403,6 +4406,53 @@ public final class FanLabTest {
         eq(seTrim, 0, "and the picture is not dimmed for it");
         check(seAt8 <= 33, "and the fan is down near the floor within 8 minutes, not a point a minute (was "
                 + seAt8 + ")");
+    }
+    private static SweepStep sweepStep(int lv, int duty, double c, boolean settled) {
+        SweepStep s = new SweepStep();
+        s.rgblevel = lv;
+        s.commandedDuty = duty;
+        s.tEndC = c;
+        s.fit.ok = settled;
+        s.fit.tInf = c;
+        s.endReason = settled ? SweepStep.END_SETTLED : SweepStep.END_TIMEOUT;
+        return s;
+    }
+
+    private static void testSweepSummaryAndGuide() {
+        section("sweep results in words, and a guide beside the logs");
+        java.util.List<SweepStep> steps = new java.util.ArrayList<SweepStep>();
+        steps.add(sweepStep(3, 60, 50.0, true));
+        steps.add(sweepStep(3, 50, 52.0, true));
+        steps.add(sweepStep(3, 40, 54.0, true));
+        steps.add(sweepStep(3, 30, 57.0, false));
+        steps.add(sweepStep(2, 40, 47.0, true));
+        steps.add(sweepStep(2, 30, 50.0, true));
+        int[] targets = {0, 55, 55, 55, 50};
+        String txt = SweepSummary.text(steps, null, targets);
+        check(txt.contains("Presentation") && txt.contains("fan 40 %   54.0 C"), "each speed and where it settled is listed");
+        check(txt.contains("not settled: timeout"), "a step that did not settle says so");
+        // 54.0 at 40 and 57.0 at 30: 55 is a third of the way down, so 37 after rounding up.
+        check(txt.contains("To stay under 55 C: about 37 % fan."), "the slowest fan for the target is interpolated (" 
+                + txt.replace('\n', '|') + ")");
+        check(txt.contains("30 % is enough"), "a mode under its target at the slowest speed tested says that is enough");
+        check(!txt.contains("Super Eco"), "a mode that was not measured is left out");
+        check(SweepSummary.text(new java.util.ArrayList<SweepStep>(), null, targets).contains("Nothing was measured"),
+                "an empty sweep says so rather than showing an empty table");
+        eq(SweepPlan.FULL[SweepPlan.FULL.length - 1], 30, "the sweep goes down to 30, the range the owner listens in");
+        eq(SweepPlan.DUTY_FLOOR, 30, "and never below it");
+
+        String g = LogGuide.text("1.9.0");
+        check(g.contains("1.9.0") && g.contains("COLUMNS") && g.contains("NOTES"), "the guide names its version and has both lists");
+        String[] cols = CsvLogger.HEADER.split(",");
+        int missing = 0;
+        for (int i = 0; i < cols.length; i++) {
+            String c = cols[i].startsWith("thr_") ? "thr_*" : cols[i];
+            if (!g.contains(c)) {
+                missing++;
+                System.out.println("  guide does not explain column: " + cols[i]);
+            }
+        }
+        eq(missing, 0, "every column in the log is explained in the guide");
     }
     private static void testAutoGuide() {
         section("auto: a learned speed guides a switch, and only a fresh one");

@@ -77,7 +77,7 @@ public final class AdvancedPanel implements StepRow.Listener {
                 .hint("Runs by itself on a white screen: Presentation, Normal and Night on Smart quiet, then Presentation and Normal on the curve.\n\nLeave a USB stick in. Back or OK stops it and puts your settings back.")).display(">");
 
         root.addView(Ui.heading(c, "Measure"), Ui.wrap());
-        add(root, new StepRow(c, "Sweep every fan speed").button().tag("sweep", 0).hint("Measures the LED temperature at every fan speed.\n\nTakes over an hour."))
+        add(root, new StepRow(c, "Sweep every fan speed").button().tag("sweep", 0).hint("Measures where the LED settles at every fan speed from 83 down to 30 %, in each brightness mode, and shows a results table at the end.\n\nTakes about two hours."))
                 .display(">");
         add(root, new StepRow(c, "Hold one fan speed").button().tag("verify", 0).hint("Holds one fan speed so you can watch the picture and the temperature.")).display(">");        roomRow = add(root, new StepRow(c, "Room °C (for the log)").range(0, 40)
                 .steps(1, 5).tag("room", 0).hint("Your room temperature, saved with the log.\n\nNot used to control anything."));

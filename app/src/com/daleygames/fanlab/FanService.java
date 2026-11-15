@@ -146,6 +146,9 @@ public class FanService extends Service {
     private long manualSinceMs;
     /** For the main screen: what the fan limit is doing, or empty. */
     public static volatile String limitLine = "";
+    /** The last finished sweep, in words (see {@link SweepSummary}); empty until one finishes. */
+    public static volatile String lastSweepSummary = "";
+    private int guideDirs = -1;
     /** The boost switch and levels last seen, to tell when learned fan speeds have gone stale. */
     private String lastDriveKey;
     private final AutoStep autoStep = new AutoStep();
@@ -454,6 +457,32 @@ public class FanService extends Service {
     }
 
     /** Called by the UI after it changes a preference. Only raises a flag: the re-sync happens on the loop thread, so nothing touches sysfs from the UI thread. */
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    /** The fan mode in force, in the words the screen uses, for the log. */
+    private String fanModeName() {
+        int m = Prefs.mode(this);
+        if (m == Mode.OFF) {
+            return "Stock";
+        }
+        if (m == Mode.MANUAL) {
+            return "Manual " + Prefs.manualDuty(this) + "%";
+        }
+        if (m != Mode.CURVE) {
+            return Mode.name(m);
+        }
+        int k = Prefs.autoKind(this);
+        return k == Prefs.AUTO_HOLD ? "Smart quiet"
+                : k == Prefs.AUTO_STEP ? "Curve to " + (Prefs.ledBoostOn(this) ? Prefs.curveTarget(this) : 55) + " C"
+                : "Curve preset";
+    }
+
     public void onPrefsChanged() {
         prefsDirty = true;
     }
@@ -757,6 +786,7 @@ public class FanService extends Service {
                 autoHold.forgetLearned();
                 append(note, "auto forgot learned speeds (brightness or targets changed)");
                 append(note, brightnessNote("brightness set"));
+                append(note, "fan mode " + fanModeName() + ";");
                 // Levels it has run at before come back with what was learned at them.
                 if (autoHold.importLearned(Prefs.smartLearned(this, drive))) {
                     append(note, "smart restored " + autoHold.exportLearned());
@@ -766,7 +796,8 @@ public class FanService extends Service {
             lastDriveKey = drive;
         } else if (lastDriveKey == null) {
             lastDriveKey = Prefs.ledBoostOn(this) + Prefs.ledDrive(this).encode() + Prefs.targetsKey(this);
-            // Once at start, so every session's log says what the four modes were set to.
+            // Once at start, so every session's log says what is running and how it is set.
+            append(note, "fanlab " + appVersion() + ", fan mode " + fanModeName() + ";");
             append(note, brightnessNote("brightness"));
             if (autoHold.importLearned(Prefs.smartLearned(this, lastDriveKey))) {
                 append(note, "smart restored " + autoHold.exportLearned());
@@ -1534,6 +1565,20 @@ public class FanService extends Service {
         } catch (Throwable ignored) {
         }
         writeSweepReport(true);
+        // The same results in words, for the person who ran it: on screen, and beside the JSON.
+        try {
+            int[] targets = new int[5];
+            for (int lv = 1; lv <= 4; lv++) {
+                // The sweep runs at Philips' own brightness, where the target is never above 55.
+                targets[lv] = (int) Math.min(AutoHold.TARGET_C, Prefs.smartTarget(this, lv));
+            }
+            lastSweepSummary = SweepSummary.text(sw.steps(), sw.markers(), targets);
+            if (reportName != null) {
+                CsvLogger.writeWhole(sinkSnapshot(), reportName.replace(".json", ".txt"), lastSweepSummary);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "sweep summary", t);
+        }
         sweepEngine = null;
         closeTrace();
         statusLine = "AUTO finished (" + sw.endReason() + ") - fan handed back at "
@@ -1884,6 +1929,15 @@ public class FanService extends Service {
             }
         } catch (Throwable ignored) {
         }
+        // A guide beside the logs, rewritten whenever the set of places changes (a stick arriving).
+        try {
+            if (dirs.size() != guideDirs) {
+                CsvLogger.writeWhole(dirs, LogGuide.NAME, LogGuide.text(appVersion()));
+                guideDirs = dirs.size();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "log guide", t);
+        }
         try {
             if (csv != null) {
                 csv.setDirs(dirs);
@@ -1933,6 +1987,8 @@ public class FanService extends Service {
             Log.w(TAG, "wipeDeviceLogs", t);
         }
         int n = csv.wipe(device);
+        // The guide went with them; have the next scan put it back.
+        guideDirs = -1;
         note("logs on the projector wiped: " + n + " files");
         return n;
     }
@@ -2044,6 +2100,13 @@ public class FanService extends Service {
                 failures += r.failures;
                 // The sweep and hold sessions write their own files beside the log; bring those too.
                 int extra = copySessionFiles(sources.get(0).getParentFile(), destDir);
+                try {
+                    List<File> one = new ArrayList<File>();
+                    one.add(destDir);
+                    CsvLogger.writeWhole(one, LogGuide.NAME, LogGuide.text(appVersion()));
+                } catch (Throwable t) {
+                    Log.w(TAG, "log guide export", t);
+                }
                 files += extra;
                 if (r.failures == 0) {
                     markThisBoot(destDir);

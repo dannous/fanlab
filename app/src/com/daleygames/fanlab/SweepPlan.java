@@ -4,10 +4,10 @@ package com.daleygames.fanlab;
 public final class SweepPlan {
 
     /** Presentation and Normal: the full descent. */
-    public static final int[] FULL = {83, 75, 70, 65, 60, 55, 50, 45, 40};
+    public static final int[] FULL = {83, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30};
 
     /** Eco and Super Eco: only the bottom of the range is informative. */
-    public static final int[] SHORT = {60, 50, 45, 40, 35};
+    public static final int[] SHORT = {60, 50, 45, 40, 35, 30};
 
     /** rgblevel values, in the order they are swept. */
     public static final int[] MODE_ORDER = {3, 2, 1, 4};
@@ -53,8 +53,12 @@ public final class SweepPlan {
     public static final double RATE_GUARD_C = 0.5;
     public static final long RATE_WINDOW_MS = 10000L;
 
-    /** Never command below this: lower risks the kernel FANSTOP stall watchdog, which hard-shuts the projector. */
-    public static final int DUTY_FLOOR = 35;
+    /**
+     * Never command below this: lower risks the kernel FANSTOP stall watchdog, which hard-shuts the
+     * projector. 30, not the 35 it was: the app has since held 30 for hours across months of logs,
+     * and 30 to 40 is the range the owner actually listens in, which the sweep used to miss.
+     */
+    public static final int DUTY_FLOOR = 30;
 
     public static final int RGBLEVEL_MIN = 1;
     public static final int RGBLEVEL_MAX = 4;
@@ -74,7 +78,7 @@ public final class SweepPlan {
     public static final long BASELINE_MIN_MS = 60000L;
 
     /** The whole run stops here regardless; everything measured is written with end_reason = time_cap. */
-    public static final long RUN_CAP_MS = 150L * 60000L;
+    public static final long RUN_CAP_MS = 180L * 60000L;
 
     /** A step is settled when the projected T_inf has held this band for {@link #SETTLE_WINDOW_MS}. */
     public static final double SETTLE_BAND_C = 0.4;      // i.e. +/- 0.2
