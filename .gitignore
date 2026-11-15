@@ -9,7 +9,6 @@ app/keys/
 app/build/
 app/out/
 *.apk
-!release/*.apk
 # tools/CurveSim.java is compiled ad hoc against app/build/test when validating a curve
 *.class
 
