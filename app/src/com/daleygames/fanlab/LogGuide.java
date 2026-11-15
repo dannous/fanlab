@@ -76,6 +76,8 @@ public final class LogGuide {
         s.append("  LEDDRIVE TRIP ...                LED passed the 65 C cut-out; brighter picture switched off\n");
         s.append("  auto guide X->Y to N (...)       brightness mode changed; fan is ramping to N, the speed\n");
         s.append("                                   learned for Y, or X's speed plus a learned gap\n");
+        s.append("  auto guide X->Y to N (estimate, brightness A to B)   nothing learned: N is the fan in use\n");
+        s.append("                                   scaled by the LED drives, only to get the fan started\n");
         s.append("  auto guide X->Y (nothing learned yet)   mode changed, no learned speed to ramp to\n");
         s.append("  auto settled Mode@N              fan unchanged 10 min in that mode: N is learned for it\n");
         s.append("  auto probe A->B started at T     trying a lower fan speed to find the slowest that holds\n");

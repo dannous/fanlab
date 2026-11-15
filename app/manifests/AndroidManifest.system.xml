@@ -25,8 +25,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.daleygames.fanlab.system"
     android:sharedUserId="android.uid.system"
-    android:versionCode="28"
-    android:versionName="1.9.1">
+    android:versionCode="29"
+    android:versionName="1.9.2">
 
     <uses-sdk
         android:minSdkVersion="28"

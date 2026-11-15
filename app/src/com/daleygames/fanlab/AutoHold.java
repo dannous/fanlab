@@ -50,6 +50,15 @@ public final class AutoHold {
     private double graceTargetC = Double.NaN;
     private double lastTargetC = Double.NaN;
 
+    /** LED drive in force for each brightness mode, by rgblevel 1..4, or null if not told. */
+    private int[] driveLevels;
+    private boolean guideEstimated;
+
+    /** Say what LED drive each brightness mode runs at, so a switch with nothing learned can start from an estimate. */
+    public void setDriveLevels(int[] byRgblevel) {
+        driveLevels = byRgblevel != null && byRgblevel.length >= 5 ? byRgblevel.clone() : null;
+    }
+
     private boolean driveSet;
     private boolean driveIs;
 
@@ -554,6 +563,22 @@ public final class AutoHold {
                         how = " (" + levelName(from) + " " + fromFresh + (gap >= 0 ? " +" : " ") + gap + ")";
                     }
                 }
+                // Nothing learned for either: on a switch to a brighter mode, start from an estimate.
+                // Heat follows the LED drive, so the fan this mode needs is roughly the fan in use
+                // scaled by the two drives. On 15 Nov 2026, Night at 25 % to Normal waited 75 s for
+                // the reading, peaked at 59.6 C and ran the fan up to 38; 25 x 85/65 is 33.
+                guideEstimated = false;
+                if (guideDuty == 0 && driveLevels != null && !Double.isNaN(duty)) {
+                    int was = driveLevels[from], now = driveLevels[level];
+                    if (was > 0 && now > was) {
+                        int est = Math.min(MAX_DUTY, (int) Math.round(duty * now / (double) was));
+                        if (est > (int) duty) {
+                            guideDuty = est;
+                            guideEstimated = true;
+                            how = " (estimate, brightness " + was + " to " + now + ")";
+                        }
+                    }
+                }
                 guideUntilMs = guideDuty > 0 ? nowMs + GUIDE_MS : 0L;
                 event = "guide " + levelName(from) + "->" + levelName(level)
                         + (guideDuty > 0 ? " to " + guideDuty + how
@@ -638,6 +663,13 @@ public final class AutoHold {
         }
         int dir = err >= 0.0 ? 1 : -1;
         boolean guided = guided(nowMs);
+        if (guided && guideEstimated && (int) duty >= Math.max(floor, guideDuty)) {
+            // An estimate only gets the fan started. Once there, the temperature decides at once;
+            // a learned speed is held for the whole window, a guess is not.
+            guideUntilMs = 0L;
+            guideEstimated = false;
+            guided = false;
+        }
         if (!guided) {
             guideDuty = 0;
             guideUntilMs = 0L;

@@ -995,6 +995,11 @@ public class FanService extends Service {
                         }
                         autoHold.setCeiling(fanLimit.ceilingFor(limit), fanLimit.trim() > 0);
                         autoHold.setDrive(boost);
+                        int[] drives = new int[5];
+                        for (int lv = 1; lv <= 4; lv++) {
+                            drives[lv] = boost ? ledCfg.levelFor(lv) : LedDrive.STOCK_OTHER[lv];
+                        }
+                        autoHold.setDriveLevels(drives);
                         // The limit wins over the floor if the two are set the wrong way round.
                         int floorNow = limit > 0 ? Math.min(userFloor, limit) : userFloor;
                         int held = autoHold.step(s.degC, holdTarget,

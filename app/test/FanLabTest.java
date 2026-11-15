@@ -4402,7 +4402,36 @@ public final class FanLabTest {
                 seAt8 = d2;
             }
         }
-        eq(seTop, 43, "Presentation to Super Eco: the fan never goes above where it was");
+        // 15 Nov 2026, 01:20: Night on a 25 % floor to Normal, nothing learned. The LED went 54 to
+        // 58.3 C in a minute, the fan first moved 75 s after the switch, the LED peaked at 59.6 and
+        // the fan ran on to 38. With the brightness levels known it starts toward 25 x 85/65 = 33.
+        AutoHold up = new AutoHold();
+        up.setDrive(true);
+        up.setDriveLevels(new int[] {0, 65, 85, 95, 45});
+        up.resync(25);
+        long um = 0L;
+        for (; um < 7L * 60000L; um += 1000L) {
+            up.step(49.5 + um / 93000.0, 55.0, 25, 1, um);
+            up.takeEvent();
+        }
+        eq(up.duty(), 25, "Night, still warming under its target, rests on the 25 floor");
+        String upEv = null;
+        int upAt45 = -1, upMaxTick = 0, upPrev = 25;
+        for (int i = 0; i < 60; i++, um += 1000L) {
+            int d3 = up.step(54.0 + i * 0.07, 58.0, 25, 2, um);
+            String e = up.takeEvent();
+            upEv = e != null && e.startsWith("guide") ? e : upEv;
+            upMaxTick = Math.max(upMaxTick, Math.abs(d3 - upPrev));
+            upPrev = d3;
+            if (i == 50) {
+                upAt45 = d3;
+            }
+        }
+        check(upEv != null && upEv.contains("to 33") && upEv.contains("estimate"),
+                "Night to Normal with nothing learned: guided to an estimate of 33 (saw " + upEv + ")");
+        eq(upAt45, 33, "and the fan is there within 50 s, while the LED is still under its target");
+        check(upMaxTick <= 1, "a point at a time");
+        check(!up.guided(um), "and once there the estimate lets go, so the temperature decides");        eq(seTop, 43, "Presentation to Super Eco: the fan never goes above where it was");
         check(!seLifted, "the limit is not lifted while the LED is cooling by itself");
         eq(seTrim, 0, "and the picture is not dimmed for it");
         check(seAt8 <= 33, "and the fan is down near the floor within 8 minutes, not a point a minute (was "
