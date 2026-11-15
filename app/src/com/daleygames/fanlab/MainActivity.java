@@ -24,6 +24,9 @@ public class MainActivity extends Activity implements StepRow.Listener {
     private LinearLayout pairView;
     private TextView statusView;
 
+    /** The row that had the focus when this screen was last left, to come back to. */
+    private View lastFocus;
+
     private StepRow fanRow;
     private StepRow brightRow;
     private TextView manualLabel;
@@ -70,14 +73,22 @@ public class MainActivity extends Activity implements StepRow.Listener {
             }
         };
         sync();
-        fanRow.clearFocus();
-        fanRow.requestFocus();
+        // Back where you were: the row you left from, if it is still on the screen. Only a first
+        // open, or a row that has since been hidden, starts at the top.
+        View back = lastFocus;
+        if (back != null && back.isShown() && back.isFocusable()) {
+            back.requestFocus();
+        } else {
+            fanRow.clearFocus();
+            fanRow.requestFocus();
+        }
         ui.removeCallbacks(poll);
         ui.post(poll);
     }
 
     @Override
     protected void onPause() {
+        lastFocus = getCurrentFocus();
         StepRow.hintSink = null;
         ui.removeCallbacks(poll);
         super.onPause();

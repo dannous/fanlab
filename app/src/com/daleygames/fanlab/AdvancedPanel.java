@@ -70,7 +70,7 @@ public final class AdvancedPanel implements StepRow.Listener {
                         + LedDrive.Config.QUIETER + " instead."));
 
         root.addView(Ui.heading(c, "Tests"), Ui.wrap());
-        add(root, new StepRow(c, "White screen (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. Any key exits.")).display(">");
+        add(root, new StepRow(c, "White screen (full load)").button().tag("white", 0).hint("Full white picture, the heaviest load.\n\nUse it to hear the fan at its worst. You can change the brightness mode from the remote while it is up. Back exits.")).display(">");
         add(root, new StepRow(c, "Colour slides").button().tag("slides", 0).hint("Full-screen white, red, green, blue and black, one at a time, to check each LED and look for dust or dead pixels.\n\nLeft and right change the slide. Back or OK exits.")).display(">");
         add(root, new StepRow(c, "Focus pattern").button().tag("focus", 0).hint("A fine grid with markers in the centre and corners, for setting focus and checking it is even across the picture.\n\nThe remote's focus buttons work while it is up. Back or OK exits.")).display(">");
         add(root, new StepRow(c, "Unattended test (" + WhiteActivity.planMinutes() + " min)").button().tag("plan", 0)

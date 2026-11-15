@@ -216,7 +216,7 @@ public class WhiteActivity extends Activity {
         }
         if (!plan) {
             readout.setText(focus ? "Focus pattern   Back or OK to exit   " + live
-                    : live + "   " + totalMin + " min   any key to exit");
+                    : live + "   " + totalMin + " min   Back to exit");
             return;
         }
         if (step < 0 || now - stepStartedMs >= PLAN[step][2] * 60000L) {
@@ -314,6 +314,15 @@ public class WhiteActivity extends Activity {
             }
             root.setBackgroundColor(SLIDE_COLOURS[slide]);
             return true;
+        }
+        if (!plan) {
+            // The plain white screen: only Back leaves. Any key used to, so changing the brightness
+            // mode from the remote, which is what this screen is for, threw you back to the menu.
+            if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                finish();
+                return true;
+            }
+            return super.onKeyUp(keyCode, event);
         }
         String name = KeyEvent.keyCodeToString(keyCode) + "/" + keyCode
                 + (event != null && event.getDeviceId() < 0 ? " virtual" : "");
