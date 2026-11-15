@@ -33,3 +33,8 @@ __pycache__/
 HANDOVER.md
 NEXT_SESSION.md
 CURVE_V2_BRIEF.md
+
+# Engineering notes, measurement tooling and derivations: kept locally, not published
+docs/
+tools/
+final_curve.txt
