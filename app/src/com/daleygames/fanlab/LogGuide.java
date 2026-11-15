@@ -100,6 +100,8 @@ public final class LogGuide {
         s.append("  WRITE FAILED                     the fan could not be written\n");
         s.append("  media_mounted, export->Nf/Mr     USB stick inserted; N files / M rows copied to it\n");
         s.append("  logs on the projector wiped      the owner deleted the logs stored on the projector\n");
+        s.append("  applied sweep advice QUIET|COOL  the owner applied settings recommended by a sweep; the next\n");
+        s.append("                                   'brightness set ...' note shows what they were\n");
         s.append("  dlpc_read=...                    periodic read of the display chip's settings; ignore\n");
         s.append("\n");
         s.append("HOW TO READ IT\n");

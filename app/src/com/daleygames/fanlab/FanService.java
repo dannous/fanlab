@@ -148,6 +148,8 @@ public class FanService extends Service {
     public static volatile String limitLine = "";
     /** The last finished sweep, in words (see {@link SweepSummary}); empty until one finishes. */
     public static volatile String lastSweepSummary = "";
+    /** The steps of the last finished sweep, for {@link SweepAdvice}; null until one finishes. */
+    public static volatile List<SweepStep> lastSweepSteps;
     private int guideDirs = -1;
     /** The boost switch and levels last seen, to tell when learned fan speeds have gone stale. */
     private String lastDriveKey;
@@ -1572,7 +1574,11 @@ public class FanService extends Service {
                 // The sweep runs at Philips' own brightness, where the target is never above 55.
                 targets[lv] = (int) Math.min(AutoHold.TARGET_C, Prefs.smartTarget(this, lv));
             }
-            lastSweepSummary = SweepSummary.text(sw.steps(), sw.markers(), targets);
+            lastSweepSteps = new ArrayList<SweepStep>(sw.steps());
+            lastSweepSummary = SweepSummary.text(sw.steps(), sw.markers(), targets)
+                    + "\nRECOMMENDED SETTINGS (apply either from the sweep screen)\n"
+                    + SweepAdvice.text(SweepAdvice.advise(lastSweepSteps, SweepAdvice.QUIET))
+                    + SweepAdvice.text(SweepAdvice.advise(lastSweepSteps, SweepAdvice.COOL));
             if (reportName != null) {
                 CsvLogger.writeWhole(sinkSnapshot(), reportName.replace(".json", ".txt"), lastSweepSummary);
             }

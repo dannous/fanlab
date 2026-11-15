@@ -104,7 +104,7 @@ $PureSources = @(
     'Thermistor.java', 'Sysfs.java', 'FanIo.java', 'CurveConfig.java',
     'FanCurve.java', 'Mode.java', 'Sample.java', 'CsvLogger.java', 'SysProps.java',
     'LinearConfig.java', 'FanLinear.java',
-    'LedDrive.java', 'AutoHold.java', 'FanLimit.java', 'SweepSummary.java', 'LogGuide.java', 'AutoStep.java',
+    'LedDrive.java', 'AutoHold.java', 'FanLimit.java', 'SweepSummary.java', 'SweepAdvice.java', 'LogGuide.java', 'AutoStep.java',
     'Provenance.java',
     'ExpFit.java', 'SweepPlan.java', 'SweepStep.java', 'SweepEngine.java',
     'HoldSession.java', 'PicoReg.java', 'Json.java', 'SweepReport.java'

@@ -130,9 +130,17 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         col.addView(Ui.body(c, "Measures where the LED settles at each fan speed, in each brightness mode."), Ui.wrap());
 
         col.addView(Ui.heading(c, "Before you start"), Ui.wrap());
+        boolean wasQuick = SweepPlan.quick;
+        SweepPlan.quick = true;
+        long quickBest = SweepPlan.estimateBestSeconds(), quickTypical = SweepPlan.estimateTypicalSeconds();
+        SweepPlan.quick = false;
         long best = SweepPlan.estimateBestSeconds();
         long typical = SweepPlan.estimateTypicalSeconds();
-        col.addView(bullet(c, "It takes about " + (best / 60) + " minutes if the "
+        SweepPlan.quick = wasQuick;
+        col.addView(bullet(c, "The quick sweep takes about " + (quickBest / 60) + " to " + (quickTypical / 60)
+                + " minutes. It measures only 40 % and 35 % fan in each brightness mode, which is all the "
+                + "recommended settings need."), Ui.wrap());
+        col.addView(bullet(c, "The full sweep takes about " + (best / 60) + " minutes if the "
                 + "temperature settles quickly at every step, and up to about "
                 + (typical / 60) + " if it does not. It stops itself after "
                 + (SweepPlan.capSeconds() / 60) + " minutes at the very latest, whatever "
@@ -177,7 +185,16 @@ public class AutoActivity extends Activity implements StepRow.Listener {
         confirmTemp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
         col.addView(confirmTemp, Ui.wrap());
 
-        startRow = new StepRow(c, "START THE SWEEP").button().tag("start", 0);
+        if (FanService.lastSweepSteps != null) {
+            col.addView(Ui.heading(c, "Use the last results"), Ui.wrap());
+            addRow(col, new StepRow(c, "Apply the QUIET settings").button().tag("applyquiet", 0)).display(">");
+            addRow(col, new StepRow(c, "Apply the COOL settings").button().tag("applycool", 0)).display(">");
+        }
+
+        StepRow quickRow = new StepRow(c, "START THE QUICK SWEEP (recommended settings)").button().tag("quick", 0);
+        quickRow.tint(0xFF1F4A2A).valueColour(Ui.GOOD).display("▶");
+        addRow(col, quickRow);
+        startRow = new StepRow(c, "START THE FULL SWEEP (every fan speed)").button().tag("start", 0);
         startRow.tint(0xFF1F4A2A).valueColour(Ui.GOOD).display("▶");
         addRow(col, startRow);
 
@@ -259,7 +276,15 @@ public class AutoActivity extends Activity implements StepRow.Listener {
     public void onStepRow(StepRow row) {
         try {
             if ("start".equals(row.tagName)) {
+                SweepPlan.quick = false;
                 startSweep();
+            } else if ("quick".equals(row.tagName)) {
+                SweepPlan.quick = true;
+                startSweep();
+            } else if ("applyquiet".equals(row.tagName)) {
+                confirmApply(SweepAdvice.QUIET);
+            } else if ("applycool".equals(row.tagName)) {
+                confirmApply(SweepAdvice.COOL);
             } else if ("back".equals(row.tagName)) {
                 finish();
             } else if ("ambient".equals(row.tagName)) {
@@ -326,6 +351,81 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                         + FanService.statusLine);
             }
         }, 900);
+    }
+
+    /** The finished sweep: what it measured, what it recommends, and a button for each recommendation. */
+    private void showResults() {
+        String sum = FanService.lastSweepSummary;
+        try {
+            AlertDialog.Builder b = new AlertDialog.Builder(this)
+                    .setMessage((sum.length() > 0 ? sum + "\n" : "") + FanService.statusLine);
+            if (FanService.lastSweepSteps != null) {
+                b.setPositiveButton("Apply QUIET", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        apply(SweepAdvice.QUIET);
+                    }
+                });
+                b.setNegativeButton("Apply COOL", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        apply(SweepAdvice.COOL);
+                    }
+                });
+                b.setNeutralButton("Change nothing", null);
+            } else {
+                b.setPositiveButton("OK", null);
+            }
+            b.show();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void confirmApply(final int kind) {
+        SweepAdvice.Advice a = SweepAdvice.advise(FanService.lastSweepSteps, kind);
+        if (!a.ok) {
+            say(SweepAdvice.text(a));
+            return;
+        }
+        try {
+            new AlertDialog.Builder(this)
+                    .setMessage(SweepAdvice.text(a) + "\nThis replaces your brightness levels, targets and fan limit, "
+                            + "turns Brightness boost on and switches to Smart quiet.")
+                    .setPositiveButton("Apply", new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d, int w) {
+                            apply(kind);
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Put a recommendation into the settings: brightness per mode, targets, the fan limit, and Smart quiet. */
+    private void apply(int kind) {
+        SweepAdvice.Advice a = SweepAdvice.advise(FanService.lastSweepSteps, kind);
+        if (!a.ok) {
+            say(SweepAdvice.text(a));
+            return;
+        }
+        LedDrive.Config cfg = new LedDrive.Config();
+        for (int i = 0; i < LedDrive.TIERS; i++) {
+            cfg.level[i] = a.level[LedDrive.TIER_RGBLEVEL[i]];
+        }
+        Prefs.setLedDrive(this, cfg);
+        Prefs.setLedDriveOn(this, true);
+        for (int lv = 1; lv <= 4; lv++) {
+            Prefs.setSmartTarget(this, lv, a.target[lv]);
+        }
+        Prefs.setFanLimit(this, a.limit);
+        Prefs.setAutoKind(this, Prefs.AUTO_HOLD);
+        Prefs.setMode(this, Mode.CURVE);
+        FanService.mark("applied sweep advice " + (kind == SweepAdvice.COOL ? "COOL" : "QUIET"));
+        FanService.poke(this, FanService.ACTION_REFRESH);
+        say("Applied. Smart quiet is running with:\n\n" + SweepAdvice.text(a)
+                + "\nSet the brightness mode once from the remote so the projector agrees with it.");
     }
 
     private void say(String msg) {
@@ -406,8 +506,7 @@ public class AutoActivity extends Activity implements StepRow.Listener {
                 startRow.requestFocus();
             }
             // The results first, in words; then where the files went.
-            String sum = FanService.lastSweepSummary;
-            say((sum.length() > 0 ? sum + "\n" : "") + FanService.statusLine);
+            showResults();
             return;
         }
         double c = s == null ? Double.NaN : s.degC;

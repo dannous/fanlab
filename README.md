@@ -65,7 +65,7 @@ Leave it on, or Philips' controller takes the fan back at the next power-on.
 | **Fan floor** | The slowest the fan runs: 30 % unless you change it, 20–40. Below 30 is untested. The curves never go below 25 |
 | **Brightness (LED drive)** | The boost level for each brightness mode, and a reset for brightness and targets |
 | **Tests** | White screen (full load), colour slides, a focus pattern, and an unattended test |
-| **Measure** | Sweep every fan speed (83 down to 30 %, about two hours; it shows where the LED settles at each speed and the slowest fan that holds the target), hold one fan speed, and a room temperature for the log |
+| **Measure** | **Sweep**: a quick one (about half an hour) or a full one (83 down to 30 % fan, about two hours). It measures where the LED settles, then recommends settings for your room, **Quiet** (fan limit 35 %) or **Cool** (limit 40 %, targets 5 °C lower), and applies either if you choose. Also: hold one fan speed, and a room temperature for the log |
 | **Logs** | Write the CSV log, copy it to shared storage or a USB stick, delete the logs on the projector (it asks first), and raw diagnostics. A `READ-ME-fanlab-logs.txt` beside the logs explains every column and note, for you or an AI assistant |
 | **ADB over USB** | Untested on this projector |
 | **Restore stock controller** | Gives the fan back to Philips. Press this before uninstalling |

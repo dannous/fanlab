@@ -1,6 +1,7 @@
 import com.daleygames.fanlab.AutoHold;
 import com.daleygames.fanlab.FanLimit;
 import com.daleygames.fanlab.LogGuide;
+import com.daleygames.fanlab.SweepAdvice;
 import com.daleygames.fanlab.SweepSummary;
 import com.daleygames.fanlab.AutoStep;
 import com.daleygames.fanlab.CsvLogger;
@@ -4441,6 +4442,38 @@ public final class FanLabTest {
         eq(SweepPlan.FULL[SweepPlan.FULL.length - 1], 30, "the sweep goes down to 30, the range the owner listens in");
         eq(SweepPlan.DUTY_FLOOR, 30, "and never below it");
 
+        // Advice: at 35 % fan the LED settles at 25 + 0.4 x drive (33, 41, 47, 55.4 at Philips'
+        // 20/40/55/76); at 40 % one degree cooler. Quiet keeps 2 C in hand under 50/55/58/60.
+        java.util.List<SweepStep> q = new java.util.ArrayList<SweepStep>();
+        int[] lvs = {4, 1, 2, 3};
+        int[] stockDrive = {20, 40, 55, 76};
+        for (int i = 0; i < 4; i++) {
+            q.add(sweepStep(lvs[i], 40, 24.0 + 0.4 * stockDrive[i], true));
+            q.add(sweepStep(lvs[i], 35, 25.0 + 0.4 * stockDrive[i], true));
+        }
+        SweepAdvice.Advice qa = SweepAdvice.advise(q, SweepAdvice.QUIET);
+        check(qa.ok, "a quick sweep is enough for advice");
+        eq(qa.limit, 35, "Quiet: fan limit 35");
+        eq(qa.level[4], 57, "Quiet: Super Eco brightness 57 holds 50 C with 2 C in hand");
+        eq(qa.level[1], 70, "Quiet: Night 70");
+        eq(qa.level[2], 77, "Quiet: Normal 77");
+        eq(qa.level[3], 82, "Quiet: Presentation 82");
+        SweepAdvice.Advice ca = SweepAdvice.advise(q, SweepAdvice.COOL);
+        eq(ca.limit, 40, "Cool: fan limit 40");
+        eq(ca.target[3], 55, "Cool: Presentation target five lower, 55");
+        eq(ca.level[3], 72 < 76 ? 76 : 72, "Cool: Presentation would need under Philips' 76, so it stays at 76");
+        check(ca.tight[3], "and is marked as tight");
+        check(ca.level[4] >= 20 && ca.level[4] <= qa.level[4], "Cool never asks for more brightness than Quiet in the same mode");
+        check(SweepAdvice.text(qa).contains("QUIET") && SweepAdvice.text(qa).contains("brightness 82"),
+                "the advice reads as words");
+        java.util.List<SweepStep> one = new java.util.ArrayList<SweepStep>();
+        one.add(sweepStep(3, 35, 55.0, true));
+        check(!SweepAdvice.advise(one, SweepAdvice.QUIET).ok, "one mode alone gives no advice");
+        boolean was = SweepPlan.quick;
+        SweepPlan.quick = true;
+        eq(SweepPlan.totalSteps(), 8, "the quick sweep is 8 steps");
+        check(SweepPlan.estimateTypicalSeconds() <= 50 * 60, "and under 50 minutes (" + SweepPlan.estimateTypicalSeconds() / 60 + ")");
+        SweepPlan.quick = was;
         String g = LogGuide.text("1.9.0");
         check(g.contains("1.9.0") && g.contains("COLUMNS") && g.contains("NOTES"), "the guide names its version and has both lists");
         String[] cols = CsvLogger.HEADER.split(",");

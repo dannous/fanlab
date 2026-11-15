@@ -16,8 +16,18 @@ public final class SweepPlan {
         return rgblevel == 3 || rgblevel == 2;
     }
 
+    /**
+     * The quick sweep: only the two fan speeds the recommended settings are worked out from
+     * ({@link SweepAdvice}: 35 % for Quiet, 40 % for Cool), in all four modes. Eight steps,
+     * about half an hour, against 34 and two hours.
+     */
+    public static final int[] QUICK = {40, 35};
+
+    /** Set by the screen before a sweep starts; false is the full sweep. */
+    public static volatile boolean quick;
+
     public static int[] scheduleFor(int rgblevel) {
-        return isFullSchedule(rgblevel) ? FULL : SHORT;
+        return quick ? QUICK : isFullSchedule(rgblevel) ? FULL : SHORT;
     }
 
     public static int totalSteps() {
